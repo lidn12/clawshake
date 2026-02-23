@@ -4,7 +4,7 @@
 //! `/clawshake/mcp/1.0.0` request-response protocol.  The bridge:
 //!
 //!   1. Stamps the caller's identity as `AgentId::P2p(peer_id)`.
-//!   2. Checks permissions (stub: allow all in Milestone 2).
+//!   2. Checks permissions via the PermissionStore (P2P callers denied by default).
 //!   3. Forwards the raw JSON-RPC bytes to the local MCP backend.
 //!   4. Returns the response over the same libp2p stream.
 //!
@@ -14,6 +14,10 @@
 use std::io;
 
 use async_trait::async_trait;
+use clawshake_core::{
+    identity::AgentId,
+    permissions::{Decision, PermissionStore},
+};
 use futures::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use libp2p::{
     request_response::{self, ProtocolSupport},
@@ -134,7 +138,16 @@ pub fn new_behaviour() -> Behaviour {
 /// Forward a raw MCP JSON-RPC request (as bytes) to the backend and return
 /// the raw response bytes.  Errors are wrapped in a JSON-RPC error response
 /// so the remote caller always gets a well-formed reply.
-pub async fn forward(backend: &McpBackend, caller: &PeerId, raw: Vec<u8>) -> Vec<u8> {
+///
+/// The caller's identity is derived from the libp2p peer ID (transport-layer
+/// verified via the Noise handshake) and checked against the permission store
+/// before the call is forwarded.
+pub async fn forward(
+    backend: &McpBackend,
+    store: &PermissionStore,
+    caller: &PeerId,
+    raw: Vec<u8>,
+) -> Vec<u8> {
     let req: Value = match serde_json::from_slice(&raw) {
         Ok(v) => v,
         Err(e) => {
@@ -146,15 +159,37 @@ pub async fn forward(backend: &McpBackend, caller: &PeerId, raw: Vec<u8>) -> Vec
     let id = req.get("id").cloned();
     let method = req.get("method").and_then(|v| v.as_str()).unwrap_or("?");
 
-    // === Permission check placeholder ===
-    // Milestone 3: look up (AgentId::P2p(caller), method) in the permission store.
-    // For now: allow all inbound calls.
-    info!(%caller, method, "Proxying inbound MCP call");
+    // Identity is stamped from the transport (Noise-verified peer ID).
+    // The caller has no say in this value.
+    let agent_id = AgentId::P2p(caller.to_string());
+
+    match store.check(&agent_id, method).await {
+        Decision::Allow => {
+            info!(%caller, method, "Permission granted — proxying inbound MCP call");
+        }
+        Decision::Ask => {
+            // `Ask` means "prompt locally" — no UI for remote callers, auto-deny.
+            warn!(%caller, method, "Permission denied (ask → deny for P2P callers)");
+            return error_response(id, -32603, "Permission denied");
+        }
+        Decision::Deny => {
+            warn!(%caller, method, "Permission denied");
+            return error_response(id, -32603, "Permission denied");
+        }
+    }
 
     match backend.call(req).await {
-        Ok(resp) => serde_json::to_vec(&resp).unwrap_or_else(|_| {
-            error_response(id, -32603, "Internal error: failed to serialise response")
-        }),
+        Ok(mut resp) => {
+            // Restore the caller's original id (which may be a string, number, or null).
+            // backend.call() stamps a fresh u64 id before sending; the echoed numeric id
+            // in `resp` must not leak back to the caller.
+            if let Some(ref orig_id) = id {
+                resp["id"] = orig_id.clone();
+            }
+            serde_json::to_vec(&resp).unwrap_or_else(|_| {
+                error_response(id, -32603, "Internal error: failed to serialise response")
+            })
+        }
         Err(e) => {
             warn!(%caller, "Backend call failed: {e}");
             error_response(id, -32603, format!("Backend error: {e}").as_str())

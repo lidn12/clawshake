@@ -1,5 +1,8 @@
+use std::sync::Arc;
+
 use anyhow::Result;
 use clap::Parser;
+use clawshake_core::permissions::PermissionStore;
 use tracing::info;
 
 mod announce;
@@ -63,7 +66,14 @@ async fn main() -> Result<()> {
         None
     };
 
-    p2p::run(cli.p2p_port, cli.boot_peers, cli.identity, backend).await
+    // Open the permission store (creates DB + schema if absent, seeds p2p deny default).
+    let db_path = dirs::home_dir()
+        .expect("cannot determine home directory")
+        .join(".clawshake")
+        .join("permissions.db");
+    let store = PermissionStore::open(&db_path).await?;
+    store.seed_p2p_deny_default().await?;
+    let store = Arc::new(store);
+
+    p2p::run(cli.p2p_port, cli.boot_peers, cli.identity, backend, store).await
 }
-
-

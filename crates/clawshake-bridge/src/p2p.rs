@@ -1,10 +1,10 @@
-use std::{path::PathBuf, time::Duration};
+use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
+use clawshake_core::permissions::PermissionStore;
 use libp2p::futures::StreamExt;
 use libp2p::{
-    identify, kad, mdns, noise,
-    request_response,
+    identify, kad, mdns, noise, request_response,
     swarm::{NetworkBehaviour, SwarmEvent},
     tcp, yamux, Multiaddr, PeerId, StreamProtocol, SwarmBuilder,
 };
@@ -72,6 +72,7 @@ pub async fn run(
     boot_peers: Vec<String>,
     identity: Option<std::path::PathBuf>,
     backend: Option<McpBackend>,
+    store: Arc<PermissionStore>,
 ) -> Result<()> {
     let keypair = load_or_create_keypair(identity.as_deref())?;
     let local_peer_id = PeerId::from(&keypair.public());
@@ -88,9 +89,8 @@ pub async fn run(
         .with_behaviour(|key| {
             let peer_id = key.public().to_peer_id();
 
-            let kad_protocol =
-                StreamProtocol::try_from_owned("/clawshake/kad/1.0.0".to_string())
-                    .expect("valid protocol string");
+            let kad_protocol = StreamProtocol::try_from_owned("/clawshake/kad/1.0.0".to_string())
+                .expect("valid protocol string");
             let mut kad_config = kad::Config::new(kad_protocol);
             kad_config.set_query_timeout(Duration::from_secs(30));
             let kademlia = kad::Behaviour::with_config(
@@ -220,9 +220,10 @@ pub async fn run(
                 {
                     if let Some(ref b) = backend {
                         let b = b.clone();
+                        let s = store.clone();
                         let tx = resp_tx.clone();
                         tokio::spawn(async move {
-                            let response = proxy::forward(&b, &peer, request).await;
+                            let response = proxy::forward(&b, &s, &peer, request).await;
                             let _ = tx.send((channel, response)).await;
                         });
                     } else {
@@ -277,7 +278,11 @@ fn handle_event(
         } => {
             info!(
                 "Connected to {peer_id} ({})",
-                if endpoint.is_dialer() { "outbound" } else { "inbound" }
+                if endpoint.is_dialer() {
+                    "outbound"
+                } else {
+                    "inbound"
+                }
             );
         }
 
@@ -297,14 +302,19 @@ fn handle_event(
         SwarmEvent::Behaviour(ClawshakeBehaviourEvent::Mdns(mdns::Event::Expired(peers))) => {
             for (peer_id, addr) in peers {
                 info!("mDNS peer expired: {peer_id} at {addr}");
-                swarm.behaviour_mut().kademlia.remove_address(&peer_id, &addr);
+                swarm
+                    .behaviour_mut()
+                    .kademlia
+                    .remove_address(&peer_id, &addr);
             }
         }
 
         // Identify
-        SwarmEvent::Behaviour(ClawshakeBehaviourEvent::Identify(
-            identify::Event::Received { peer_id, info, .. },
-        )) => {
+        SwarmEvent::Behaviour(ClawshakeBehaviourEvent::Identify(identify::Event::Received {
+            peer_id,
+            info,
+            ..
+        })) => {
             info!(
                 "Identified {peer_id}: agent=\"{}\" protocol=\"{}\"",
                 info.agent_version, info.protocol_version
@@ -354,7 +364,10 @@ fn handle_event(
                 message: request_response::Message::Response { response, .. },
                 ..
             } => {
-                info!("Received MCP response from {peer}: {} bytes", response.len());
+                info!(
+                    "Received MCP response from {peer}: {} bytes",
+                    response.len()
+                );
             }
             request_response::Event::OutboundFailure { peer, error, .. } => {
                 warn!("MCP outbound failure to {peer}: {error}");
