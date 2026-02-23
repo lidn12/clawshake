@@ -1,0 +1,24 @@
+[package]
+name = "clawshake-broker"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "clawshake-broker"
+path = "src/main.rs"
+
+[dependencies]
+clawshake-core = { workspace = true }
+tokio = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }
+sqlx = { workspace = true }
+notify = { workspace = true }
+open = { workspace = true }
