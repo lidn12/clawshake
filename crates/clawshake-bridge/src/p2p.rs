@@ -4,11 +4,14 @@ use anyhow::{Context, Result};
 use libp2p::futures::StreamExt;
 use libp2p::{
     identify, kad, mdns, noise,
+    request_response,
     swarm::{NetworkBehaviour, SwarmEvent},
     tcp, yamux, Multiaddr, PeerId, StreamProtocol, SwarmBuilder,
 };
-use tokio::select;
+use tokio::{select, sync::mpsc, time::interval};
 use tracing::{info, warn};
+
+use crate::{announce, backend::McpBackend, proxy};
 
 // ---------------------------------------------------------------------------
 // Composite behaviour
@@ -19,14 +22,13 @@ struct ClawshakeBehaviour {
     kademlia: kad::Behaviour<kad::store::MemoryStore>,
     identify: identify::Behaviour,
     mdns: mdns::tokio::Behaviour,
+    proxy: proxy::Behaviour,
 }
 
 // ---------------------------------------------------------------------------
 // Keypair persistence
 // ---------------------------------------------------------------------------
 
-/// Load the node keypair from the given path (or `~/.clawshake/identity.key`
-/// by default), generating and saving a new Ed25519 keypair if absent.
 fn load_or_create_keypair(
     override_path: Option<&std::path::Path>,
 ) -> Result<libp2p::identity::Keypair> {
@@ -69,6 +71,7 @@ pub async fn run(
     p2p_port: u16,
     boot_peers: Vec<String>,
     identity: Option<std::path::PathBuf>,
+    backend: Option<McpBackend>,
 ) -> Result<()> {
     let keypair = load_or_create_keypair(identity.as_deref())?;
     let local_peer_id = PeerId::from(&keypair.public());
@@ -85,9 +88,9 @@ pub async fn run(
         .with_behaviour(|key| {
             let peer_id = key.public().to_peer_id();
 
-            // Kademlia — use server mode so we participate in the DHT actively.
-            let kad_protocol = StreamProtocol::try_from_owned("/clawshake/kad/1.0.0".to_string())
-                .expect("valid protocol string");
+            let kad_protocol =
+                StreamProtocol::try_from_owned("/clawshake/kad/1.0.0".to_string())
+                    .expect("valid protocol string");
             let mut kad_config = kad::Config::new(kad_protocol);
             kad_config.set_query_timeout(Duration::from_secs(30));
             let kademlia = kad::Behaviour::with_config(
@@ -96,40 +99,37 @@ pub async fn run(
                 kad_config,
             );
 
-            // Identify — lets peers learn our listen addresses.
             let identify = identify::Behaviour::new(identify::Config::new(
                 "/clawshake/1.0.0".to_string(),
                 key.public(),
             ));
 
-            // mDNS — zero-config local peer discovery (works on the same LAN).
             let mdns = mdns::tokio::Behaviour::new(mdns::Config::default(), peer_id)?;
+
+            let proxy = proxy::new_behaviour();
 
             Ok(ClawshakeBehaviour {
                 kademlia,
                 identify,
                 mdns,
+                proxy,
             })
         })?
         .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(60)))
         .build();
 
-    // Start listening.
     let listen_addr: Multiaddr = format!("/ip4/0.0.0.0/tcp/{p2p_port}").parse()?;
     swarm.listen_on(listen_addr)?;
 
-    // Set Kademlia to server mode so we can accept incoming queries.
     swarm
         .behaviour_mut()
         .kademlia
         .set_mode(Some(kad::Mode::Server));
 
-    // Dial explicit bootstrap peers (e.g. --boot /ip4/127.0.0.1/tcp/7474/p2p/<peer-id>).
+    // Dial explicit bootstrap peers.
     for addr_str in &boot_peers {
         match addr_str.parse::<Multiaddr>() {
             Ok(addr) => {
-                // Extract the PeerId from the trailing /p2p/<id> component so we can
-                // pre-populate the Kademlia routing table with the transport address.
                 if let Some(libp2p::multiaddr::Protocol::P2p(peer_id)) = addr.iter().last() {
                     let transport_addr: Multiaddr = addr
                         .iter()
@@ -151,18 +151,116 @@ pub async fn run(
 
     info!("Node is up. Waiting for peers…");
 
-    // Main event loop.
+    // -- Channels -----------------------------------------------------------
+
+    // Async proxy responses: (response_channel, response_bytes)
+    // The proxy handling task sends back here; main loop delivers to swarm.
+    let (resp_tx, mut resp_rx) =
+        mpsc::channel::<(request_response::ResponseChannel<Vec<u8>>, Vec<u8>)>(64);
+
+    // DHT announce records from the background announce task.
+    let (dht_tx, mut dht_rx) = mpsc::channel::<kad::Record>(4);
+
+    // -- Announce task ------------------------------------------------------
+    // If a backend is configured, query its tools/list on startup and then
+    // every ANNOUNCE_INTERVAL seconds.
+    const ANNOUNCE_INTERVAL: u64 = 300; // 5 minutes
+
+    if let Some(ref b) = backend {
+        let backend_clone = b.clone();
+        let dht_tx_clone = dht_tx.clone();
+        let peer_id_clone = local_peer_id;
+        // Snapshot of current listen addrs (populated once the swarm starts
+        // listening; we'll update on subsequent ticks via the event loop).
+        // For the initial announce the list is empty — it gets populated after
+        // the first NewListenAddr events.  A smarter approach (Milestone 3)
+        // will collect real addrs before first announce.
+        tokio::spawn(async move {
+            let mut tick = interval(Duration::from_secs(ANNOUNCE_INTERVAL));
+            loop {
+                tick.tick().await;
+                match announce::build_record(peer_id_clone, &[], &backend_clone).await {
+                    Ok(record) => {
+                        if dht_tx_clone.send(record).await.is_err() {
+                            break; // main loop exited
+                        }
+                    }
+                    Err(e) => warn!("Announce build failed: {e}"),
+                }
+            }
+        });
+
+        // Trigger the first announce immediately (don't wait 5 minutes).
+        let backend_first = b.clone();
+        let dht_tx_first = dht_tx.clone();
+        tokio::spawn(async move {
+            match announce::build_record(local_peer_id, &[], &backend_first).await {
+                Ok(record) => {
+                    let _ = dht_tx_first.send(record).await;
+                }
+                Err(e) => warn!("Initial announce failed: {e}"),
+            }
+        });
+    }
+
+    // -- Main event loop ----------------------------------------------------
     loop {
         select! {
             event = swarm.select_next_some() => {
-                handle_event(&mut swarm, event);
+                // Handle proxy inbound requests inline (needs async).
+                if let SwarmEvent::Behaviour(ClawshakeBehaviourEvent::Proxy(
+                    request_response::Event::Message {
+                        peer,
+                        message: request_response::Message::Request {
+                            request, channel, ..
+                        },
+                        ..
+                    },
+                )) = event
+                {
+                    if let Some(ref b) = backend {
+                        let b = b.clone();
+                        let tx = resp_tx.clone();
+                        tokio::spawn(async move {
+                            let response = proxy::forward(&b, &peer, request).await;
+                            let _ = tx.send((channel, response)).await;
+                        });
+                    } else {
+                        // No backend — return a JSON-RPC error.
+                        let err = serde_json::to_vec(&serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": null,
+                            "error": {
+                                "code": -32603,
+                                "message": "No MCP backend configured on this node"
+                            }
+                        }))
+                        .unwrap_or_default();
+                        let _ = resp_tx.send((channel, err)).await;
+                    }
+                } else {
+                    handle_event(&mut swarm, event);
+                }
+            }
+
+            // Deliver async proxy responses back through the swarm.
+            Some((channel, response)) = resp_rx.recv() => {
+                let _ = swarm.behaviour_mut().proxy.send_response(channel, response);
+            }
+
+            // Publish DHT announcement records from the announce task.
+            Some(record) = dht_rx.recv() => {
+                match swarm.behaviour_mut().kademlia.put_record(record, kad::Quorum::One) {
+                    Ok(_) => info!("DHT announce: publishing record"),
+                    Err(e) => warn!("DHT put_record failed: {e:?}"),
+                }
             }
         }
     }
 }
 
 // ---------------------------------------------------------------------------
-// Event handler
+// Event handler (non-proxy events)
 // ---------------------------------------------------------------------------
 
 fn handle_event(
@@ -170,7 +268,6 @@ fn handle_event(
     event: SwarmEvent<ClawshakeBehaviourEvent>,
 ) {
     match event {
-        // ── Swarm ──────────────────────────────────────────────────────────
         SwarmEvent::NewListenAddr { address, .. } => {
             info!("Listening on {address}");
         }
@@ -180,11 +277,7 @@ fn handle_event(
         } => {
             info!(
                 "Connected to {peer_id} ({})",
-                if endpoint.is_dialer() {
-                    "outbound"
-                } else {
-                    "inbound"
-                }
+                if endpoint.is_dialer() { "outbound" } else { "inbound" }
             );
         }
 
@@ -192,7 +285,7 @@ fn handle_event(
             info!("Disconnected from {peer_id}: {cause:?}");
         }
 
-        // ── mDNS — local peer discovery ────────────────────────────────────
+        // mDNS
         SwarmEvent::Behaviour(ClawshakeBehaviourEvent::Mdns(mdns::Event::Discovered(peers))) => {
             for (peer_id, addr) in peers {
                 info!("mDNS discovered peer {peer_id} at {addr}");
@@ -204,21 +297,16 @@ fn handle_event(
         SwarmEvent::Behaviour(ClawshakeBehaviourEvent::Mdns(mdns::Event::Expired(peers))) => {
             for (peer_id, addr) in peers {
                 info!("mDNS peer expired: {peer_id} at {addr}");
-                swarm
-                    .behaviour_mut()
-                    .kademlia
-                    .remove_address(&peer_id, &addr);
+                swarm.behaviour_mut().kademlia.remove_address(&peer_id, &addr);
             }
         }
 
-        // ── Identify — learn peer addresses ───────────────────────────────
-        SwarmEvent::Behaviour(ClawshakeBehaviourEvent::Identify(identify::Event::Received {
-            peer_id,
-            info,
-            ..
-        })) => {
+        // Identify
+        SwarmEvent::Behaviour(ClawshakeBehaviourEvent::Identify(
+            identify::Event::Received { peer_id, info, .. },
+        )) => {
             info!(
-                "Identified {peer_id}: agent=\"{}\" protocol_version=\"{}\"",
+                "Identified {peer_id}: agent=\"{}\" protocol=\"{}\"",
                 info.agent_version, info.protocol_version
             );
             for addr in info.listen_addrs {
@@ -234,7 +322,7 @@ fn handle_event(
             warn!("Identify error for {peer_id}: {error}");
         }
 
-        // ── Kademlia ───────────────────────────────────────────────────────
+        // Kademlia
         SwarmEvent::Behaviour(ClawshakeBehaviourEvent::Kademlia(event)) => match event {
             kad::Event::RoutingUpdated { peer, .. } => {
                 info!("Kademlia routing table updated: peer={peer}");
@@ -242,9 +330,39 @@ fn handle_event(
             kad::Event::RoutablePeer { peer, address } => {
                 info!("Kademlia routable peer: {peer} at {address}");
             }
+            kad::Event::OutboundQueryProgressed {
+                result: kad::QueryResult::PutRecord(Ok(kad::PutRecordOk { key })),
+                ..
+            } => {
+                info!("DHT announce: record published (key={key:?})");
+            }
+            kad::Event::OutboundQueryProgressed {
+                result: kad::QueryResult::PutRecord(Err(e)),
+                ..
+            } => {
+                warn!("DHT announce: put_record error: {e:?}");
+            }
             other => {
                 tracing::debug!("Kademlia event: {other:?}");
             }
+        },
+
+        // Proxy outbound responses / send errors
+        SwarmEvent::Behaviour(ClawshakeBehaviourEvent::Proxy(event)) => match event {
+            request_response::Event::Message {
+                peer,
+                message: request_response::Message::Response { response, .. },
+                ..
+            } => {
+                info!("Received MCP response from {peer}: {} bytes", response.len());
+            }
+            request_response::Event::OutboundFailure { peer, error, .. } => {
+                warn!("MCP outbound failure to {peer}: {error}");
+            }
+            request_response::Event::InboundFailure { peer, error, .. } => {
+                warn!("MCP inbound failure from {peer}: {error}");
+            }
+            _ => {}
         },
 
         _ => {}
