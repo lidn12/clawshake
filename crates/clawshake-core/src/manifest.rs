@@ -14,20 +14,49 @@ pub struct Manifest {
 pub struct Tool {
     pub name: String,
     pub description: String,
-    #[serde(default)]
-    pub parameters: HashMap<String, ToolParameter>,
+    /// JSON Schema object describing the tool's inputs — matches the MCP `inputSchema` field.
+    #[serde(default, rename = "inputSchema")]
+    pub input_schema: InputSchema,
     /// Optional: if set, the broker returns an error if this value is not configured.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub requires: Option<String>,
     pub invoke: InvokeConfig,
 }
 
-/// A parameter schema for a tool.
+/// JSON Schema object for a tool's inputs (`inputSchema` in MCP).
+///
+/// ```json
+/// {
+///   "type": "object",
+///   "properties": {
+///     "query": { "type": "string", "description": "Search query or Spotify URI" }
+///   },
+///   "required": ["query"]
+/// }
+/// ```
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct InputSchema {
+    /// Always "object" for MCP tools.
+    #[serde(default = "default_object_type")]
+    pub r#type: String,
+    #[serde(default)]
+    pub properties: HashMap<String, PropertySchema>,
+    /// Names of required properties.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required: Vec<String>,
+}
+
+fn default_object_type() -> String {
+    "object".to_string()
+}
+
+/// Schema for a single property within `inputSchema.properties`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolParameter {
+pub struct PropertySchema {
     #[serde(rename = "type")]
     pub param_type: String,
-    pub description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 /// How the broker should invoke a tool.
