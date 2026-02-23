@@ -172,12 +172,7 @@ impl PermissionStore {
     // -----------------------------------------------------------------------
 
     /// Insert or replace a permission rule.
-    pub async fn set(
-        &self,
-        agent_id: &str,
-        tool_name: &str,
-        decision: Decision,
-    ) -> Result<()> {
+    pub async fn set(&self, agent_id: &str, tool_name: &str, decision: Decision) -> Result<()> {
         sqlx::query(
             "INSERT OR REPLACE INTO permissions (agent_id, tool_name, decision, granted_at)
              VALUES (?1, ?2, ?3, strftime('%s','now'))",
