@@ -3,12 +3,9 @@ use std::{path::PathBuf, time::Duration};
 use anyhow::{Context, Result};
 use libp2p::futures::StreamExt;
 use libp2p::{
-    identify, kad,
-    mdns,
-    noise,
+    identify, kad, mdns, noise,
     swarm::{NetworkBehaviour, SwarmEvent},
-    tcp, yamux, StreamProtocol,
-    Multiaddr, PeerId, SwarmBuilder,
+    tcp, yamux, Multiaddr, PeerId, StreamProtocol, SwarmBuilder,
 };
 use tokio::select;
 use tracing::{info, warn};
@@ -28,10 +25,15 @@ struct ClawshakeBehaviour {
 // Keypair persistence
 // ---------------------------------------------------------------------------
 
-/// Load the node keypair from `~/.clawshake/identity.key`, or generate and
-/// save a new Ed25519 keypair if absent.
-fn load_or_create_keypair() -> Result<libp2p::identity::Keypair> {
-    let path = keypair_path()?;
+/// Load the node keypair from the given path (or `~/.clawshake/identity.key`
+/// by default), generating and saving a new Ed25519 keypair if absent.
+fn load_or_create_keypair(
+    override_path: Option<&std::path::Path>,
+) -> Result<libp2p::identity::Keypair> {
+    let path = match override_path {
+        Some(p) => p.to_path_buf(),
+        None => keypair_path()?,
+    };
 
     if path.exists() {
         let bytes = std::fs::read(&path)
@@ -63,10 +65,15 @@ fn keypair_path() -> Result<PathBuf> {
 // Node entry point
 // ---------------------------------------------------------------------------
 
-pub async fn run(p2p_port: u16) -> Result<()> {
-    let keypair = load_or_create_keypair()?;
+pub async fn run(
+    p2p_port: u16,
+    boot_peers: Vec<String>,
+    identity: Option<std::path::PathBuf>,
+) -> Result<()> {
+    let keypair = load_or_create_keypair(identity.as_deref())?;
     let local_peer_id = PeerId::from(&keypair.public());
     info!("Local peer ID: {local_peer_id}");
+    info!("Bootstrap this node with: /ip4/127.0.0.1/tcp/{p2p_port}/p2p/{local_peer_id}");
 
     let mut swarm = SwarmBuilder::with_existing_identity(keypair)
         .with_tokio()
@@ -96,10 +103,13 @@ pub async fn run(p2p_port: u16) -> Result<()> {
             ));
 
             // mDNS — zero-config local peer discovery (works on the same LAN).
-            let mdns =
-                mdns::tokio::Behaviour::new(mdns::Config::default(), peer_id)?;
+            let mdns = mdns::tokio::Behaviour::new(mdns::Config::default(), peer_id)?;
 
-            Ok(ClawshakeBehaviour { kademlia, identify, mdns })
+            Ok(ClawshakeBehaviour {
+                kademlia,
+                identify,
+                mdns,
+            })
         })?
         .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(60)))
         .build();
@@ -113,6 +123,31 @@ pub async fn run(p2p_port: u16) -> Result<()> {
         .behaviour_mut()
         .kademlia
         .set_mode(Some(kad::Mode::Server));
+
+    // Dial explicit bootstrap peers (e.g. --boot /ip4/127.0.0.1/tcp/7474/p2p/<peer-id>).
+    for addr_str in &boot_peers {
+        match addr_str.parse::<Multiaddr>() {
+            Ok(addr) => {
+                // Extract the PeerId from the trailing /p2p/<id> component so we can
+                // pre-populate the Kademlia routing table with the transport address.
+                if let Some(libp2p::multiaddr::Protocol::P2p(peer_id)) = addr.iter().last() {
+                    let transport_addr: Multiaddr = addr
+                        .iter()
+                        .filter(|p| !matches!(p, libp2p::multiaddr::Protocol::P2p(_)))
+                        .collect();
+                    info!(%peer_id, %transport_addr, "Dialing bootstrap peer");
+                    swarm
+                        .behaviour_mut()
+                        .kademlia
+                        .add_address(&peer_id, transport_addr);
+                }
+                if let Err(e) = swarm.dial(addr.clone()) {
+                    warn!(%addr, "Failed to dial bootstrap peer: {e}");
+                }
+            }
+            Err(e) => warn!(addr = %addr_str, "Invalid multiaddr: {e}"),
+        }
+    }
 
     info!("Node is up. Waiting for peers…");
 
@@ -140,10 +175,16 @@ fn handle_event(
             info!("Listening on {address}");
         }
 
-        SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } => {
+        SwarmEvent::ConnectionEstablished {
+            peer_id, endpoint, ..
+        } => {
             info!(
                 "Connected to {peer_id} ({})",
-                if endpoint.is_dialer() { "outbound" } else { "inbound" }
+                if endpoint.is_dialer() {
+                    "outbound"
+                } else {
+                    "inbound"
+                }
             );
         }
 
@@ -152,9 +193,7 @@ fn handle_event(
         }
 
         // ── mDNS — local peer discovery ────────────────────────────────────
-        SwarmEvent::Behaviour(ClawshakeBehaviourEvent::Mdns(
-            mdns::Event::Discovered(peers),
-        )) => {
+        SwarmEvent::Behaviour(ClawshakeBehaviourEvent::Mdns(mdns::Event::Discovered(peers))) => {
             for (peer_id, addr) in peers {
                 info!("mDNS discovered peer {peer_id} at {addr}");
                 swarm.behaviour_mut().kademlia.add_address(&peer_id, addr);
@@ -162,19 +201,22 @@ fn handle_event(
             }
         }
 
-        SwarmEvent::Behaviour(ClawshakeBehaviourEvent::Mdns(mdns::Event::Expired(
-            peers,
-        ))) => {
+        SwarmEvent::Behaviour(ClawshakeBehaviourEvent::Mdns(mdns::Event::Expired(peers))) => {
             for (peer_id, addr) in peers {
                 info!("mDNS peer expired: {peer_id} at {addr}");
-                swarm.behaviour_mut().kademlia.remove_address(&peer_id, &addr);
+                swarm
+                    .behaviour_mut()
+                    .kademlia
+                    .remove_address(&peer_id, &addr);
             }
         }
 
         // ── Identify — learn peer addresses ───────────────────────────────
-        SwarmEvent::Behaviour(ClawshakeBehaviourEvent::Identify(
-            identify::Event::Received { peer_id, info, .. },
-        )) => {
+        SwarmEvent::Behaviour(ClawshakeBehaviourEvent::Identify(identify::Event::Received {
+            peer_id,
+            info,
+            ..
+        })) => {
             info!(
                 "Identified {peer_id}: agent=\"{}\" protocol_version=\"{}\"",
                 info.agent_version, info.protocol_version
@@ -184,26 +226,26 @@ fn handle_event(
             }
         }
 
-        SwarmEvent::Behaviour(ClawshakeBehaviourEvent::Identify(
-            identify::Event::Error { peer_id, error, .. },
-        )) => {
+        SwarmEvent::Behaviour(ClawshakeBehaviourEvent::Identify(identify::Event::Error {
+            peer_id,
+            error,
+            ..
+        })) => {
             warn!("Identify error for {peer_id}: {error}");
         }
 
         // ── Kademlia ───────────────────────────────────────────────────────
-        SwarmEvent::Behaviour(ClawshakeBehaviourEvent::Kademlia(event)) => {
-            match event {
-                kad::Event::RoutingUpdated { peer, .. } => {
-                    info!("Kademlia routing table updated: peer={peer}");
-                }
-                kad::Event::RoutablePeer { peer, address } => {
-                    info!("Kademlia routable peer: {peer} at {address}");
-                }
-                other => {
-                    tracing::debug!("Kademlia event: {other:?}");
-                }
+        SwarmEvent::Behaviour(ClawshakeBehaviourEvent::Kademlia(event)) => match event {
+            kad::Event::RoutingUpdated { peer, .. } => {
+                info!("Kademlia routing table updated: peer={peer}");
             }
-        }
+            kad::Event::RoutablePeer { peer, address } => {
+                info!("Kademlia routable peer: {peer} at {address}");
+            }
+            other => {
+                tracing::debug!("Kademlia event: {other:?}");
+            }
+        },
 
         _ => {}
     }

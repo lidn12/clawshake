@@ -17,6 +17,17 @@ struct Cli {
     /// TCP port to listen on for inbound P2P connections (0 = random).
     #[arg(long, default_value_t = 0)]
     p2p_port: u16,
+
+    /// Bootstrap peer multiaddr(s) to dial on startup.
+    /// Format: /ip4/<addr>/tcp/<port>/p2p/<peer-id>
+    /// Can be specified multiple times.
+    #[arg(long = "boot", value_name = "MULTIADDR")]
+    boot_peers: Vec<String>,
+
+    /// Path to the Ed25519 keypair file. Defaults to ~/.clawshake/identity.key.
+    /// Useful for running multiple nodes on the same machine during testing.
+    #[arg(long, value_name = "PATH")]
+    identity: Option<std::path::PathBuf>,
 }
 
 #[tokio::main]
@@ -36,5 +47,5 @@ async fn main() -> Result<()> {
         "Starting clawshake-bridge"
     );
 
-    p2p::run(cli.p2p_port).await
+    p2p::run(cli.p2p_port, cli.boot_peers, cli.identity).await
 }
