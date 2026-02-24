@@ -29,25 +29,13 @@ struct ClawshakeBehaviour {
 // Well-known bootstrap peers
 // ---------------------------------------------------------------------------
 
-/// Hardcoded bootstrap peers used when no `--boot` flags are provided and
-/// `--no-default-boot` is not set.
+/// Hardcoded bootstrap peers dialed on startup when `--no-default-boot` is
+/// not set.  Add the multiaddr printed by a dedicated Clawshake bootstrap
+/// node (`--bootstrap-mode`) here once one is running.
 ///
-/// These are the libp2p.io public nodes maintained by Protocol Labs.
-/// They are IPFS ecosystem nodes and do **not** participate in the
-/// Clawshake Kademlia DHT (`/clawshake/kad/1.0.0`).
-///
-/// Their value for a fresh install is connectivity and NAT traversal:
-/// - TCP connections are established, keeping NAT mappings open.
-/// - Identify exchanges let peers advertise their listen addresses.
-/// - Two Clawshake nodes that both connect here can discover each other
-///   once actual Clawshake-aware bootstrap nodes are added.
-///
-/// Replace with dedicated Clawshake bootstrap nodes as the network grows.
+/// Format: `/ip4/<ip>/tcp/7474/p2p/<peer-id>`
 const BOOTSTRAP_PEERS: &[&str] = &[
-    "/dnsaddr/bootstrap.libp2p.io/p2p/QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN",
-    "/dnsaddr/bootstrap.libp2p.io/p2p/QmQCU2EcMqAqQPR2i9bChDtGNJchTbq5TbXJJ16u19uLTa",
-    "/dnsaddr/bootstrap.libp2p.io/p2p/QmbLHAnMoJPWSCR5Zhtx6BHJX9KiKNN6tpvbUcqanj75Nb",
-    "/dnsaddr/bootstrap.libp2p.io/p2p/QmcZf59bWwK5XFi76CZX8cbJ4BhTzzA3gU1ZjYZcYW3dwt",
+    // TODO: add permanent Clawshake bootstrap node
 ];
 
 /// Default port for bootstrap-mode nodes.
