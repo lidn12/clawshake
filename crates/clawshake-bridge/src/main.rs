@@ -32,16 +32,13 @@ struct Cli {
     #[arg(long, default_value_t = false)]
     no_default_boot: bool,
 
-    /// Run as a bootstrap node: no MCP backend required, stable port (default
-    /// 7474 unless --p2p-port is set), and prints a copy-ready multiaddr
-    /// banner on startup for distribution to other users.
-    /// Also implies --relay-server.
-    #[arg(long, default_value_t = false)]
-    bootstrap_mode: bool,
-
     /// Enable relay server mode: this node will forward traffic between peers
-    /// behind NAT.  Only effective if this node has a public IP address.
-    /// Implied by --bootstrap-mode.
+    /// behind NAT, use a stable port (default 7474), and print a copy-ready
+    /// multiaddr banner on startup.  Only effective if inbound connections are
+    /// reachable from the internet (public IP or cloud NAT with port
+    /// forwarding configured).  AutoNAT will automatically detect and publish
+    /// the correct external address even on cloud servers that only see
+    /// internal IPs locally.
     #[arg(long, default_value_t = false)]
     relay_server: bool,
 
@@ -72,15 +69,12 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    // Bootstrap mode: use a stable port so the address is predictable.
-    let p2p_port = if cli.bootstrap_mode && cli.p2p_port == 0 {
-        p2p::BOOTSTRAP_DEFAULT_PORT
+    // Relay server mode: use a stable port so the address is predictable.
+    let p2p_port = if cli.relay_server && cli.p2p_port == 0 {
+        p2p::RELAY_DEFAULT_PORT
     } else {
         cli.p2p_port
     };
-    if cli.bootstrap_mode {
-        info!("Bootstrap mode — listening on port {p2p_port} with no MCP backend");
-    }
 
     // Build the MCP backend (if any).
     let backend: Option<McpBackend> = if let Some(cmd) = &cli.mcp_cmd {
@@ -117,8 +111,7 @@ async fn main() -> Result<()> {
         table,
         connected,
         cli.no_default_boot,
-        cli.bootstrap_mode,
-        cli.bootstrap_mode || cli.relay_server,
+        cli.relay_server,
     )
     .await
 }

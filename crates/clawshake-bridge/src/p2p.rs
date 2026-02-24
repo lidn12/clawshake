@@ -34,15 +34,12 @@ struct ClawshakeBehaviour {
 // ---------------------------------------------------------------------------
 
 /// Hardcoded bootstrap peers dialed on startup when `--no-default-boot` is
-/// not set.  Add the multiaddr printed by a dedicated Clawshake bootstrap
-/// node (`--bootstrap-mode`) here once one is running.
-///
-/// Format: `/ip4/<ip>/tcp/7474/p2p/<peer-id>`
+/// not set.  Format: `/ip4/<ip>/tcp/7474/p2p/<peer-id>`
 const BOOTSTRAP_PEERS: &[&str] =
     &["/ip4/43.143.33.106/tcp/7474/p2p/12D3KooWDi1ntKAkUYpHfijLNExUTsirFyofnkEB3yjC8P3EGcY5"];
 
-/// Default port for bootstrap-mode nodes.
-pub const BOOTSTRAP_DEFAULT_PORT: u16 = 7474;
+/// Default port used by relay/bootstrap nodes (stable so the address is predictable).
+pub const RELAY_DEFAULT_PORT: u16 = 7474;
 
 // ---------------------------------------------------------------------------
 // Keypair persistence
@@ -95,7 +92,6 @@ pub async fn run(
     table: Arc<PeerTable>,
     connected: ConnectedPeers,
     no_default_boot: bool,
-    bootstrap_mode: bool,
     relay_server: bool,
 ) -> Result<()> {
     let keypair = load_or_create_keypair(identity.as_deref())?;
@@ -284,7 +280,7 @@ pub async fn run(
                         let _ = resp_tx.send((channel, err)).await;
                     }
                 } else {
-                    handle_event(&mut swarm, event, &table, &connected, bootstrap_mode, relay_server, local_peer_id);
+                    handle_event(&mut swarm, event, &table, &connected, relay_server, local_peer_id);
                 }
             }
 
@@ -316,26 +312,12 @@ fn handle_event(
     event: SwarmEvent<ClawshakeBehaviourEvent>,
     table: &PeerTable,
     connected: &ConnectedPeers,
-    bootstrap_mode: bool,
     relay_server: bool,
     local_peer_id: PeerId,
 ) {
     match event {
         SwarmEvent::NewListenAddr { ref address, .. } => {
             info!("Listening on {address}");
-            if bootstrap_mode {
-                let full_addr = format!("{}/p2p/{}", address, local_peer_id);
-                info!("╔══════════════════════════════════════════════════════╗");
-                info!("║         BOOTSTRAP NODE READY                        ║");
-                info!("║                                                      ║");
-                info!("║  Bind addr (may be internal if behind NAT):         ║");
-                info!("║  {full_addr}");
-                info!("║                                                      ║");
-                info!("║  If behind cloud/router NAT, use your public IP:    ║");
-                info!("║  /ip4/<public-ip>/tcp/7474/p2p/{local_peer_id}");
-                info!("║                                                      ║");
-                info!("╚══════════════════════════════════════════════════════╝");
-            }
         }
 
         SwarmEvent::ConnectionEstablished {
@@ -398,20 +380,24 @@ fn handle_event(
             );
             // Add all advertised addresses to Kademlia.
             for addr in &info.listen_addrs {
-                swarm.behaviour_mut().kademlia.add_address(&peer_id, addr.clone());
+                swarm
+                    .behaviour_mut()
+                    .kademlia
+                    .add_address(&peer_id, addr.clone());
             }
             // Auto-relay: if this peer advertises relay hop capability, reserve a
             // circuit slot on it so we are reachable through it even behind NAT.
-            if info.protocols.iter().any(|p| p.as_ref() == RELAY_HOP_PROTOCOL) {
-                let circuit_base = info
-                    .listen_addrs
-                    .iter()
-                    .find(|a| {
-                        !a.iter().any(|p| {
-                            matches!(p, libp2p::multiaddr::Protocol::Ip4(ip) if ip.is_loopback())
-                                || matches!(p, libp2p::multiaddr::Protocol::P2pCircuit)
-                        })
-                    });
+            if info
+                .protocols
+                .iter()
+                .any(|p| p.as_ref() == RELAY_HOP_PROTOCOL)
+            {
+                let circuit_base = info.listen_addrs.iter().find(|a| {
+                    !a.iter().any(|p| {
+                        matches!(p, libp2p::multiaddr::Protocol::Ip4(ip) if ip.is_loopback())
+                            || matches!(p, libp2p::multiaddr::Protocol::P2pCircuit)
+                    })
+                });
                 if let Some(base) = circuit_base {
                     // Strip any trailing /p2p component, then append /p2p/<relay>/p2p-circuit.
                     let mut circuit: Multiaddr = base
@@ -534,7 +520,12 @@ fn handle_event(
         SwarmEvent::ExternalAddrConfirmed { address } => {
             info!("External address confirmed: {address}");
             if relay_server {
+                let full_addr = format!("{}/p2p/{}", address, local_peer_id);
                 swarm.add_external_address(address);
+                info!("╔══════════════════════════════════════════════════════╗");
+                info!("║  RELAY SERVER READY — public address confirmed       ║");
+                info!("║  {full_addr}");
+                info!("╚══════════════════════════════════════════════════════╝");
             }
         }
 
