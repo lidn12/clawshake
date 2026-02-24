@@ -258,6 +258,9 @@ pub async fn run(
 
     // -- Main event loop ----------------------------------------------------
     let mut relay_banner_shown = false;
+    let mut relay_reserved_peers = std::collections::HashSet::<PeerId>::new();
+    // Periodic Kademlia bootstrap — re-discover peers that joined after us.
+    let mut kad_bootstrap_tick = interval(Duration::from_secs(60));
     loop {
         select! {
             event = swarm.select_next_some() => {
@@ -294,7 +297,7 @@ pub async fn run(
                         let _ = resp_tx.send((channel, err)).await;
                     }
                 } else {
-                    handle_event(&mut swarm, event, &table, &connected, relay_server, local_peer_id, &mut relay_banner_shown);
+                    handle_event(&mut swarm, event, &table, &connected, relay_server, local_peer_id, &mut relay_banner_shown, &mut relay_reserved_peers);
                 }
             }
 
@@ -308,6 +311,14 @@ pub async fn run(
                 match swarm.behaviour_mut().kademlia.put_record(record, kad::Quorum::One) {
                     Ok(_) => info!("DHT announce: publishing record"),
                     Err(e) => warn!("DHT put_record failed: {e:?}"),
+                }
+            }
+
+            // Periodic Kademlia bootstrap — discover peers that joined after us.
+            _ = kad_bootstrap_tick.tick() => {
+                match swarm.behaviour_mut().kademlia.bootstrap() {
+                    Ok(_) => tracing::debug!("Kademlia bootstrap triggered"),
+                    Err(_) => {} // No known peers yet — ignore silently
                 }
             }
         }
@@ -358,6 +369,7 @@ fn handle_event(
     relay_server: bool,
     local_peer_id: PeerId,
     relay_banner_shown: &mut bool,
+    relay_reserved_peers: &mut std::collections::HashSet<PeerId>,
 ) {
     match event {
         SwarmEvent::NewListenAddr { ref address, .. } => {
@@ -441,17 +453,26 @@ fn handle_event(
             // circuit slot on it so we are reachable through it even behind NAT.
             // Relay servers don't need to be relay clients — skip for them.
             if !relay_server
+                && !relay_reserved_peers.contains(&peer_id)
                 && info
                     .protocols
                     .iter()
                     .any(|p| p.as_ref() == RELAY_HOP_PROTOCOL)
             {
-                let circuit_base = info.listen_addrs.iter().find(|a| {
-                    !a.iter().any(|p| {
-                        matches!(p, libp2p::multiaddr::Protocol::Ip4(ip) if ip.is_loopback())
-                            || matches!(p, libp2p::multiaddr::Protocol::P2pCircuit)
-                    })
-                });
+                // Prefer a publicly routable listen address for the circuit;
+                // fall back to any non-loopback, non-circuit address.
+                let circuit_base = info
+                    .listen_addrs
+                    .iter()
+                    .find(|a| is_public_addr(a))
+                    .or_else(|| {
+                        info.listen_addrs.iter().find(|a| {
+                            !a.iter().any(|p| {
+                                matches!(p, libp2p::multiaddr::Protocol::Ip4(ip) if ip.is_loopback())
+                                    || matches!(p, libp2p::multiaddr::Protocol::P2pCircuit)
+                            })
+                        })
+                    });
                 if let Some(base) = circuit_base {
                     // Strip any trailing /p2p component, then append /p2p/<relay>/p2p-circuit.
                     let mut circuit: Multiaddr = base
@@ -464,6 +485,7 @@ fn handle_event(
                     if let Err(e) = swarm.listen_on(circuit) {
                         warn!("Auto-relay: listen_on failed: {e}");
                     }
+                    relay_reserved_peers.insert(peer_id);
                 }
             }
         }
@@ -576,7 +598,6 @@ fn handle_event(
                     .collect();
                 base.push(libp2p::multiaddr::Protocol::P2p(local_peer_id));
                 let full_addr = base.to_string();
-                swarm.add_external_address(address);
                 info!("╔══════════════════════════════════════════════════════╗");
                 info!("║  RELAY SERVER READY — public address confirmed       ║");
                 info!("║  {full_addr}");
