@@ -272,7 +272,7 @@ pub async fn run(
         rendezvous_registered: std::collections::HashSet::new(),
         rendezvous_servers: std::collections::HashSet::new(),
     };
-    let mut rendezvous_tick = interval(Duration::from_secs(30));
+    let mut rendezvous_tick = interval(Duration::from_secs(10));
     loop {
         select! {
             event = swarm.select_next_some() => {
@@ -376,7 +376,10 @@ fn is_public_addr(addr: &Multiaddr) -> bool {
             }
             Protocol::Ip6(ip) => {
                 has_ip = true;
-                if ip.is_loopback() || ip.is_unspecified() {
+                let segments = ip.segments();
+                let is_link_local = segments[0] == 0xfe80;
+                let is_ula = (segments[0] & 0xfe00) == 0xfc00;
+                if ip.is_loopback() || ip.is_unspecified() || is_link_local || is_ula {
                     return false;
                 }
             }
@@ -431,16 +434,25 @@ fn handle_event(
             swarm.behaviour_mut().kademlia.get_record(key);
         }
 
-        SwarmEvent::ConnectionClosed { peer_id, cause, .. } => {
-            info!("Disconnected from {peer_id}: {cause:?}");
-            connected
-                .write()
-                .expect("connected peers lock poisoned")
-                .remove(&peer_id.to_string());
-            // Clean state so re-registration / re-reservation triggers on reconnect.
-            state.relay_reserved_peers.remove(&peer_id);
-            state.rendezvous_registered.remove(&peer_id);
-            state.rendezvous_servers.remove(&peer_id);
+        SwarmEvent::ConnectionClosed {
+            peer_id,
+            cause,
+            num_established,
+            ..
+        } => {
+            info!("Disconnected from {peer_id}: {cause:?} (remaining={num_established})");
+            // Only clean up when the *last* connection to this peer closes.
+            // A peer may have multiple connections (e.g. relay + direct after
+            // DCUTR) and we must not wipe state while one is still alive.
+            if num_established == 0 {
+                connected
+                    .write()
+                    .expect("connected peers lock poisoned")
+                    .remove(&peer_id.to_string());
+                state.relay_reserved_peers.remove(&peer_id);
+                state.rendezvous_registered.remove(&peer_id);
+                state.rendezvous_servers.remove(&peer_id);
+            }
         }
 
         // mDNS: dial newly discovered local peers (their GetRecord fills the table)
@@ -579,10 +591,10 @@ fn handle_event(
         // Kademlia
         SwarmEvent::Behaviour(ClawshakeBehaviourEvent::Kademlia(event)) => match event {
             kad::Event::RoutingUpdated { peer, .. } => {
-                info!("Kademlia routing table updated: peer={peer}");
+                tracing::debug!("Kademlia routing table updated: peer={peer}");
             }
             kad::Event::RoutablePeer { peer, address } => {
-                info!("Kademlia routable peer: {peer} at {address}");
+                tracing::debug!("Kademlia routable peer: {peer} at {address}");
             }
             kad::Event::OutboundQueryProgressed {
                 result: kad::QueryResult::PutRecord(Ok(kad::PutRecordOk { key })),
@@ -689,7 +701,8 @@ fn handle_event(
             // any known rendezvous servers we haven't registered with yet.
             if !relay_server {
                 // Collect peer IDs first to avoid borrow conflict with swarm.
-                let rz_peers: Vec<PeerId> = state.rendezvous_servers
+                let rz_peers: Vec<PeerId> = state
+                    .rendezvous_servers
                     .iter()
                     .filter(|p| !state.rendezvous_registered.contains(p))
                     .copied()
@@ -780,7 +793,23 @@ fn handle_event(
                 warn!("Rendezvous: discover failed at {rendezvous_node}: {error:?}");
             }
             rendezvous::client::Event::Expired { peer } => {
-                tracing::debug!("Rendezvous: registration expired for {peer}");
+                info!("Rendezvous: registration expired at {peer}, re-registering");
+                // Registration TTL lapsed — re-register so we stay visible.
+                state.rendezvous_registered.remove(&peer);
+                let ns = rendezvous::Namespace::new(RENDEZVOUS_NAMESPACE.to_string())
+                    .expect("valid namespace");
+                match swarm
+                    .behaviour_mut()
+                    .rendezvous_client
+                    .register(ns, peer, None)
+                {
+                    Ok(_) => {
+                        state.rendezvous_registered.insert(peer);
+                    }
+                    Err(e) => {
+                        warn!("Rendezvous: re-register failed: {e:?}");
+                    }
+                }
             }
         },
 
