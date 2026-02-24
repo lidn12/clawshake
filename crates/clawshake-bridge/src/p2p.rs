@@ -249,6 +249,10 @@ pub async fn run(
     // DHT announce records from the background announce task.
     let (dht_tx, mut dht_rx) = mpsc::channel::<kad::Record>(4);
 
+    // Notify channel: poked by ExternalAddrConfirmed so the announce task
+    // re-publishes immediately instead of waiting for the next 5-min tick.
+    let (announce_tx, mut announce_rx) = mpsc::channel::<()>(4);
+
     // -- Announce task ------------------------------------------------------
     // If a backend is configured, query its tools/list on startup and then
     // every ANNOUNCE_INTERVAL seconds.
@@ -282,25 +286,27 @@ pub async fn run(
             }
         });
 
-        // Trigger the first announce immediately (don't wait 5 minutes).
-        let backend_first = b.clone();
-        let dht_tx_first = dht_tx.clone();
-        let addrs_first = listen_addrs.clone();
+        // Event-driven announce: whenever ExternalAddrConfirmed fires, the
+        // main loop sends a () through announce_tx so we re-publish right away
+        // instead of waiting for the next 5-minute tick.
+        let backend_event = b.clone();
+        let dht_tx_event = dht_tx.clone();
+        let addrs_event = listen_addrs.clone();
         tokio::spawn(async move {
-            // Brief delay so NewListenAddr events have time to populate addrs.
-            tokio::time::sleep(Duration::from_secs(2)).await;
-            let addrs: Vec<Multiaddr> = addrs_first
-                .read()
-                .expect("listen_addrs lock")
-                .iter()
-                .filter(|a| is_globally_reachable(a))
-                .cloned()
-                .collect();
-            match announce::build_record(local_peer_id, &addrs, &backend_first).await {
-                Ok(record) => {
-                    let _ = dht_tx_first.send(record).await;
+            while announce_rx.recv().await.is_some() {
+                let addrs: Vec<Multiaddr> = addrs_event
+                    .read()
+                    .expect("listen_addrs lock")
+                    .iter()
+                    .filter(|a| is_globally_reachable(a))
+                    .cloned()
+                    .collect();
+                match announce::build_record(local_peer_id, &addrs, &backend_event).await {
+                    Ok(record) => {
+                        let _ = dht_tx_event.send(record).await;
+                    }
+                    Err(e) => warn!("Event-driven announce failed: {e}"),
                 }
-                Err(e) => warn!("Initial announce failed: {e}"),
             }
         });
     }
@@ -320,6 +326,7 @@ pub async fn run(
         relay_server,
         local_peer_id,
         listen_addrs: &listen_addrs,
+        announce_tx: &announce_tx,
     };
     let shutdown = tokio::signal::ctrl_c();
     tokio::pin!(shutdown);
@@ -496,6 +503,9 @@ struct EventContext<'a> {
     relay_server: bool,
     local_peer_id: PeerId,
     listen_addrs: &'a RwLock<Vec<Multiaddr>>,
+    /// Poked on `ExternalAddrConfirmed` so the announce task re-publishes
+    /// immediately with the newly reachable address.
+    announce_tx: &'a mpsc::Sender<()>,
 }
 
 fn handle_event(
@@ -841,6 +851,11 @@ fn handle_event(
             } else if !ctx.relay_server {
                 info!("External address confirmed: {address}");
             }
+
+            // Trigger an immediate DHT announce so the peer is discoverable
+            // as soon as it has a reachable address (relay circuit or public IP)
+            // instead of waiting for the next 5-minute periodic tick.
+            let _ = ctx.announce_tx.try_send(());
 
             // Rendezvous: now that we have an external address, register with
             // any known rendezvous servers we haven't registered with yet.
