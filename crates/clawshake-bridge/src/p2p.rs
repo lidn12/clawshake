@@ -129,7 +129,20 @@ pub async fn run(
 
             let proxy = proxy::new_behaviour();
 
-            let relay_server = relay::Behaviour::new(peer_id, relay::Config::default());
+            // Only enable relay hop if the --relay-server flag was set.  For
+            // regular nodes we zero out the capacity so the behaviour is
+            // present in the struct (required by NetworkBehaviour derive) but
+            // accepts no reservations and forwards no circuits.
+            let relay_cfg = if relay_server {
+                relay::Config::default()
+            } else {
+                relay::Config {
+                    max_reservations: 0,
+                    max_circuits: 0,
+                    ..relay::Config::default()
+                }
+            };
+            let relay_server = relay::Behaviour::new(peer_id, relay_cfg);
             let autonat = autonat::Behaviour::new(peer_id, autonat::Config::default());
             let dcutr = dcutr::Behaviour::new(peer_id);
 
@@ -515,6 +528,9 @@ fn handle_event(
             autonat::Event::StatusChanged { new, .. },
         )) => {
             info!("NAT status: {new:?}");
+            if relay_server && matches!(new, autonat::NatStatus::Private) {
+                warn!("--relay-server set but NAT detected — this node cannot relay for others; check port forwarding");
+            }
         }
 
         SwarmEvent::ExternalAddrConfirmed { address } => {
