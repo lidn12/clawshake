@@ -257,6 +257,7 @@ pub async fn run(
     }
 
     // -- Main event loop ----------------------------------------------------
+    let mut relay_banner_shown = false;
     loop {
         select! {
             event = swarm.select_next_some() => {
@@ -293,7 +294,7 @@ pub async fn run(
                         let _ = resp_tx.send((channel, err)).await;
                     }
                 } else {
-                    handle_event(&mut swarm, event, &table, &connected, relay_server, local_peer_id);
+                    handle_event(&mut swarm, event, &table, &connected, relay_server, local_peer_id, &mut relay_banner_shown);
                 }
             }
 
@@ -327,6 +328,7 @@ fn handle_event(
     connected: &ConnectedPeers,
     relay_server: bool,
     local_peer_id: PeerId,
+    relay_banner_shown: &mut bool,
 ) {
     match event {
         SwarmEvent::NewListenAddr { ref address, .. } => {
@@ -426,14 +428,6 @@ fn handle_event(
                     if let Err(e) = swarm.listen_on(circuit) {
                         warn!("Auto-relay: listen_on failed: {e}");
                     }
-                }
-            }
-            // If we are a relay server, re-assert any already-confirmed external
-            // addresses so they are included in future Identify advertisements.
-            if relay_server {
-                let ext: Vec<Multiaddr> = swarm.external_addresses().cloned().collect();
-                for addr in ext {
-                    swarm.add_external_address(addr);
                 }
             }
         }
@@ -537,8 +531,7 @@ fn handle_event(
         }
 
         SwarmEvent::ExternalAddrConfirmed { address } => {
-            info!("External address confirmed: {address}");
-            if relay_server {
+            if relay_server && !*relay_banner_shown {
                 // Strip any trailing /p2p component before appending our own,
                 // since AutoNAT may already include it in the confirmed address.
                 let mut base: Multiaddr = address
@@ -552,6 +545,9 @@ fn handle_event(
                 info!("║  RELAY SERVER READY — public address confirmed       ║");
                 info!("║  {full_addr}");
                 info!("╚══════════════════════════════════════════════════════╝");
+                *relay_banner_shown = true;
+            } else if !relay_server {
+                info!("External address confirmed: {address}");
             }
         }
 
