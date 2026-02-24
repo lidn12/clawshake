@@ -107,6 +107,7 @@ pub async fn run(
             noise::Config::new,
             yamux::Config::default,
         )?
+        .with_quic()
         .with_dns()?
         .with_relay_client(noise::Config::new, yamux::Config::default)?
         .with_behaviour(|key, relay_client| {
@@ -168,8 +169,11 @@ pub async fn run(
         .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(120)))
         .build();
 
-    let listen_addr: Multiaddr = format!("/ip4/0.0.0.0/tcp/{p2p_port}").parse()?;
-    swarm.listen_on(listen_addr)?;
+    let tcp_addr: Multiaddr = format!("/ip4/0.0.0.0/tcp/{p2p_port}").parse()?;
+    swarm.listen_on(tcp_addr)?;
+
+    let quic_addr: Multiaddr = format!("/ip4/0.0.0.0/udp/{p2p_port}/quic-v1").parse()?;
+    swarm.listen_on(quic_addr)?;
 
     swarm
         .behaviour_mut()
