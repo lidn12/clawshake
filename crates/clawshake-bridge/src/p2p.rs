@@ -388,9 +388,10 @@ fn handle_event(
             info,
             ..
         })) => {
+            let has_dcutr = info.protocols.iter().any(|p| p.as_ref() == "/libp2p/dcutr");
             info!(
-                "Identified {peer_id}: agent=\"{}\" protocol=\"{}\"",
-                info.agent_version, info.protocol_version
+                "Identified {peer_id}: agent=\"{}\" protocol=\"{}\" dcutr={}",
+                info.agent_version, info.protocol_version, has_dcutr
             );
             // Add all advertised addresses to Kademlia.
             for addr in &info.listen_addrs {
@@ -404,9 +405,9 @@ fn handle_event(
             // Relay servers don't need to be relay clients — skip for them.
             if !relay_server
                 && info
-                .protocols
-                .iter()
-                .any(|p| p.as_ref() == RELAY_HOP_PROTOCOL)
+                    .protocols
+                    .iter()
+                    .any(|p| p.as_ref() == RELAY_HOP_PROTOCOL)
             {
                 let circuit_base = info.listen_addrs.iter().find(|a| {
                     !a.iter().any(|p| {
