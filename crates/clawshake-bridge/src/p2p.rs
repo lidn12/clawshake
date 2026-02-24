@@ -388,10 +388,9 @@ fn handle_event(
             info,
             ..
         })) => {
-            let has_dcutr = info.protocols.iter().any(|p| p.as_ref() == "/libp2p/dcutr");
             info!(
-                "Identified {peer_id}: agent=\"{}\" protocol=\"{}\" dcutr={}",
-                info.agent_version, info.protocol_version, has_dcutr
+                "Identified {peer_id}: agent=\"{}\" protocol=\"{}\" observed_addr={}",
+                info.agent_version, info.protocol_version, info.observed_addr
             );
             // Add all advertised addresses to Kademlia.
             for addr in &info.listen_addrs {
