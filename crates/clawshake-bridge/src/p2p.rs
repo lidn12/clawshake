@@ -223,11 +223,9 @@ pub async fn run(
                     if let Some(ref b) = backend {
                         let b = b.clone();
                         let s = store.clone();
-                        let t = table.clone();
-                        let c = connected.clone();
                         let tx = resp_tx.clone();
                         tokio::spawn(async move {
-                            let response = proxy::forward(&b, &s, &peer, request, &t, &c).await;
+                            let response = proxy::forward(&b, &s, &peer, request).await;
                             let _ = tx.send((channel, response)).await;
                         });
                     } else {
