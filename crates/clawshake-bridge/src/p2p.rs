@@ -1,4 +1,8 @@
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    path::PathBuf,
+    sync::{Arc, RwLock},
+    time::Duration,
+};
 
 use anyhow::{Context, Result};
 use clawshake_core::{peer_table::PeerTable, permissions::PermissionStore};
@@ -218,6 +222,10 @@ pub async fn run(
 
     info!("Node is up. Waiting for peers…");
 
+    // Shared listen addresses — updated by the event loop, read by the
+    // announce task so DHT records include reachable multiaddrs.
+    let listen_addrs: Arc<RwLock<Vec<Multiaddr>>> = Arc::new(RwLock::new(Vec::new()));
+
     // -- Channels -----------------------------------------------------------
 
     // Async proxy responses: (response_channel, response_bytes)
@@ -237,16 +245,13 @@ pub async fn run(
         let backend_clone = b.clone();
         let dht_tx_clone = dht_tx.clone();
         let peer_id_clone = local_peer_id;
-        // Snapshot of current listen addrs (populated once the swarm starts
-        // listening; we'll update on subsequent ticks via the event loop).
-        // For the initial announce the list is empty — it gets populated after
-        // the first NewListenAddr events.  A smarter approach (Milestone 3)
-        // will collect real addrs before first announce.
+        let addrs_clone = listen_addrs.clone();
         tokio::spawn(async move {
             let mut tick = interval(Duration::from_secs(ANNOUNCE_INTERVAL));
             loop {
                 tick.tick().await;
-                match announce::build_record(peer_id_clone, &[], &backend_clone).await {
+                let addrs = addrs_clone.read().expect("listen_addrs lock").clone();
+                match announce::build_record(peer_id_clone, &addrs, &backend_clone).await {
                     Ok(record) => {
                         if dht_tx_clone.send(record).await.is_err() {
                             break; // main loop exited
@@ -260,8 +265,12 @@ pub async fn run(
         // Trigger the first announce immediately (don't wait 5 minutes).
         let backend_first = b.clone();
         let dht_tx_first = dht_tx.clone();
+        let addrs_first = listen_addrs.clone();
         tokio::spawn(async move {
-            match announce::build_record(local_peer_id, &[], &backend_first).await {
+            // Brief delay so NewListenAddr events have time to populate addrs.
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            let addrs = addrs_first.read().expect("listen_addrs lock").clone();
+            match announce::build_record(local_peer_id, &addrs, &backend_first).await {
                 Ok(record) => {
                     let _ = dht_tx_first.send(record).await;
                 }
@@ -315,7 +324,7 @@ pub async fn run(
                         let _ = resp_tx.send((channel, err)).await;
                     }
                 } else {
-                    handle_event(&mut swarm, event, &table, &connected, relay_server, local_peer_id, &mut state);
+                    handle_event(&mut swarm, event, &table, &connected, relay_server, local_peer_id, &mut state, &listen_addrs);
                 }
             }
 
@@ -412,17 +421,33 @@ fn handle_event(
     relay_server: bool,
     local_peer_id: PeerId,
     state: &mut NodeState,
+    listen_addrs: &RwLock<Vec<Multiaddr>>,
 ) {
     match event {
         SwarmEvent::NewListenAddr { ref address, .. } => {
             info!("Listening on {address}");
+            listen_addrs
+                .write()
+                .expect("listen_addrs lock")
+                .push(address.clone());
+        }
+
+        SwarmEvent::ExpiredListenAddr { ref address, .. } => {
+            info!("Listen address expired: {address}");
+            listen_addrs
+                .write()
+                .expect("listen_addrs lock")
+                .retain(|a| a != address);
         }
 
         SwarmEvent::ConnectionEstablished {
             peer_id, endpoint, ..
         } => {
             let addr = endpoint.get_remote_address();
-            let via = if addr.iter().any(|p| matches!(p, libp2p::multiaddr::Protocol::P2pCircuit)) {
+            let via = if addr
+                .iter()
+                .any(|p| matches!(p, libp2p::multiaddr::Protocol::P2pCircuit))
+            {
                 "relay"
             } else if endpoint.is_dialer() {
                 "outbound"
@@ -685,11 +710,17 @@ fn handle_event(
             // would have to traverse a relay, wasting resources.
             match &new {
                 autonat::NatStatus::Public(_) => {
-                    swarm.behaviour_mut().kademlia.set_mode(Some(kad::Mode::Server));
+                    swarm
+                        .behaviour_mut()
+                        .kademlia
+                        .set_mode(Some(kad::Mode::Server));
                 }
                 autonat::NatStatus::Private => {
                     if !relay_server {
-                        swarm.behaviour_mut().kademlia.set_mode(Some(kad::Mode::Client));
+                        swarm
+                            .behaviour_mut()
+                            .kademlia
+                            .set_mode(Some(kad::Mode::Client));
                     }
                 }
                 _ => {}
