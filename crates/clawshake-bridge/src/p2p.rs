@@ -96,6 +96,7 @@ pub async fn run(
     connected: ConnectedPeers,
     no_default_boot: bool,
     bootstrap_mode: bool,
+    relay_server: bool,
 ) -> Result<()> {
     let keypair = load_or_create_keypair(identity.as_deref())?;
     let local_peer_id = PeerId::from(&keypair.public());
@@ -168,22 +169,6 @@ pub async fn run(
         }
         peers
     };
-
-    // Map relay peer-id → circuit-relay listen address.  Used in the event loop
-    // to reserve a relay slot as soon as we connect to a known relay/bootstrap node.
-    let relay_peers: std::collections::HashMap<PeerId, Multiaddr> = all_boot_peers
-        .iter()
-        .filter_map(|s| {
-            let addr: Multiaddr = s.parse().ok()?;
-            if let Some(libp2p::multiaddr::Protocol::P2p(peer_id)) = addr.iter().last() {
-                let mut circuit = addr.clone();
-                circuit.push(libp2p::multiaddr::Protocol::P2pCircuit);
-                Some((peer_id, circuit))
-            } else {
-                None
-            }
-        })
-        .collect();
 
     // Dial bootstrap peers.
     for addr_str in &all_boot_peers {
@@ -299,18 +284,7 @@ pub async fn run(
                         let _ = resp_tx.send((channel, err)).await;
                     }
                 } else {
-                    // Reserve a relay slot when we first connect to a relay/bootstrap peer.
-                    if !bootstrap_mode {
-                        if let SwarmEvent::ConnectionEstablished { peer_id, .. } = &event {
-                            if let Some(circuit_addr) = relay_peers.get(peer_id) {
-                                info!("Reserving relay slot via {circuit_addr}");
-                                if let Err(e) = swarm.listen_on(circuit_addr.clone()) {
-                                    warn!("Failed to listen on relay addr {circuit_addr}: {e}");
-                                }
-                            }
-                        }
-                    }
-                    handle_event(&mut swarm, event, &table, &connected, bootstrap_mode, local_peer_id);
+                    handle_event(&mut swarm, event, &table, &connected, bootstrap_mode, relay_server, local_peer_id);
                 }
             }
 
@@ -334,12 +308,16 @@ pub async fn run(
 // Event handler (non-proxy events)
 // ---------------------------------------------------------------------------
 
+/// libp2p relay v2 hop protocol — advertised by nodes that can relay traffic.
+const RELAY_HOP_PROTOCOL: &str = "/libp2p/circuit/relay/0.2.0/hop";
+
 fn handle_event(
     swarm: &mut libp2p::Swarm<ClawshakeBehaviour>,
     event: SwarmEvent<ClawshakeBehaviourEvent>,
     table: &PeerTable,
     connected: &ConnectedPeers,
     bootstrap_mode: bool,
+    relay_server: bool,
     local_peer_id: PeerId,
 ) {
     match event {
@@ -418,8 +396,43 @@ fn handle_event(
                 "Identified {peer_id}: agent=\"{}\" protocol=\"{}\"",
                 info.agent_version, info.protocol_version
             );
-            for addr in info.listen_addrs {
-                swarm.behaviour_mut().kademlia.add_address(&peer_id, addr);
+            // Add all advertised addresses to Kademlia.
+            for addr in &info.listen_addrs {
+                swarm.behaviour_mut().kademlia.add_address(&peer_id, addr.clone());
+            }
+            // Auto-relay: if this peer advertises relay hop capability, reserve a
+            // circuit slot on it so we are reachable through it even behind NAT.
+            if info.protocols.iter().any(|p| p.as_ref() == RELAY_HOP_PROTOCOL) {
+                let circuit_base = info
+                    .listen_addrs
+                    .iter()
+                    .find(|a| {
+                        !a.iter().any(|p| {
+                            matches!(p, libp2p::multiaddr::Protocol::Ip4(ip) if ip.is_loopback())
+                                || matches!(p, libp2p::multiaddr::Protocol::P2pCircuit)
+                        })
+                    });
+                if let Some(base) = circuit_base {
+                    // Strip any trailing /p2p component, then append /p2p/<relay>/p2p-circuit.
+                    let mut circuit: Multiaddr = base
+                        .iter()
+                        .filter(|p| !matches!(p, libp2p::multiaddr::Protocol::P2p(_)))
+                        .collect();
+                    circuit.push(libp2p::multiaddr::Protocol::P2p(peer_id));
+                    circuit.push(libp2p::multiaddr::Protocol::P2pCircuit);
+                    info!("Auto-relay: reserving slot via {peer_id}");
+                    if let Err(e) = swarm.listen_on(circuit) {
+                        warn!("Auto-relay: listen_on failed: {e}");
+                    }
+                }
+            }
+            // If we are a relay server, re-assert any already-confirmed external
+            // addresses so they are included in future Identify advertisements.
+            if relay_server {
+                let ext: Vec<Multiaddr> = swarm.external_addresses().cloned().collect();
+                for addr in ext {
+                    swarm.add_external_address(addr);
+                }
             }
         }
 
@@ -510,11 +523,19 @@ fn handle_event(
             tracing::debug!("Relay server event: {event:?}");
         }
 
-        // AutoNAT — log whenever NAT status changes
+        // AutoNAT — log whenever NAT status changes; relay servers expose their
+        // external address so peers can find them as relays via DHT.
         SwarmEvent::Behaviour(ClawshakeBehaviourEvent::Autonat(
             autonat::Event::StatusChanged { new, .. },
         )) => {
             info!("NAT status: {new:?}");
+        }
+
+        SwarmEvent::ExternalAddrConfirmed { address } => {
+            info!("External address confirmed: {address}");
+            if relay_server {
+                swarm.add_external_address(address);
+            }
         }
 
         // DCUTR — hole punching

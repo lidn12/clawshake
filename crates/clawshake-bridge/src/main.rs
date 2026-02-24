@@ -35,8 +35,15 @@ struct Cli {
     /// Run as a bootstrap node: no MCP backend required, stable port (default
     /// 7474 unless --p2p-port is set), and prints a copy-ready multiaddr
     /// banner on startup for distribution to other users.
+    /// Also implies --relay-server.
     #[arg(long, default_value_t = false)]
     bootstrap_mode: bool,
+
+    /// Enable relay server mode: this node will forward traffic between peers
+    /// behind NAT.  Only effective if this node has a public IP address.
+    /// Implied by --bootstrap-mode.
+    #[arg(long, default_value_t = false)]
+    relay_server: bool,
 
     /// Path to the Ed25519 keypair file. Defaults to ~/.clawshake/identity.key.
     /// Useful for running multiple nodes on the same machine during testing.
@@ -111,6 +118,7 @@ async fn main() -> Result<()> {
         connected,
         cli.no_default_boot,
         cli.bootstrap_mode,
+        cli.bootstrap_mode || cli.relay_server,
     )
     .await
 }
