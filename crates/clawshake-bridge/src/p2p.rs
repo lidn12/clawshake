@@ -336,14 +336,15 @@ fn handle_event(
         SwarmEvent::ConnectionEstablished {
             peer_id, endpoint, ..
         } => {
-            info!(
-                "Connected to {peer_id} ({})",
-                if endpoint.is_dialer() {
-                    "outbound"
-                } else {
-                    "inbound"
-                }
-            );
+            let addr = endpoint.get_remote_address();
+            let via = if addr.to_string().contains("p2p-circuit") {
+                "relay"
+            } else if endpoint.is_dialer() {
+                "outbound"
+            } else {
+                "inbound"
+            };
+            info!("Connected to {peer_id} ({via}) addr={addr}");
             // Track as reachable for network.ping
             connected
                 .write()
@@ -400,7 +401,9 @@ fn handle_event(
             }
             // Auto-relay: if this peer advertises relay hop capability, reserve a
             // circuit slot on it so we are reachable through it even behind NAT.
-            if info
+            // Relay servers don't need to be relay clients — skip for them.
+            if !relay_server
+                && info
                 .protocols
                 .iter()
                 .any(|p| p.as_ref() == RELAY_HOP_PROTOCOL)
@@ -536,7 +539,14 @@ fn handle_event(
         SwarmEvent::ExternalAddrConfirmed { address } => {
             info!("External address confirmed: {address}");
             if relay_server {
-                let full_addr = format!("{}/p2p/{}", address, local_peer_id);
+                // Strip any trailing /p2p component before appending our own,
+                // since AutoNAT may already include it in the confirmed address.
+                let mut base: Multiaddr = address
+                    .iter()
+                    .filter(|p| !matches!(p, libp2p::multiaddr::Protocol::P2p(_)))
+                    .collect();
+                base.push(libp2p::multiaddr::Protocol::P2p(local_peer_id));
+                let full_addr = base.to_string();
                 swarm.add_external_address(address);
                 info!("╔══════════════════════════════════════════════════════╗");
                 info!("║  RELAY SERVER READY — public address confirmed       ║");
