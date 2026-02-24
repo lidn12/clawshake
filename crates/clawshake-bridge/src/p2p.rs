@@ -811,15 +811,14 @@ fn handle_event(
             }
         }
 
-        // Address candidate emitted by Identify (or other protocols).
-        // DCUTR has already received this via FromSwarm::NewExternalAddrCandidate
-        // before this SwarmEvent fires, so confirming it here does not interfere
-        // with hole-punch candidate collection.
+        // Address candidates are collected by DCUTR for hole-punching
+        // automatically (via FromSwarm::NewExternalAddrCandidate).  We do NOT
+        // confirm them here — AutoNAT is the authority for that.  Confirming
+        // a NATted address would wrongly advertise it as reachable to other
+        // protocols like Kademlia and Rendezvous.  The relay circuit address
+        // (which *is* reachable) is confirmed by the relay client behaviour.
         SwarmEvent::NewExternalAddrCandidate { address } => {
-            if is_public_addr(&address) {
-                tracing::debug!("External address candidate (confirming): {address}");
-                swarm.add_external_address(address);
-            }
+            tracing::debug!("External address candidate: {address}");
         }
 
         SwarmEvent::ExternalAddrConfirmed { address } => {
