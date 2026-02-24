@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use clawshake_core::{peer_table::PeerTable, permissions::PermissionStore};
 use libp2p::futures::StreamExt;
 use libp2p::{
-    identify, kad, mdns, noise, request_response,
+    autonat, dcutr, identify, kad, mdns, noise, relay, request_response,
     swarm::{NetworkBehaviour, SwarmEvent},
     tcp, yamux, Multiaddr, PeerId, StreamProtocol, SwarmBuilder,
 };
@@ -23,6 +23,10 @@ struct ClawshakeBehaviour {
     identify: identify::Behaviour,
     mdns: mdns::tokio::Behaviour,
     proxy: proxy::Behaviour,
+    relay_server: relay::Behaviour,
+    relay_client: relay::client::Behaviour,
+    autonat: autonat::Behaviour,
+    dcutr: dcutr::Behaviour,
 }
 
 // ---------------------------------------------------------------------------
@@ -34,9 +38,8 @@ struct ClawshakeBehaviour {
 /// node (`--bootstrap-mode`) here once one is running.
 ///
 /// Format: `/ip4/<ip>/tcp/7474/p2p/<peer-id>`
-const BOOTSTRAP_PEERS: &[&str] = &[
-    "/ip4/43.143.33.106/tcp/7474/p2p/12D3KooWDi1ntKAkUYpHfijLNExUTsirFyofnkEB3yjC8P3EGcY5",
-];
+const BOOTSTRAP_PEERS: &[&str] =
+    &["/ip4/43.143.33.106/tcp/7474/p2p/12D3KooWDi1ntKAkUYpHfijLNExUTsirFyofnkEB3yjC8P3EGcY5"];
 
 /// Default port for bootstrap-mode nodes.
 pub const BOOTSTRAP_DEFAULT_PORT: u16 = 7474;
@@ -106,7 +109,8 @@ pub async fn run(
             yamux::Config::default,
         )?
         .with_dns()?
-        .with_behaviour(|key| {
+        .with_relay_client(noise::Config::new, yamux::Config::default)?
+        .with_behaviour(|key, relay_client| {
             let peer_id = key.public().to_peer_id();
 
             let kad_protocol = StreamProtocol::try_from_owned("/clawshake/kad/1.0.0".to_string())
@@ -128,11 +132,19 @@ pub async fn run(
 
             let proxy = proxy::new_behaviour();
 
+            let relay_server = relay::Behaviour::new(peer_id, relay::Config::default());
+            let autonat = autonat::Behaviour::new(peer_id, autonat::Config::default());
+            let dcutr = dcutr::Behaviour::new(peer_id);
+
             Ok(ClawshakeBehaviour {
                 kademlia,
                 identify,
                 mdns,
                 proxy,
+                relay_server,
+                relay_client,
+                autonat,
+                dcutr,
             })
         })?
         .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(60)))
@@ -156,6 +168,22 @@ pub async fn run(
         }
         peers
     };
+
+    // Map relay peer-id → circuit-relay listen address.  Used in the event loop
+    // to reserve a relay slot as soon as we connect to a known relay/bootstrap node.
+    let relay_peers: std::collections::HashMap<PeerId, Multiaddr> = all_boot_peers
+        .iter()
+        .filter_map(|s| {
+            let addr: Multiaddr = s.parse().ok()?;
+            if let Some(libp2p::multiaddr::Protocol::P2p(peer_id)) = addr.iter().last() {
+                let mut circuit = addr.clone();
+                circuit.push(libp2p::multiaddr::Protocol::P2pCircuit);
+                Some((peer_id, circuit))
+            } else {
+                None
+            }
+        })
+        .collect();
 
     // Dial bootstrap peers.
     for addr_str in &all_boot_peers {
@@ -271,6 +299,17 @@ pub async fn run(
                         let _ = resp_tx.send((channel, err)).await;
                     }
                 } else {
+                    // Reserve a relay slot when we first connect to a relay/bootstrap peer.
+                    if !bootstrap_mode {
+                        if let SwarmEvent::ConnectionEstablished { peer_id, .. } = &event {
+                            if let Some(circuit_addr) = relay_peers.get(peer_id) {
+                                info!("Reserving relay slot via {circuit_addr}");
+                                if let Err(e) = swarm.listen_on(circuit_addr.clone()) {
+                                    warn!("Failed to listen on relay addr {circuit_addr}: {e}");
+                                }
+                            }
+                        }
+                    }
                     handle_event(&mut swarm, event, &table, &connected, bootstrap_mode, local_peer_id);
                 }
             }
@@ -454,6 +493,37 @@ fn handle_event(
                 warn!("MCP inbound failure from {peer}: {error}");
             }
             _ => {}
+        },
+
+        // Relay client — circuit relay reservations and connections
+        SwarmEvent::Behaviour(ClawshakeBehaviourEvent::RelayClient(event)) => match event {
+            relay::client::Event::ReservationReqAccepted { relay_peer_id, .. } => {
+                info!("Relay slot reserved via {relay_peer_id}");
+            }
+            other => {
+                tracing::debug!("Relay client event: {other:?}");
+            }
+        },
+
+        // Relay server — log at debug only
+        SwarmEvent::Behaviour(ClawshakeBehaviourEvent::RelayServer(event)) => {
+            tracing::debug!("Relay server event: {event:?}");
+        }
+
+        // AutoNAT — log whenever NAT status changes
+        SwarmEvent::Behaviour(ClawshakeBehaviourEvent::Autonat(
+            autonat::Event::StatusChanged { new, .. },
+        )) => {
+            info!("NAT status: {new:?}");
+        }
+
+        // DCUTR — hole punching
+        SwarmEvent::Behaviour(ClawshakeBehaviourEvent::Dcutr(dcutr::Event {
+            remote_peer_id,
+            result,
+        })) => match result {
+            Ok(_) => info!("Hole punch succeeded with {remote_peer_id}"),
+            Err(e) => warn!("Hole punch failed with {remote_peer_id}: {e:?}"),
         },
 
         _ => {}
