@@ -189,10 +189,15 @@ pub async fn run(
     let quic_addr: Multiaddr = format!("/ip4/0.0.0.0/udp/{p2p_port}/quic-v1").parse()?;
     swarm.listen_on(quic_addr)?;
 
-    swarm
-        .behaviour_mut()
-        .kademlia
-        .set_mode(Some(kad::Mode::Server));
+    // Relay servers are publicly reachable — start Kademlia in Server mode.
+    // Regular nodes start as Client; AutoNAT will upgrade to Server once
+    // public reachability is confirmed (see NatStatus::Public handler).
+    if relay_server {
+        swarm
+            .behaviour_mut()
+            .kademlia
+            .set_mode(Some(kad::Mode::Server));
+    }
 
     // Build the complete list of bootstrap peers to dial on startup.
     // User-supplied --boot peers always take effect.
@@ -432,9 +437,9 @@ fn clawshake_namespace() -> rendezvous::Namespace {
 }
 
 /// Returns true if `addr` contains a publicly routable IP — i.e. not loopback,
-/// link-local, RFC-1918 private, or a relay circuit address.  Used to filter
-/// `observed_addr` values before adding them to the swarm's external address set
-/// so DCUTR has real candidates for hole-punching.
+/// link-local, RFC-1918 private, or a relay circuit address.  Used to select
+/// relay circuit base addresses and as a building block for
+/// [`is_globally_reachable`].
 fn is_public_addr(addr: &Multiaddr) -> bool {
     use libp2p::multiaddr::Protocol;
     let mut has_ip = false;
@@ -601,13 +606,10 @@ fn handle_event(
             );
             // NOTE: We intentionally do NOT call `swarm.add_external_address()`
             // here.  Identify internally emits `NewExternalAddrCandidate` for
-            // the observed address.  If we confirm it here first, the Swarm
-            // short-circuits and never forwards the candidate to DCUTR, leaving
-            // it with zero addresses for hole-punching.  Instead we confirm
-            // candidates in the `SwarmEvent::NewExternalAddrCandidate` handler
-            // *after* DCUTR has already received them.
-            // Add all advertised addresses to Kademlia.
-            for addr in &info.listen_addrs {
+            // the observed address; AutoNAT is the authority for confirming it.
+            // Add publicly routable advertised addresses to Kademlia.
+            // Private/loopback addresses are useless for remote peers.
+            for addr in info.listen_addrs.iter().filter(|a| is_public_addr(a)) {
                 swarm
                     .behaviour_mut()
                     .kademlia
