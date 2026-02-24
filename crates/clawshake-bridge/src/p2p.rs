@@ -114,6 +114,7 @@ pub async fn run(
                 .expect("valid protocol string");
             let mut kad_config = kad::Config::new(kad_protocol);
             kad_config.set_query_timeout(Duration::from_secs(30));
+            kad_config.set_periodic_bootstrap_interval(Some(Duration::from_secs(60)));
             let kademlia = kad::Behaviour::with_config(
                 peer_id,
                 kad::store::MemoryStore::new(peer_id),
@@ -259,8 +260,6 @@ pub async fn run(
     // -- Main event loop ----------------------------------------------------
     let mut relay_banner_shown = false;
     let mut relay_reserved_peers = std::collections::HashSet::<PeerId>::new();
-    // Periodic Kademlia bootstrap — re-discover peers that joined after us.
-    let mut kad_bootstrap_tick = interval(Duration::from_secs(60));
     loop {
         select! {
             event = swarm.select_next_some() => {
@@ -314,13 +313,6 @@ pub async fn run(
                 }
             }
 
-            // Periodic Kademlia bootstrap — discover peers that joined after us.
-            _ = kad_bootstrap_tick.tick() => {
-                match swarm.behaviour_mut().kademlia.bootstrap() {
-                    Ok(_) => tracing::debug!("Kademlia bootstrap triggered"),
-                    Err(_) => {} // No known peers yet — ignore silently
-                }
-            }
         }
     }
 }
