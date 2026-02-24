@@ -248,9 +248,16 @@ pub async fn run(
         let addrs_clone = listen_addrs.clone();
         tokio::spawn(async move {
             let mut tick = interval(Duration::from_secs(ANNOUNCE_INTERVAL));
+            tick.tick().await; // burn the immediate first tick
             loop {
                 tick.tick().await;
-                let addrs = addrs_clone.read().expect("listen_addrs lock").clone();
+                let addrs: Vec<Multiaddr> = addrs_clone
+                    .read()
+                    .expect("listen_addrs lock")
+                    .iter()
+                    .filter(|a| is_globally_reachable(a))
+                    .cloned()
+                    .collect();
                 match announce::build_record(peer_id_clone, &addrs, &backend_clone).await {
                     Ok(record) => {
                         if dht_tx_clone.send(record).await.is_err() {
@@ -269,7 +276,13 @@ pub async fn run(
         tokio::spawn(async move {
             // Brief delay so NewListenAddr events have time to populate addrs.
             tokio::time::sleep(Duration::from_secs(2)).await;
-            let addrs = addrs_first.read().expect("listen_addrs lock").clone();
+            let addrs: Vec<Multiaddr> = addrs_first
+                .read()
+                .expect("listen_addrs lock")
+                .iter()
+                .filter(|a| is_globally_reachable(a))
+                .cloned()
+                .collect();
             match announce::build_record(local_peer_id, &addrs, &backend_first).await {
                 Ok(record) => {
                     let _ = dht_tx_first.send(record).await;
@@ -288,6 +301,15 @@ pub async fn run(
         rendezvous_servers: std::collections::HashSet::new(),
     };
     let mut rendezvous_tick = interval(Duration::from_secs(10));
+    let ctx = EventContext {
+        table: &table,
+        connected: &connected,
+        relay_server,
+        local_peer_id,
+        listen_addrs: &listen_addrs,
+    };
+    let shutdown = tokio::signal::ctrl_c();
+    tokio::pin!(shutdown);
     loop {
         select! {
             event = swarm.select_next_some() => {
@@ -324,7 +346,7 @@ pub async fn run(
                         let _ = resp_tx.send((channel, err)).await;
                     }
                 } else {
-                    handle_event(&mut swarm, event, &table, &connected, relay_server, local_peer_id, &mut state, &listen_addrs);
+                    handle_event(&mut swarm, event, &ctx, &mut state);
                 }
             }
 
@@ -345,8 +367,7 @@ pub async fn run(
             // newly registered peers so already-online nodes find joiners fast.
             _ = rendezvous_tick.tick() => {
                 for &rz_peer in &state.rendezvous_servers {
-                    let ns = rendezvous::Namespace::new(RENDEZVOUS_NAMESPACE.to_string())
-                        .expect("valid namespace");
+                    let ns = clawshake_namespace();
                     let cookie = state.rendezvous_cookies.get(&rz_peer).cloned();
                     swarm
                         .behaviour_mut()
@@ -355,8 +376,16 @@ pub async fn run(
                 }
             }
 
+            // Graceful shutdown on Ctrl+C.
+            _ = &mut shutdown => {
+                info!("Received shutdown signal, stopping…");
+                break;
+            }
+
         }
     }
+    info!("Node stopped.");
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -371,6 +400,11 @@ const RENDEZVOUS_PROTOCOL: &str = "/rendezvous/1.0.0";
 
 /// Namespace used for clawshake peer discovery via rendezvous.
 const RENDEZVOUS_NAMESPACE: &str = "clawshake";
+
+/// Creates a `Namespace` for the clawshake rendezvous point.
+fn clawshake_namespace() -> rendezvous::Namespace {
+    rendezvous::Namespace::new(RENDEZVOUS_NAMESPACE.to_string()).expect("valid namespace")
+}
 
 /// Returns true if `addr` contains a publicly routable IP — i.e. not loopback,
 /// link-local, RFC-1918 private, or a relay circuit address.  Used to filter
@@ -404,6 +438,17 @@ fn is_public_addr(addr: &Multiaddr) -> bool {
     has_ip
 }
 
+/// Returns true if `addr` is useful for remote peers — either a publicly
+/// routable IP or a relay circuit address.  Relay circuit addresses are always
+/// included since they are reachable through the relay node.
+fn is_globally_reachable(addr: &Multiaddr) -> bool {
+    use libp2p::multiaddr::Protocol;
+    if addr.iter().any(|p| matches!(p, Protocol::P2pCircuit)) {
+        return true;
+    }
+    is_public_addr(addr)
+}
+
 /// Mutable state tracked across the main event loop.
 struct NodeState {
     relay_banner_shown: bool,
@@ -413,20 +458,26 @@ struct NodeState {
     rendezvous_servers: std::collections::HashSet<PeerId>,
 }
 
+/// Immutable context shared across event handling — avoids passing many
+/// individual parameters through `handle_event`.
+struct EventContext<'a> {
+    table: &'a PeerTable,
+    connected: &'a ConnectedPeers,
+    relay_server: bool,
+    local_peer_id: PeerId,
+    listen_addrs: &'a RwLock<Vec<Multiaddr>>,
+}
+
 fn handle_event(
     swarm: &mut libp2p::Swarm<ClawshakeBehaviour>,
     event: SwarmEvent<ClawshakeBehaviourEvent>,
-    table: &PeerTable,
-    connected: &ConnectedPeers,
-    relay_server: bool,
-    local_peer_id: PeerId,
+    ctx: &EventContext<'_>,
     state: &mut NodeState,
-    listen_addrs: &RwLock<Vec<Multiaddr>>,
 ) {
     match event {
         SwarmEvent::NewListenAddr { ref address, .. } => {
             info!("Listening on {address}");
-            listen_addrs
+            ctx.listen_addrs
                 .write()
                 .expect("listen_addrs lock")
                 .push(address.clone());
@@ -434,14 +485,17 @@ fn handle_event(
 
         SwarmEvent::ExpiredListenAddr { ref address, .. } => {
             info!("Listen address expired: {address}");
-            listen_addrs
+            ctx.listen_addrs
                 .write()
                 .expect("listen_addrs lock")
                 .retain(|a| a != address);
         }
 
         SwarmEvent::ConnectionEstablished {
-            peer_id, endpoint, ..
+            peer_id,
+            endpoint,
+            num_established,
+            ..
         } => {
             let addr = endpoint.get_remote_address();
             let via = if addr
@@ -456,13 +510,17 @@ fn handle_event(
             };
             info!("Connected to {peer_id} ({via}) addr={addr}");
             // Track as reachable for network.ping
-            connected
+            ctx.connected
                 .write()
                 .expect("connected peers lock poisoned")
                 .insert(peer_id.to_string());
-            // Fetch the peer's DHT announcement to populate the peer table.
-            let key = kad::RecordKey::new(&peer_id.to_bytes());
-            swarm.behaviour_mut().kademlia.get_record(key);
+            // Fetch the peer's DHT announcement only on the *first* connection.
+            // DCUTR upgrades create a second connection to the same peer;
+            // re-querying would waste bandwidth.
+            if num_established.get() == 1 {
+                let key = kad::RecordKey::new(&peer_id.to_bytes());
+                swarm.behaviour_mut().kademlia.get_record(key);
+            }
         }
 
         SwarmEvent::ConnectionClosed {
@@ -476,7 +534,7 @@ fn handle_event(
             // A peer may have multiple connections (e.g. relay + direct after
             // DCUTR) and we must not wipe state while one is still alive.
             if num_established == 0 {
-                connected
+                ctx.connected
                     .write()
                     .expect("connected peers lock poisoned")
                     .remove(&peer_id.to_string());
@@ -532,15 +590,14 @@ fn handle_event(
             }
             // Rendezvous: if this peer runs a rendezvous server, discover peers
             // from it so we find other nodes immediately (no DHT polling wait).
-            if !relay_server
+            if !ctx.relay_server
                 && info
                     .protocols
                     .iter()
                     .any(|p| p.as_ref() == RENDEZVOUS_PROTOCOL)
             {
                 state.rendezvous_servers.insert(peer_id);
-                let ns = rendezvous::Namespace::new(RENDEZVOUS_NAMESPACE.to_string())
-                    .expect("valid namespace");
+                let ns = clawshake_namespace();
                 let cookie = state.rendezvous_cookies.get(&peer_id).cloned();
                 swarm
                     .behaviour_mut()
@@ -551,8 +608,7 @@ fn handle_event(
                 // Also try to register — will fail with NoExternalAddresses if
                 // we don't have any yet; we retry on ExternalAddrConfirmed.
                 if !state.rendezvous_registered.contains(&peer_id) {
-                    let ns = rendezvous::Namespace::new(RENDEZVOUS_NAMESPACE.to_string())
-                        .expect("valid namespace");
+                    let ns = clawshake_namespace();
                     match swarm
                         .behaviour_mut()
                         .rendezvous_client
@@ -574,7 +630,7 @@ fn handle_event(
             // Auto-relay: if this peer advertises relay hop capability, reserve a
             // circuit slot on it so we are reachable through it even behind NAT.
             // Relay servers don't need to be relay clients — skip for them.
-            if !relay_server
+            if !ctx.relay_server
                 && !state.relay_reserved_peers.contains(&peer_id)
                 && info
                     .protocols
@@ -652,7 +708,7 @@ fn handle_event(
                 Ok(ann) => {
                     let info = ann.to_peer_info();
                     info!(peer = %info.peer_id, tools = info.tools.len(), "Peer table updated from DHT");
-                    table.upsert(info);
+                    ctx.table.upsert(info);
                 }
                 Err(e) => {
                     tracing::debug!("GetRecord: not a clawshake announcement: {e}");
@@ -716,7 +772,7 @@ fn handle_event(
                         .set_mode(Some(kad::Mode::Server));
                 }
                 autonat::NatStatus::Private => {
-                    if !relay_server {
+                    if !ctx.relay_server {
                         swarm
                             .behaviour_mut()
                             .kademlia
@@ -725,33 +781,33 @@ fn handle_event(
                 }
                 _ => {}
             }
-            if relay_server && matches!(new, autonat::NatStatus::Private) {
+            if ctx.relay_server && matches!(new, autonat::NatStatus::Private) {
                 warn!("--relay-server set but NAT detected — this node cannot relay for others; check port forwarding");
             }
         }
 
         SwarmEvent::ExternalAddrConfirmed { address } => {
-            if relay_server && !state.relay_banner_shown {
+            if ctx.relay_server && !state.relay_banner_shown {
                 // Strip any trailing /p2p component before appending our own,
                 // since AutoNAT may already include it in the confirmed address.
                 let mut base: Multiaddr = address
                     .iter()
                     .filter(|p| !matches!(p, libp2p::multiaddr::Protocol::P2p(_)))
                     .collect();
-                base.push(libp2p::multiaddr::Protocol::P2p(local_peer_id));
+                base.push(libp2p::multiaddr::Protocol::P2p(ctx.local_peer_id));
                 let full_addr = base.to_string();
                 info!("╔══════════════════════════════════════════════════════╗");
                 info!("║  RELAY SERVER READY — public address confirmed       ║");
                 info!("║  {full_addr}");
                 info!("╚══════════════════════════════════════════════════════╝");
                 state.relay_banner_shown = true;
-            } else if !relay_server {
+            } else if !ctx.relay_server {
                 info!("External address confirmed: {address}");
             }
 
             // Rendezvous: now that we have an external address, register with
             // any known rendezvous servers we haven't registered with yet.
-            if !relay_server {
+            if !ctx.relay_server {
                 // Collect peer IDs first to avoid borrow conflict with swarm.
                 let rz_peers: Vec<PeerId> = state
                     .rendezvous_servers
@@ -760,8 +816,7 @@ fn handle_event(
                     .copied()
                     .collect();
                 for rz_peer in rz_peers {
-                    let ns = rendezvous::Namespace::new(RENDEZVOUS_NAMESPACE.to_string())
-                        .expect("valid namespace");
+                    let ns = clawshake_namespace();
                     match swarm
                         .behaviour_mut()
                         .rendezvous_client
@@ -806,7 +861,7 @@ fn handle_event(
                 state.rendezvous_cookies.insert(rendezvous_node, cookie);
                 for registration in registrations {
                     let peer_id = registration.record.peer_id();
-                    if peer_id == local_peer_id {
+                    if peer_id == ctx.local_peer_id {
                         continue; // skip ourselves
                     }
                     let addrs = registration.record.addresses();
@@ -852,8 +907,7 @@ fn handle_event(
                 info!("Rendezvous: registration expired at {peer}, re-registering");
                 // Registration TTL lapsed — re-register so we stay visible.
                 state.rendezvous_registered.remove(&peer);
-                let ns = rendezvous::Namespace::new(RENDEZVOUS_NAMESPACE.to_string())
-                    .expect("valid namespace");
+                let ns = clawshake_namespace();
                 match swarm
                     .behaviour_mut()
                     .rendezvous_client
