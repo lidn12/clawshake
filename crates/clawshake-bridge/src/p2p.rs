@@ -9,7 +9,7 @@ use clawshake_core::{peer_table::PeerTable, permissions::PermissionStore};
 use libp2p::futures::StreamExt;
 use libp2p::{
     autonat, dcutr, identify, kad, mdns, noise, relay, rendezvous, request_response,
-    swarm::{NetworkBehaviour, SwarmEvent},
+    swarm::{behaviour::toggle::Toggle, NetworkBehaviour, SwarmEvent},
     tcp, yamux, Multiaddr, PeerId, StreamProtocol, SwarmBuilder,
 };
 use tokio::{select, sync::mpsc, time::interval};
@@ -32,7 +32,7 @@ struct ClawshakeBehaviour {
     autonat: autonat::Behaviour,
     dcutr: dcutr::Behaviour,
     rendezvous_client: rendezvous::client::Behaviour,
-    rendezvous_server: rendezvous::server::Behaviour,
+    rendezvous_server: Toggle<rendezvous::server::Behaviour>,
 }
 
 // ---------------------------------------------------------------------------
@@ -130,10 +130,10 @@ pub async fn run(
                 kad_config,
             );
 
-            let identify = identify::Behaviour::new(identify::Config::new(
-                "/clawshake/1.0.0".to_string(),
-                key.public(),
-            ));
+            let identify = identify::Behaviour::new(
+                identify::Config::new("/clawshake/1.0.0".to_string(), key.public())
+                    .with_agent_version(format!("clawshake/{}", env!("CARGO_PKG_VERSION"))),
+            );
 
             let mdns = mdns::tokio::Behaviour::new(mdns::Config::default(), peer_id)?;
 
@@ -143,7 +143,8 @@ pub async fn run(
             // regular nodes we zero out the capacity so the behaviour is
             // present in the struct (required by NetworkBehaviour derive) but
             // accepts no reservations and forwards no circuits.
-            let relay_cfg = if relay_server {
+            let is_relay = relay_server; // capture before shadowing
+            let relay_cfg = if is_relay {
                 relay::Config::default()
             } else {
                 relay::Config {
@@ -156,8 +157,15 @@ pub async fn run(
             let autonat = autonat::Behaviour::new(peer_id, autonat::Config::default());
             let dcutr = dcutr::Behaviour::new(peer_id);
             let rendezvous_client = rendezvous::client::Behaviour::new(key.clone());
-            let rendezvous_server =
-                rendezvous::server::Behaviour::new(rendezvous::server::Config::default());
+            // Only run a rendezvous server on relay nodes — regular nodes
+            // should not accept registrations from other peers.
+            let rendezvous_server = if is_relay {
+                Toggle::from(Some(rendezvous::server::Behaviour::new(
+                    rendezvous::server::Config::default(),
+                )))
+            } else {
+                Toggle::from(None)
+            };
 
             Ok(ClawshakeBehaviour {
                 kademlia,
@@ -310,6 +318,8 @@ pub async fn run(
     };
     let shutdown = tokio::signal::ctrl_c();
     tokio::pin!(shutdown);
+    let mut bootstrap_retry = interval(Duration::from_secs(60));
+    bootstrap_retry.tick().await; // burn first immediate tick
     loop {
         select! {
             event = swarm.select_next_some() => {
@@ -381,7 +391,22 @@ pub async fn run(
                 info!("Received shutdown signal, stopping…");
                 break;
             }
-
+            // Retry bootstrap peers when completely isolated — covers the case
+            // where the bootstrap node was unreachable at startup.
+            _ = bootstrap_retry.tick() => {
+                let isolated = connected
+                    .read()
+                    .expect("connected peers lock")
+                    .is_empty();
+                if isolated {
+                    warn!("No peers connected \u{2014} retrying bootstrap dials");
+                    for addr_str in &all_boot_peers {
+                        if let Ok(addr) = addr_str.parse::<Multiaddr>() {
+                            let _ = swarm.dial(addr);
+                        }
+                    }
+                }
+            }
         }
     }
     info!("Node stopped.");
@@ -945,6 +970,25 @@ fn handle_event(
                 tracing::debug!("Rendezvous server event: {other:?}");
             }
         },
+
+        // Listener stopped \u{2014} a TCP or QUIC socket is no longer usable.
+        SwarmEvent::ListenerClosed {
+            addresses, reason, ..
+        } => {
+            warn!("Listener closed (addrs={addresses:?}): {reason:?}");
+        }
+
+        SwarmEvent::ListenerError { error, .. } => {
+            warn!("Listener error: {error}");
+        }
+
+        SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
+            tracing::debug!("Outgoing connection error (peer={peer_id:?}): {error:?}");
+        }
+
+        SwarmEvent::ExternalAddrExpired { address } => {
+            info!("External address expired: {address}");
+        }
 
         _ => {}
     }
