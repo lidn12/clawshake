@@ -599,13 +599,13 @@ fn handle_event(
                 "Identified {peer_id}: agent=\"{}\" protocol=\"{}\" observed_addr={}",
                 info.agent_version, info.protocol_version, info.observed_addr
             );
-            // Add the observed address to our external address set so DCUTR has
-            // candidates for hole-punching.  Only do this for publicly routable
-            // IPv4/IPv6 addresses — skip relay circuit addresses, loopback, and
-            // RFC-1918 private ranges.
-            if is_public_addr(&info.observed_addr) {
-                swarm.add_external_address(info.observed_addr.clone());
-            }
+            // NOTE: We intentionally do NOT call `swarm.add_external_address()`
+            // here.  Identify internally emits `NewExternalAddrCandidate` for
+            // the observed address.  If we confirm it here first, the Swarm
+            // short-circuits and never forwards the candidate to DCUTR, leaving
+            // it with zero addresses for hole-punching.  Instead we confirm
+            // candidates in the `SwarmEvent::NewExternalAddrCandidate` handler
+            // *after* DCUTR has already received them.
             // Add all advertised addresses to Kademlia.
             for addr in &info.listen_addrs {
                 swarm
@@ -808,6 +808,17 @@ fn handle_event(
             }
             if ctx.relay_server && matches!(new, autonat::NatStatus::Private) {
                 warn!("--relay-server set but NAT detected — this node cannot relay for others; check port forwarding");
+            }
+        }
+
+        // Address candidate emitted by Identify (or other protocols).
+        // DCUTR has already received this via FromSwarm::NewExternalAddrCandidate
+        // before this SwarmEvent fires, so confirming it here does not interfere
+        // with hole-punch candidate collection.
+        SwarmEvent::NewExternalAddrCandidate { address } => {
+            if is_public_addr(&address) {
+                tracing::debug!("External address candidate (confirming): {address}");
+                swarm.add_external_address(address);
             }
         }
 
