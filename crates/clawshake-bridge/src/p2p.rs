@@ -35,7 +35,7 @@ struct ClawshakeBehaviour {
 ///
 /// Format: `/ip4/<ip>/tcp/7474/p2p/<peer-id>`
 const BOOTSTRAP_PEERS: &[&str] = &[
-    // TODO: add permanent Clawshake bootstrap node
+    "/ip4/43.143.33.106/tcp/7474/p2p/12D3KooWDi1ntKAkUYpHfijLNExUTsirFyofnkEB3yjC8P3EGcY5",
 ];
 
 /// Default port for bootstrap-mode nodes.
@@ -307,14 +307,15 @@ fn handle_event(
         SwarmEvent::NewListenAddr { ref address, .. } => {
             info!("Listening on {address}");
             if bootstrap_mode {
-                // Print a prominent, easy-to-copy multiaddr for operators to
-                // distribute to users as a --boot entry.
                 let full_addr = format!("{}/p2p/{}", address, local_peer_id);
                 info!("╔══════════════════════════════════════════════════════╗");
                 info!("║         BOOTSTRAP NODE READY                        ║");
-                info!("║  Share this address so peers can join the network:  ║");
                 info!("║                                                      ║");
+                info!("║  Bind addr (may be internal if behind NAT):         ║");
                 info!("║  {full_addr}");
+                info!("║                                                      ║");
+                info!("║  If behind cloud/router NAT, use your public IP:    ║");
+                info!("║  /ip4/<public-ip>/tcp/7474/p2p/{local_peer_id}");
                 info!("║                                                      ║");
                 info!("╚══════════════════════════════════════════════════════╝");
             }
