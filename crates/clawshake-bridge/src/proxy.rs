@@ -16,6 +16,7 @@ use std::io;
 use async_trait::async_trait;
 use clawshake_core::{
     identity::AgentId,
+    peer_table::PeerTable,
     permissions::{Decision, PermissionStore},
 };
 use futures::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -26,7 +27,7 @@ use libp2p::{
 use serde_json::Value;
 use tracing::{info, warn};
 
-use crate::backend::McpBackend;
+use crate::{backend::McpBackend, network::{self, ConnectedPeers}};
 
 // The maximum payload we'll accept from a remote peer (16 MiB).
 const MAX_PAYLOAD: u32 = 16 * 1024 * 1024;
@@ -147,6 +148,8 @@ pub async fn forward(
     store: &PermissionStore,
     caller: &PeerId,
     raw: Vec<u8>,
+    table: &PeerTable,
+    connected: &ConnectedPeers,
 ) -> Vec<u8> {
     let req: Value = match serde_json::from_slice(&raw) {
         Ok(v) => v,
@@ -157,13 +160,39 @@ pub async fn forward(
     };
 
     let id = req.get("id").cloned();
-    let method = req.get("method").and_then(|v| v.as_str()).unwrap_or("?");
+    let method = req
+        .get("method")
+        .and_then(|v| v.as_str())
+        .unwrap_or("?")
+        .to_owned(); // owned so it outlives the move of `req` into backend.call()
+
+    // --- Built-in network.* tools -------------------------------------------
+    // Intercept tools/call requests whose tool name starts with "network."
+    // and handle them locally without permission check or backend call.
+    if method == "tools/call" {
+        if let Some(tool_name) = req["params"]["name"].as_str() {
+            if tool_name.starts_with("network.") {
+                let arguments = req["params"].get("arguments");
+                let result = network::handle(tool_name, arguments, table, connected);
+                let resp = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {
+                        "content": [{ "type": "text", "text": result.to_string() }],
+                        "isError": false
+                    }
+                });
+                return serde_json::to_vec(&resp)
+                    .unwrap_or_else(|_| error_response(id, -32603, "Serialisation error"));
+            }
+        }
+    }
 
     // Identity is stamped from the transport (Noise-verified peer ID).
     // The caller has no say in this value.
     let agent_id = AgentId::P2p(caller.to_string());
 
-    match store.check(&agent_id, method).await {
+    match store.check(&agent_id, &method).await {
         Decision::Allow => {
             info!(%caller, method, "Permission granted — proxying inbound MCP call");
         }
@@ -180,6 +209,12 @@ pub async fn forward(
 
     match backend.call(req).await {
         Ok(mut resp) => {
+            // For tools/list: inject built-in network.* tool definitions.
+            if method == "tools/list" {
+                if let Some(tools) = resp["result"]["tools"].as_array_mut() {
+                    tools.extend(network::tool_definitions());
+                }
+            }
             // Restore the caller's original id (which may be a string, number, or null).
             // backend.call() stamps a fresh u64 id before sending; the echoed numeric id
             // in `resp` must not leak back to the caller.

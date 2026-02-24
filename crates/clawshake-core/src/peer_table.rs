@@ -1,16 +1,28 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
+use serde::{Deserialize, Serialize};
+
+/// A name + description pair for a single tool on a remote peer.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ToolSummary {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+}
+
 /// A discovered peer node on the network.
 #[derive(Debug, Clone)]
 pub struct PeerInfo {
     pub peer_id: String,
     /// Human-readable multiaddrs, e.g. "/ip4/192.168.1.5/tcp/7474"
     pub addrs: Vec<String>,
-    /// Tool names this peer has announced.
-    pub tools: Vec<String>,
+    /// Tools this peer has announced (name + description).
+    pub tools: Vec<ToolSummary>,
     /// Whether this peer was found via libp2p DHT or Tailscale.
     pub source: PeerSource,
+    /// Unix timestamp (seconds) when this record was last observed.
+    pub last_seen: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

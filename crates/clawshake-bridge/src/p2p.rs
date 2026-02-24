@@ -1,7 +1,7 @@
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
-use clawshake_core::permissions::PermissionStore;
+use clawshake_core::{peer_table::PeerTable, permissions::PermissionStore};
 use libp2p::futures::StreamExt;
 use libp2p::{
     identify, kad, mdns, noise, request_response,
@@ -11,7 +11,7 @@ use libp2p::{
 use tokio::{select, sync::mpsc, time::interval};
 use tracing::{info, warn};
 
-use crate::{announce, backend::McpBackend, proxy};
+use crate::{announce, backend::McpBackend, network::ConnectedPeers, proxy};
 
 // ---------------------------------------------------------------------------
 // Composite behaviour
@@ -73,6 +73,8 @@ pub async fn run(
     identity: Option<std::path::PathBuf>,
     backend: Option<McpBackend>,
     store: Arc<PermissionStore>,
+    table: Arc<PeerTable>,
+    connected: ConnectedPeers,
 ) -> Result<()> {
     let keypair = load_or_create_keypair(identity.as_deref())?;
     let local_peer_id = PeerId::from(&keypair.public());
@@ -221,9 +223,11 @@ pub async fn run(
                     if let Some(ref b) = backend {
                         let b = b.clone();
                         let s = store.clone();
+                        let t = table.clone();
+                        let c = connected.clone();
                         let tx = resp_tx.clone();
                         tokio::spawn(async move {
-                            let response = proxy::forward(&b, &s, &peer, request).await;
+                            let response = proxy::forward(&b, &s, &peer, request, &t, &c).await;
                             let _ = tx.send((channel, response)).await;
                         });
                     } else {
@@ -240,7 +244,7 @@ pub async fn run(
                         let _ = resp_tx.send((channel, err)).await;
                     }
                 } else {
-                    handle_event(&mut swarm, event);
+                    handle_event(&mut swarm, event, &table, &connected);
                 }
             }
 
@@ -260,6 +264,7 @@ pub async fn run(
     }
 }
 
+
 // ---------------------------------------------------------------------------
 // Event handler (non-proxy events)
 // ---------------------------------------------------------------------------
@@ -267,6 +272,8 @@ pub async fn run(
 fn handle_event(
     swarm: &mut libp2p::Swarm<ClawshakeBehaviour>,
     event: SwarmEvent<ClawshakeBehaviourEvent>,
+    table: &PeerTable,
+    connected: &ConnectedPeers,
 ) {
     match event {
         SwarmEvent::NewListenAddr { address, .. } => {
@@ -284,13 +291,25 @@ fn handle_event(
                     "inbound"
                 }
             );
+            // Track as reachable for network.ping
+            connected
+                .write()
+                .expect("connected peers lock poisoned")
+                .insert(peer_id.to_string());
+            // Fetch the peer's DHT announcement to populate the peer table.
+            let key = kad::RecordKey::new(&peer_id.to_bytes());
+            swarm.behaviour_mut().kademlia.get_record(key);
         }
 
         SwarmEvent::ConnectionClosed { peer_id, cause, .. } => {
             info!("Disconnected from {peer_id}: {cause:?}");
+            connected
+                .write()
+                .expect("connected peers lock poisoned")
+                .remove(&peer_id.to_string());
         }
 
-        // mDNS
+        // mDNS: dial newly discovered local peers (their GetRecord fills the table)
         SwarmEvent::Behaviour(ClawshakeBehaviourEvent::Mdns(mdns::Event::Discovered(peers))) => {
             for (peer_id, addr) in peers {
                 info!("mDNS discovered peer {peer_id} at {addr}");
@@ -351,6 +370,25 @@ fn handle_event(
                 ..
             } => {
                 warn!("DHT announce: put_record error: {e:?}");
+            }
+            // Parse a fetched peer announcement and populate the peer table.
+            kad::Event::OutboundQueryProgressed {
+                result:
+                    kad::QueryResult::GetRecord(Ok(kad::GetRecordOk::FoundRecord(
+                        kad::PeerRecord { record, .. },
+                    ))),
+                ..
+            } => {
+                match announce::AnnouncementRecord::from_bytes(&record.value) {
+                    Ok(ann) => {
+                        let info = ann.to_peer_info();
+                        info!(peer = %info.peer_id, tools = info.tools.len(), "Peer table updated from DHT");
+                        table.upsert(info);
+                    }
+                    Err(e) => {
+                        tracing::debug!("GetRecord: not a clawshake announcement: {e}");
+                    }
+                }
             }
             other => {
                 tracing::debug!("Kademlia event: {other:?}");

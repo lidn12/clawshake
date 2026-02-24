@@ -2,11 +2,12 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use clap::Parser;
-use clawshake_core::permissions::PermissionStore;
+use clawshake_core::{peer_table::PeerTable, permissions::PermissionStore};
 use tracing::info;
 
 mod announce;
 mod backend;
+mod network;
 mod p2p;
 mod proxy;
 
@@ -75,5 +76,9 @@ async fn main() -> Result<()> {
     store.seed_p2p_deny_default().await?;
     let store = Arc::new(store);
 
-    p2p::run(cli.p2p_port, cli.boot_peers, cli.identity, backend, store).await
+    // Peer table and connected-peer tracker for the network.* built-in tools.
+    let table = Arc::new(PeerTable::new());
+    let connected = network::new_connected_peers();
+
+    p2p::run(cli.p2p_port, cli.boot_peers, cli.identity, backend, store, table, connected).await
 }

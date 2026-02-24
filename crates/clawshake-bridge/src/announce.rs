@@ -9,11 +9,20 @@
 //! to discover its tool list — this is how `network.tools(peer_id)` will work.
 
 use anyhow::Result;
+use clawshake_core::peer_table::{PeerInfo, PeerSource, ToolSummary};
 use libp2p::{kad, Multiaddr, PeerId};
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
 use crate::backend::McpBackend;
+
+/// A single tool entry in the DHT announcement (v2+).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolAnnounce {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+}
 
 /// The value stored in the DHT for each clawshake-bridge node.
 #[derive(Debug, Serialize, Deserialize)]
@@ -23,11 +32,46 @@ pub struct AnnouncementRecord {
     /// String form of the publishing peer's PeerId.
     pub peer_id: String,
     /// Qualified tool names exposed by this node (e.g. `"spotify.play"`).
+    /// Kept for backward-compat with v1 readers; v2+ readers use tool_details.
     pub tools: Vec<String>,
+    /// Full tool entries with name + description.
+    #[serde(default)]
+    pub tool_details: Vec<ToolAnnounce>,
     /// Listen multiaddrs for direct connections.
     pub addrs: Vec<String>,
     /// Unix timestamp (seconds) when this record was built.
     pub ts: u64,
+}
+
+impl AnnouncementRecord {
+    /// Convert this announcement into a `PeerInfo` suitable for the peer table.
+    pub fn to_peer_info(&self) -> PeerInfo {
+        let tools: Vec<ToolSummary> = if !self.tool_details.is_empty() {
+            self.tool_details
+                .iter()
+                .map(|t| ToolSummary {
+                    name: t.name.clone(),
+                    description: t.description.clone(),
+                })
+                .collect()
+        } else {
+            // Fallback for v1 records that only have names.
+            self.tools
+                .iter()
+                .map(|n| ToolSummary {
+                    name: n.clone(),
+                    description: String::new(),
+                })
+                .collect()
+        };
+        PeerInfo {
+            peer_id: self.peer_id.clone(),
+            addrs: self.addrs.clone(),
+            tools,
+            source: PeerSource::Libp2p,
+            last_seen: self.ts,
+        }
+    }
 }
 
 impl AnnouncementRecord {
@@ -48,11 +92,21 @@ pub async fn build_record(
     backend: &McpBackend,
 ) -> Result<kad::Record> {
     let tools = backend.tools_list().await?;
-    let tool_names: Vec<String> = tools
+
+    let tool_details: Vec<ToolAnnounce> = tools
         .iter()
-        .filter_map(|t| t["name"].as_str().map(str::to_string))
+        .filter_map(|t| {
+            t["name"].as_str().map(|name| ToolAnnounce {
+                name: name.to_string(),
+                description: t["description"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string(),
+            })
+        })
         .collect();
 
+    let tool_names: Vec<String> = tool_details.iter().map(|t| t.name.clone()).collect();
     let count = tool_names.len();
 
     let ts = std::time::SystemTime::now()
@@ -64,6 +118,7 @@ pub async fn build_record(
         v: 1,
         peer_id: peer_id.to_string(),
         tools: tool_names,
+        tool_details,
         addrs: listen_addrs.iter().map(|a| a.to_string()).collect(),
         ts,
     };
