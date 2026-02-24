@@ -321,6 +321,35 @@ pub async fn run(
 /// libp2p relay v2 hop protocol — advertised by nodes that can relay traffic.
 const RELAY_HOP_PROTOCOL: &str = "/libp2p/circuit/relay/0.2.0/hop";
 
+/// Returns true if `addr` contains a publicly routable IP — i.e. not loopback,
+/// link-local, RFC-1918 private, or a relay circuit address.  Used to filter
+/// `observed_addr` values before adding them to the swarm's external address set
+/// so DCUTR has real candidates for hole-punching.
+fn is_public_addr(addr: &Multiaddr) -> bool {
+    use libp2p::multiaddr::Protocol;
+    let mut has_ip = false;
+    for proto in addr.iter() {
+        match proto {
+            Protocol::P2pCircuit => return false,
+            Protocol::Ip4(ip) => {
+                has_ip = true;
+                if ip.is_loopback() || ip.is_private() || ip.is_link_local() || ip.is_unspecified()
+                {
+                    return false;
+                }
+            }
+            Protocol::Ip6(ip) => {
+                has_ip = true;
+                if ip.is_loopback() || ip.is_unspecified() {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+    }
+    has_ip
+}
+
 fn handle_event(
     swarm: &mut libp2p::Swarm<ClawshakeBehaviour>,
     event: SwarmEvent<ClawshakeBehaviourEvent>,
@@ -394,6 +423,13 @@ fn handle_event(
                 "Identified {peer_id}: agent=\"{}\" protocol=\"{}\" observed_addr={}",
                 info.agent_version, info.protocol_version, info.observed_addr
             );
+            // Add the observed address to our external address set so DCUTR has
+            // candidates for hole-punching.  Only do this for publicly routable
+            // IPv4/IPv6 addresses — skip relay circuit addresses, loopback, and
+            // RFC-1918 private ranges.
+            if is_public_addr(&info.observed_addr) {
+                swarm.add_external_address(info.observed_addr.clone());
+            }
             // Add all advertised addresses to Kademlia.
             for addr in &info.listen_addrs {
                 swarm
