@@ -37,8 +37,10 @@ struct ClawshakeBehaviour {
 
 /// Hardcoded bootstrap peers dialed on startup when `--no-default-boot` is
 /// not set.  Format: `/ip4/<ip>/tcp/7474/p2p/<peer-id>`
-const BOOTSTRAP_PEERS: &[&str] =
-    &["/ip4/43.143.33.106/tcp/7474/p2p/12D3KooWDi1ntKAkUYpHfijLNExUTsirFyofnkEB3yjC8P3EGcY5"];
+const BOOTSTRAP_PEERS: &[&str] = &[
+    "/ip4/43.143.33.106/tcp/7474/p2p/12D3KooWDi1ntKAkUYpHfijLNExUTsirFyofnkEB3yjC8P3EGcY5",
+    "/ip4/43.143.33.106/udp/7474/quic-v1/p2p/12D3KooWDi1ntKAkUYpHfijLNExUTsirFyofnkEB3yjC8P3EGcY5",
+];
 
 /// Default port used by relay/bootstrap nodes (stable so the address is predictable).
 pub const RELAY_DEFAULT_PORT: u16 = 7474;
@@ -184,7 +186,7 @@ pub async fn run(
     // User-supplied --boot peers always take effect.
     // Hardcoded default peers are added unless --no-default-boot is set.
     let all_boot_peers: Vec<String> = {
-        let mut peers = boot_peers.clone();
+        let mut peers = boot_peers;
         if !no_default_boot {
             peers.extend(BOOTSTRAP_PEERS.iter().map(|s| s.to_string()));
         }
@@ -420,7 +422,7 @@ fn handle_event(
             peer_id, endpoint, ..
         } => {
             let addr = endpoint.get_remote_address();
-            let via = if addr.to_string().contains("p2p-circuit") {
+            let via = if addr.iter().any(|p| matches!(p, libp2p::multiaddr::Protocol::P2pCircuit)) {
                 "relay"
             } else if endpoint.is_dialer() {
                 "outbound"
@@ -454,6 +456,7 @@ fn handle_event(
                     .expect("connected peers lock poisoned")
                     .remove(&peer_id.to_string());
                 state.relay_reserved_peers.remove(&peer_id);
+                state.rendezvous_cookies.remove(&peer_id);
                 state.rendezvous_registered.remove(&peer_id);
                 state.rendezvous_servers.remove(&peer_id);
             }
@@ -677,6 +680,20 @@ fn handle_event(
             autonat::Event::StatusChanged { new, .. },
         )) => {
             info!("NAT status: {new:?}");
+            // Switch Kademlia mode based on NAT reachability.  NATted nodes
+            // should not advertise themselves as DHT servers — queries to them
+            // would have to traverse a relay, wasting resources.
+            match &new {
+                autonat::NatStatus::Public(_) => {
+                    swarm.behaviour_mut().kademlia.set_mode(Some(kad::Mode::Server));
+                }
+                autonat::NatStatus::Private => {
+                    if !relay_server {
+                        swarm.behaviour_mut().kademlia.set_mode(Some(kad::Mode::Client));
+                    }
+                }
+                _ => {}
+            }
             if relay_server && matches!(new, autonat::NatStatus::Private) {
                 warn!("--relay-server set but NAT detected — this node cannot relay for others; check port forwarding");
             }
@@ -747,10 +764,14 @@ fn handle_event(
                 registrations,
                 cookie,
             } => {
-                info!(
-                    "Rendezvous: discovered {} peer(s) from {rendezvous_node}",
-                    registrations.len()
-                );
+                if registrations.is_empty() {
+                    tracing::debug!("Rendezvous: no new peers from {rendezvous_node}");
+                } else {
+                    info!(
+                        "Rendezvous: discovered {} peer(s) from {rendezvous_node}",
+                        registrations.len()
+                    );
+                }
                 state.rendezvous_cookies.insert(rendezvous_node, cookie);
                 for registration in registrations {
                     let peer_id = registration.record.peer_id();
