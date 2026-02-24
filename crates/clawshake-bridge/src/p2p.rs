@@ -26,6 +26,34 @@ struct ClawshakeBehaviour {
 }
 
 // ---------------------------------------------------------------------------
+// Well-known bootstrap peers
+// ---------------------------------------------------------------------------
+
+/// Hardcoded bootstrap peers used when no `--boot` flags are provided and
+/// `--no-default-boot` is not set.
+///
+/// These are the libp2p.io public nodes maintained by Protocol Labs.
+/// They are IPFS ecosystem nodes and do **not** participate in the
+/// Clawshake Kademlia DHT (`/clawshake/kad/1.0.0`).
+///
+/// Their value for a fresh install is connectivity and NAT traversal:
+/// - TCP connections are established, keeping NAT mappings open.
+/// - Identify exchanges let peers advertise their listen addresses.
+/// - Two Clawshake nodes that both connect here can discover each other
+///   once actual Clawshake-aware bootstrap nodes are added.
+///
+/// Replace with dedicated Clawshake bootstrap nodes as the network grows.
+const BOOTSTRAP_PEERS: &[&str] = &[
+    "/dnsaddr/bootstrap.libp2p.io/p2p/QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN",
+    "/dnsaddr/bootstrap.libp2p.io/p2p/QmQCU2EcMqAqQPR2i9bChDtGNJchTbq5TbXJJ16u19uLTa",
+    "/dnsaddr/bootstrap.libp2p.io/p2p/QmbLHAnMoJPWSCR5Zhtx6BHJX9KiKNN6tpvbUcqanj75Nb",
+    "/dnsaddr/bootstrap.libp2p.io/p2p/QmcZf59bWwK5XFi76CZX8cbJ4BhTzzA3gU1ZjYZcYW3dwt",
+];
+
+/// Default port for bootstrap-mode nodes.
+pub const BOOTSTRAP_DEFAULT_PORT: u16 = 7474;
+
+// ---------------------------------------------------------------------------
 // Keypair persistence
 // ---------------------------------------------------------------------------
 
@@ -75,11 +103,12 @@ pub async fn run(
     store: Arc<PermissionStore>,
     table: Arc<PeerTable>,
     connected: ConnectedPeers,
+    no_default_boot: bool,
+    bootstrap_mode: bool,
 ) -> Result<()> {
     let keypair = load_or_create_keypair(identity.as_deref())?;
     let local_peer_id = PeerId::from(&keypair.public());
     info!("Local peer ID: {local_peer_id}");
-    info!("Bootstrap this node with: /ip4/127.0.0.1/tcp/{p2p_port}/p2p/{local_peer_id}");
 
     let mut swarm = SwarmBuilder::with_existing_identity(keypair)
         .with_tokio()
@@ -88,6 +117,7 @@ pub async fn run(
             noise::Config::new,
             yamux::Config::default,
         )?
+        .with_dns()?
         .with_behaviour(|key| {
             let peer_id = key.public().to_peer_id();
 
@@ -128,8 +158,19 @@ pub async fn run(
         .kademlia
         .set_mode(Some(kad::Mode::Server));
 
-    // Dial explicit bootstrap peers.
-    for addr_str in &boot_peers {
+    // Build the complete list of bootstrap peers to dial on startup.
+    // User-supplied --boot peers always take effect.
+    // Hardcoded default peers are added unless --no-default-boot is set.
+    let all_boot_peers: Vec<String> = {
+        let mut peers = boot_peers.clone();
+        if !no_default_boot {
+            peers.extend(BOOTSTRAP_PEERS.iter().map(|s| s.to_string()));
+        }
+        peers
+    };
+
+    // Dial bootstrap peers.
+    for addr_str in &all_boot_peers {
         match addr_str.parse::<Multiaddr>() {
             Ok(addr) => {
                 if let Some(libp2p::multiaddr::Protocol::P2p(peer_id)) = addr.iter().last() {
@@ -242,7 +283,7 @@ pub async fn run(
                         let _ = resp_tx.send((channel, err)).await;
                     }
                 } else {
-                    handle_event(&mut swarm, event, &table, &connected);
+                    handle_event(&mut swarm, event, &table, &connected, bootstrap_mode, local_peer_id);
                 }
             }
 
@@ -262,7 +303,6 @@ pub async fn run(
     }
 }
 
-
 // ---------------------------------------------------------------------------
 // Event handler (non-proxy events)
 // ---------------------------------------------------------------------------
@@ -272,10 +312,24 @@ fn handle_event(
     event: SwarmEvent<ClawshakeBehaviourEvent>,
     table: &PeerTable,
     connected: &ConnectedPeers,
+    bootstrap_mode: bool,
+    local_peer_id: PeerId,
 ) {
     match event {
-        SwarmEvent::NewListenAddr { address, .. } => {
+        SwarmEvent::NewListenAddr { ref address, .. } => {
             info!("Listening on {address}");
+            if bootstrap_mode {
+                // Print a prominent, easy-to-copy multiaddr for operators to
+                // distribute to users as a --boot entry.
+                let full_addr = format!("{}/p2p/{}", address, local_peer_id);
+                info!("╔══════════════════════════════════════════════════════╗");
+                info!("║         BOOTSTRAP NODE READY                        ║");
+                info!("║  Share this address so peers can join the network:  ║");
+                info!("║                                                      ║");
+                info!("║  {full_addr}");
+                info!("║                                                      ║");
+                info!("╚══════════════════════════════════════════════════════╝");
+            }
         }
 
         SwarmEvent::ConnectionEstablished {
@@ -372,22 +426,21 @@ fn handle_event(
             // Parse a fetched peer announcement and populate the peer table.
             kad::Event::OutboundQueryProgressed {
                 result:
-                    kad::QueryResult::GetRecord(Ok(kad::GetRecordOk::FoundRecord(
-                        kad::PeerRecord { record, .. },
-                    ))),
+                    kad::QueryResult::GetRecord(Ok(kad::GetRecordOk::FoundRecord(kad::PeerRecord {
+                        record,
+                        ..
+                    }))),
                 ..
-            } => {
-                match announce::AnnouncementRecord::from_bytes(&record.value) {
-                    Ok(ann) => {
-                        let info = ann.to_peer_info();
-                        info!(peer = %info.peer_id, tools = info.tools.len(), "Peer table updated from DHT");
-                        table.upsert(info);
-                    }
-                    Err(e) => {
-                        tracing::debug!("GetRecord: not a clawshake announcement: {e}");
-                    }
+            } => match announce::AnnouncementRecord::from_bytes(&record.value) {
+                Ok(ann) => {
+                    let info = ann.to_peer_info();
+                    info!(peer = %info.peer_id, tools = info.tools.len(), "Peer table updated from DHT");
+                    table.upsert(info);
                 }
-            }
+                Err(e) => {
+                    tracing::debug!("GetRecord: not a clawshake announcement: {e}");
+                }
+            },
             other => {
                 tracing::debug!("Kademlia event: {other:?}");
             }

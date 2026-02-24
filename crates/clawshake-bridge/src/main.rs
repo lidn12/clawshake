@@ -27,6 +27,17 @@ struct Cli {
     #[arg(long = "boot", value_name = "MULTIADDR")]
     boot_peers: Vec<String>,
 
+    /// Skip the hardcoded default bootstrap peers.
+    /// Useful for running isolated test networks on a LAN.
+    #[arg(long, default_value_t = false)]
+    no_default_boot: bool,
+
+    /// Run as a bootstrap node: no MCP backend required, stable port (default
+    /// 7474 unless --p2p-port is set), and prints a copy-ready multiaddr
+    /// banner on startup for distribution to other users.
+    #[arg(long, default_value_t = false)]
+    bootstrap_mode: bool,
+
     /// Path to the Ed25519 keypair file. Defaults to ~/.clawshake/identity.key.
     /// Useful for running multiple nodes on the same machine during testing.
     #[arg(long, value_name = "PATH")]
@@ -54,6 +65,16 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
+    // Bootstrap mode: use a stable port so the address is predictable.
+    let p2p_port = if cli.bootstrap_mode && cli.p2p_port == 0 {
+        p2p::BOOTSTRAP_DEFAULT_PORT
+    } else {
+        cli.p2p_port
+    };
+    if cli.bootstrap_mode {
+        info!("Bootstrap mode — listening on port {p2p_port} with no MCP backend");
+    }
+
     // Build the MCP backend (if any).
     let backend: Option<McpBackend> = if let Some(cmd) = &cli.mcp_cmd {
         info!("MCP backend: stdio — {cmd}");
@@ -80,5 +101,16 @@ async fn main() -> Result<()> {
     let table = Arc::new(PeerTable::new());
     let connected = network::new_connected_peers();
 
-    p2p::run(cli.p2p_port, cli.boot_peers, cli.identity, backend, store, table, connected).await
+    p2p::run(
+        p2p_port,
+        cli.boot_peers,
+        cli.identity,
+        backend,
+        store,
+        table,
+        connected,
+        cli.no_default_boot,
+        cli.bootstrap_mode,
+    )
+    .await
 }

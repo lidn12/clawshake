@@ -98,10 +98,7 @@ pub async fn build_record(
         .filter_map(|t| {
             t["name"].as_str().map(|name| ToolAnnounce {
                 name: name.to_string(),
-                description: t["description"]
-                    .as_str()
-                    .unwrap_or("")
-                    .to_string(),
+                description: t["description"].as_str().unwrap_or("").to_string(),
             })
         })
         .collect();
