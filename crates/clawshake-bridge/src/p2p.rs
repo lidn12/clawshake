@@ -149,9 +149,8 @@ pub async fn run(
             let autonat = autonat::Behaviour::new(peer_id, autonat::Config::default());
             let dcutr = dcutr::Behaviour::new(peer_id);
             let rendezvous_client = rendezvous::client::Behaviour::new(key.clone());
-            let rendezvous_server = rendezvous::server::Behaviour::new(
-                rendezvous::server::Config::default(),
-            );
+            let rendezvous_server =
+                rendezvous::server::Behaviour::new(rendezvous::server::Config::default());
 
             Ok(ClawshakeBehaviour {
                 kademlia,
@@ -166,7 +165,7 @@ pub async fn run(
                 rendezvous_server,
             })
         })?
-        .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(60)))
+        .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(120)))
         .build();
 
     let listen_addr: Multiaddr = format!("/ip4/0.0.0.0/tcp/{p2p_port}").parse()?;
@@ -266,10 +265,14 @@ pub async fn run(
     }
 
     // -- Main event loop ----------------------------------------------------
-    let mut relay_banner_shown = false;
-    let mut relay_reserved_peers = std::collections::HashSet::<PeerId>::new();
-    let mut rendezvous_cookies = std::collections::HashMap::<PeerId, rendezvous::Cookie>::new();
-    let mut rendezvous_registered = std::collections::HashSet::<PeerId>::new();
+    let mut state = NodeState {
+        relay_banner_shown: false,
+        relay_reserved_peers: std::collections::HashSet::new(),
+        rendezvous_cookies: std::collections::HashMap::new(),
+        rendezvous_registered: std::collections::HashSet::new(),
+        rendezvous_servers: std::collections::HashSet::new(),
+    };
+    let mut rendezvous_tick = interval(Duration::from_secs(30));
     loop {
         select! {
             event = swarm.select_next_some() => {
@@ -306,7 +309,7 @@ pub async fn run(
                         let _ = resp_tx.send((channel, err)).await;
                     }
                 } else {
-                    handle_event(&mut swarm, event, &table, &connected, relay_server, local_peer_id, &mut relay_banner_shown, &mut relay_reserved_peers, &mut rendezvous_cookies, &mut rendezvous_registered);
+                    handle_event(&mut swarm, event, &table, &connected, relay_server, local_peer_id, &mut state);
                 }
             }
 
@@ -320,6 +323,20 @@ pub async fn run(
                 match swarm.behaviour_mut().kademlia.put_record(record, kad::Quorum::One) {
                     Ok(_) => info!("DHT announce: publishing record"),
                     Err(e) => warn!("DHT put_record failed: {e:?}"),
+                }
+            }
+
+            // Periodic rendezvous discover — query known rendezvous servers for
+            // newly registered peers so already-online nodes find joiners fast.
+            _ = rendezvous_tick.tick() => {
+                for &rz_peer in &state.rendezvous_servers {
+                    let ns = rendezvous::Namespace::new(RENDEZVOUS_NAMESPACE.to_string())
+                        .expect("valid namespace");
+                    let cookie = state.rendezvous_cookies.get(&rz_peer).cloned();
+                    swarm
+                        .behaviour_mut()
+                        .rendezvous_client
+                        .discover(Some(ns), cookie, None, rz_peer);
                 }
             }
 
@@ -369,6 +386,15 @@ fn is_public_addr(addr: &Multiaddr) -> bool {
     has_ip
 }
 
+/// Mutable state tracked across the main event loop.
+struct NodeState {
+    relay_banner_shown: bool,
+    relay_reserved_peers: std::collections::HashSet<PeerId>,
+    rendezvous_cookies: std::collections::HashMap<PeerId, rendezvous::Cookie>,
+    rendezvous_registered: std::collections::HashSet<PeerId>,
+    rendezvous_servers: std::collections::HashSet<PeerId>,
+}
+
 fn handle_event(
     swarm: &mut libp2p::Swarm<ClawshakeBehaviour>,
     event: SwarmEvent<ClawshakeBehaviourEvent>,
@@ -376,10 +402,7 @@ fn handle_event(
     connected: &ConnectedPeers,
     relay_server: bool,
     local_peer_id: PeerId,
-    relay_banner_shown: &mut bool,
-    relay_reserved_peers: &mut std::collections::HashSet<PeerId>,
-    rendezvous_cookies: &mut std::collections::HashMap<PeerId, rendezvous::Cookie>,
-    rendezvous_registered: &mut std::collections::HashSet<PeerId>,
+    state: &mut NodeState,
 ) {
     match event {
         SwarmEvent::NewListenAddr { ref address, .. } => {
@@ -414,6 +437,10 @@ fn handle_event(
                 .write()
                 .expect("connected peers lock poisoned")
                 .remove(&peer_id.to_string());
+            // Clean state so re-registration / re-reservation triggers on reconnect.
+            state.relay_reserved_peers.remove(&peer_id);
+            state.rendezvous_registered.remove(&peer_id);
+            state.rendezvous_servers.remove(&peer_id);
         }
 
         // mDNS: dial newly discovered local peers (their GetRecord fills the table)
@@ -467,29 +494,34 @@ fn handle_event(
                     .iter()
                     .any(|p| p.as_ref() == RENDEZVOUS_PROTOCOL)
             {
+                state.rendezvous_servers.insert(peer_id);
                 let ns = rendezvous::Namespace::new(RENDEZVOUS_NAMESPACE.to_string())
                     .expect("valid namespace");
-                let cookie = rendezvous_cookies.get(&peer_id).cloned();
-                swarm.behaviour_mut().rendezvous_client.discover(
-                    Some(ns),
-                    cookie,
-                    None,
-                    peer_id,
-                );
+                let cookie = state.rendezvous_cookies.get(&peer_id).cloned();
+                swarm
+                    .behaviour_mut()
+                    .rendezvous_client
+                    .discover(Some(ns), cookie, None, peer_id);
                 info!("Rendezvous: discovering peers from {peer_id}");
 
                 // Also try to register — will fail with NoExternalAddresses if
                 // we don't have any yet; we retry on ExternalAddrConfirmed.
-                if !rendezvous_registered.contains(&peer_id) {
+                if !state.rendezvous_registered.contains(&peer_id) {
                     let ns = rendezvous::Namespace::new(RENDEZVOUS_NAMESPACE.to_string())
                         .expect("valid namespace");
-                    match swarm.behaviour_mut().rendezvous_client.register(ns, peer_id, None) {
+                    match swarm
+                        .behaviour_mut()
+                        .rendezvous_client
+                        .register(ns, peer_id, None)
+                    {
                         Ok(_) => {
                             info!("Rendezvous: registering with {peer_id}");
-                            rendezvous_registered.insert(peer_id);
+                            state.rendezvous_registered.insert(peer_id);
                         }
                         Err(e) => {
-                            tracing::debug!("Rendezvous: register deferred (no external addrs yet): {e:?}");
+                            tracing::debug!(
+                                "Rendezvous: register deferred (no external addrs yet): {e:?}"
+                            );
                         }
                     }
                 }
@@ -499,7 +531,7 @@ fn handle_event(
             // circuit slot on it so we are reachable through it even behind NAT.
             // Relay servers don't need to be relay clients — skip for them.
             if !relay_server
-                && !relay_reserved_peers.contains(&peer_id)
+                && !state.relay_reserved_peers.contains(&peer_id)
                 && info
                     .protocols
                     .iter()
@@ -531,7 +563,7 @@ fn handle_event(
                     if let Err(e) = swarm.listen_on(circuit) {
                         warn!("Auto-relay: listen_on failed: {e}");
                     }
-                    relay_reserved_peers.insert(peer_id);
+                    state.relay_reserved_peers.insert(peer_id);
                 }
             }
         }
@@ -635,7 +667,7 @@ fn handle_event(
         }
 
         SwarmEvent::ExternalAddrConfirmed { address } => {
-            if relay_server && !*relay_banner_shown {
+            if relay_server && !state.relay_banner_shown {
                 // Strip any trailing /p2p component before appending our own,
                 // since AutoNAT may already include it in the confirmed address.
                 let mut base: Multiaddr = address
@@ -648,7 +680,7 @@ fn handle_event(
                 info!("║  RELAY SERVER READY — public address confirmed       ║");
                 info!("║  {full_addr}");
                 info!("╚══════════════════════════════════════════════════════╝");
-                *relay_banner_shown = true;
+                state.relay_banner_shown = true;
             } else if !relay_server {
                 info!("External address confirmed: {address}");
             }
@@ -657,18 +689,22 @@ fn handle_event(
             // any known rendezvous servers we haven't registered with yet.
             if !relay_server {
                 // Collect peer IDs first to avoid borrow conflict with swarm.
-                let rz_peers: Vec<PeerId> = relay_reserved_peers
+                let rz_peers: Vec<PeerId> = state.rendezvous_servers
                     .iter()
-                    .filter(|p| !rendezvous_registered.contains(p))
+                    .filter(|p| !state.rendezvous_registered.contains(p))
                     .copied()
                     .collect();
                 for rz_peer in rz_peers {
                     let ns = rendezvous::Namespace::new(RENDEZVOUS_NAMESPACE.to_string())
                         .expect("valid namespace");
-                    match swarm.behaviour_mut().rendezvous_client.register(ns, rz_peer, None) {
+                    match swarm
+                        .behaviour_mut()
+                        .rendezvous_client
+                        .register(ns, rz_peer, None)
+                    {
                         Ok(_) => {
                             info!("Rendezvous: registering with {rz_peer}");
-                            rendezvous_registered.insert(rz_peer);
+                            state.rendezvous_registered.insert(rz_peer);
                         }
                         Err(e) => {
                             warn!("Rendezvous: register failed: {e:?}");
@@ -698,14 +734,17 @@ fn handle_event(
                     "Rendezvous: discovered {} peer(s) from {rendezvous_node}",
                     registrations.len()
                 );
-                rendezvous_cookies.insert(rendezvous_node, cookie);
+                state.rendezvous_cookies.insert(rendezvous_node, cookie);
                 for registration in registrations {
                     let peer_id = registration.record.peer_id();
                     if peer_id == local_peer_id {
                         continue; // skip ourselves
                     }
                     let addrs = registration.record.addresses();
-                    info!("Rendezvous: found peer {peer_id} with {} addr(s)", addrs.len());
+                    info!(
+                        "Rendezvous: found peer {peer_id} with {} addr(s)",
+                        addrs.len()
+                    );
                     for addr in addrs {
                         swarm
                             .behaviour_mut()
@@ -722,20 +761,16 @@ fn handle_event(
                 ttl,
                 namespace,
             } => {
-                info!(
-                    "Rendezvous: registered at {rendezvous_node} ns={namespace} ttl={ttl}s"
-                );
+                info!("Rendezvous: registered at {rendezvous_node} ns={namespace} ttl={ttl}s");
             }
             rendezvous::client::Event::RegisterFailed {
                 rendezvous_node,
                 namespace,
                 error,
             } => {
-                warn!(
-                    "Rendezvous: register failed at {rendezvous_node} ns={namespace}: {error:?}"
-                );
+                warn!("Rendezvous: register failed at {rendezvous_node} ns={namespace}: {error:?}");
                 // Allow retry on next ExternalAddrConfirmed
-                rendezvous_registered.remove(&rendezvous_node);
+                state.rendezvous_registered.remove(&rendezvous_node);
             }
             rendezvous::client::Event::DiscoverFailed {
                 rendezvous_node,
