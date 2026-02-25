@@ -49,6 +49,7 @@ libp2p = { version = "0.55", features = [
     "dcutr",
     "macros",
     "rendezvous",
+    "upnp",
 ] }
 
 # HTTP client

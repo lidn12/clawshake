@@ -8,7 +8,7 @@ use anyhow::{Context, Result};
 use clawshake_core::{peer_table::PeerTable, permissions::PermissionStore};
 use libp2p::futures::StreamExt;
 use libp2p::{
-    autonat, dcutr, identify, kad, mdns, noise, relay, rendezvous, request_response,
+    autonat, dcutr, identify, kad, mdns, noise, relay, rendezvous, request_response, upnp,
     swarm::{behaviour::toggle::Toggle, NetworkBehaviour, SwarmEvent},
     tcp, yamux, Multiaddr, PeerId, StreamProtocol, SwarmBuilder,
 };
@@ -33,6 +33,7 @@ struct ClawshakeBehaviour {
     dcutr: dcutr::Behaviour,
     rendezvous_client: rendezvous::client::Behaviour,
     rendezvous_server: Toggle<rendezvous::server::Behaviour>,
+    upnp: Toggle<upnp::tokio::Behaviour>,
 }
 
 // ---------------------------------------------------------------------------
@@ -165,6 +166,15 @@ pub async fn run(
                 Toggle::from(None)
             };
 
+            // UPnP: request port mappings from the gateway so peers
+            // behind NAT become directly reachable without manual port
+            // forwarding.  Skip on relay servers (already public).
+            let upnp = if is_relay {
+                Toggle::from(None)
+            } else {
+                Toggle::from(Some(upnp::tokio::Behaviour::default()))
+            };
+
             Ok(ClawshakeBehaviour {
                 kademlia,
                 identify,
@@ -176,16 +186,28 @@ pub async fn run(
                 dcutr,
                 rendezvous_client,
                 rendezvous_server,
+                upnp,
             })
         })?
         .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(120)))
         .build();
 
-    let tcp_addr: Multiaddr = format!("/ip4/0.0.0.0/tcp/{p2p_port}").parse()?;
-    swarm.listen_on(tcp_addr)?;
+    // IPv4 listeners
+    let tcp4_addr: Multiaddr = format!("/ip4/0.0.0.0/tcp/{p2p_port}").parse()?;
+    swarm.listen_on(tcp4_addr)?;
+    let quic4_addr: Multiaddr = format!("/ip4/0.0.0.0/udp/{p2p_port}/quic-v1").parse()?;
+    swarm.listen_on(quic4_addr)?;
 
-    let quic_addr: Multiaddr = format!("/ip4/0.0.0.0/udp/{p2p_port}/quic-v1").parse()?;
-    swarm.listen_on(quic_addr)?;
+    // IPv6 listeners — if the OS has no v6 support these will silently fail
+    // to bind; we log but don't treat it as fatal.
+    let tcp6_addr: Multiaddr = format!("/ip6/::/tcp/{p2p_port}").parse()?;
+    if let Err(e) = swarm.listen_on(tcp6_addr) {
+        tracing::debug!("IPv6 TCP listen failed (no v6 support?): {e}");
+    }
+    let quic6_addr: Multiaddr = format!("/ip6/::/udp/{p2p_port}/quic-v1").parse()?;
+    if let Err(e) = swarm.listen_on(quic6_addr) {
+        tracing::debug!("IPv6 QUIC listen failed (no v6 support?): {e}");
+    }
 
     // Relay servers are publicly reachable — start Kademlia in Server mode.
     // Regular nodes start as Client; AutoNAT will upgrade to Server once
@@ -959,6 +981,24 @@ fn handle_event(
         })) => match result {
             Ok(conn_id) => info!("Hole punch succeeded with {remote_peer_id} (conn={conn_id:?})"),
             Err(e) => warn!("Hole punch failed with {remote_peer_id}: {e:?}"),
+        },
+
+        // UPnP — automatic port mapping
+        SwarmEvent::Behaviour(ClawshakeBehaviourEvent::Upnp(event)) => match event {
+            upnp::Event::NewExternalAddr(addr) => {
+                info!("UPnP: mapped external address {addr}");
+                swarm.add_external_address(addr);
+            }
+            upnp::Event::GatewayNotFound => {
+                tracing::debug!("UPnP: no gateway found (router may not support UPnP)");
+            }
+            upnp::Event::NonRoutableGateway => {
+                tracing::debug!("UPnP: gateway is not routable");
+            }
+            upnp::Event::ExpiredExternalAddr(addr) => {
+                info!("UPnP: mapping expired for {addr}");
+                swarm.remove_external_address(&addr);
+            }
         },
 
         // Rendezvous client — peer discovery and registration
