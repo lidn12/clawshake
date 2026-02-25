@@ -580,6 +580,17 @@ fn handle_event(
             };
             info!("Connected to {peer_id} ({via}) addr={addr}");
 
+            // Kademlia's internal FromSwarm::ConnectionEstablished adds the
+            // endpoint address to the routing table.  For relay connections
+            // the address is a bare `/p2p/<id>` or a `/p2p-circuit/...`
+            // path — neither is directly dialable.  Scrub them immediately.
+            if is_relayed {
+                swarm
+                    .behaviour_mut()
+                    .kademlia
+                    .remove_address(&peer_id, addr);
+            }
+
             // Track connection type for preference logic.
             state
                 .peer_connections
@@ -731,17 +742,28 @@ fn handle_event(
                     .add_address(&peer_id, addr.clone());
             }
 
-            // Scrub loopback / unspecified addresses that libp2p's built-in
-            // Identify handler adds to the routing table.  Without this,
-            // DCUTR and Kademlia will try dialing 127.0.0.1 on the remote
-            // peer — which connects back to *ourselves* (WrongPeerId).
+            // Scrub non-dialable addresses that libp2p's built-in
+            // Identify handler adds to the routing table:
+            //  - loopback / unspecified IPs → dialing these connects back
+            //    to ourselves (WrongPeerId)
+            //  - bare `/p2p/<id>` with no transport → MultiaddrNotSupported
             for addr in &info.listen_addrs {
-                let dominated_by_loopback = addr.iter().any(|p| match p {
+                let has_transport = addr.iter().any(|p| {
+                    matches!(
+                        p,
+                        libp2p::multiaddr::Protocol::Ip4(_)
+                            | libp2p::multiaddr::Protocol::Ip6(_)
+                            | libp2p::multiaddr::Protocol::Dns(_)
+                            | libp2p::multiaddr::Protocol::Dns4(_)
+                            | libp2p::multiaddr::Protocol::Dns6(_)
+                    )
+                });
+                let has_bad_ip = addr.iter().any(|p| match p {
                     libp2p::multiaddr::Protocol::Ip4(ip) => ip.is_loopback() || ip.is_unspecified(),
                     libp2p::multiaddr::Protocol::Ip6(ip) => ip.is_loopback() || ip.is_unspecified(),
                     _ => false,
                 });
-                if dominated_by_loopback {
+                if !has_transport || has_bad_ip {
                     swarm
                         .behaviour_mut()
                         .kademlia
