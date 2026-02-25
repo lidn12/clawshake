@@ -10,5 +10,6 @@
 //!   request dispatch without spawning a subprocess.
 
 pub mod client;
+pub mod ipc;
 pub mod network;
 pub mod schema;

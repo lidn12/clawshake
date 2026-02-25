@@ -29,9 +29,10 @@ use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tracing::{debug, error, warn};
 
-use clawshake_core::peer_table::PeerTable;
-
-use clawshake_core::network_channel::{ConnectedPeers, OutboundCallTx};
+use clawshake_core::{
+    network_channel::{ConnectedPeers, OutboundCallTx},
+    peer_table::PeerTable,
+};
 
 /// Named pipe path (Windows).
 #[cfg(windows)]
@@ -50,7 +51,8 @@ const SOCKET_PATH: &str = "/tmp/clawshake-bridge.sock";
 /// Spawns a new Tokio task for each incoming connection.  Each connection
 /// handles a single request/response pair then closes.
 ///
-/// Should be started with `tokio::spawn(ipc::run(...))` from `main`.
+/// Intended to be started with `tokio::spawn(clawshake_tools::ipc::run(...))`
+/// from `clawshake-bridge`'s `main`.
 pub async fn run(
     table: Arc<PeerTable>,
     connected: ConnectedPeers,
@@ -84,13 +86,10 @@ async fn run_windows(
     tracing::info!("IPC listener ready on {}", SOCKET_PATH);
 
     loop {
-        // Wait for a client to connect to this pipe instance.
         if let Err(e) = server.connect().await {
             warn!("IPC pipe connect error: {e}");
             continue;
         }
-        // Swap the current server instance out — `client` is now the connected pipe.
-        // Create a fresh server instance for the next incoming connection.
         let client = std::mem::replace(
             &mut server,
             match ServerOptions::new().create(SOCKET_PATH) {
@@ -124,7 +123,6 @@ async fn run_unix(
 ) -> Result<()> {
     use tokio::net::UnixListener;
 
-    // Remove stale socket file from a previous run.
     let _ = std::fs::remove_file(SOCKET_PATH);
     let listener = UnixListener::bind(SOCKET_PATH)?;
     tracing::info!("IPC listener ready on {}", SOCKET_PATH);
@@ -163,7 +161,7 @@ async fn handle_connection<S>(
     let mut line = String::new();
 
     match reader.read_line(&mut line).await {
-        Ok(0) => return, // client closed without sending
+        Ok(0) => return,
         Ok(_) => {}
         Err(e) => {
             warn!("IPC read error: {e}");
@@ -210,5 +208,5 @@ async fn dispatch(
     let empty = Value::Object(Default::default());
     let params = req.get("params").unwrap_or(&empty);
 
-    clawshake_tools::network::handle(method, Some(params), table, connected, Some(call_tx)).await
+    crate::network::handle(method, Some(params), table, connected, Some(call_tx)).await
 }
