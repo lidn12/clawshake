@@ -1,11 +1,13 @@
-//! Built-in `network.*` tool namespace.
+//! Built-in `network.*` tool handlers.
 //!
-//! These five tools are served by the bridge itself — no backend call needed.
-//! They expose a read-only view over the [`PeerTable`] the bridge already
-//! maintains from DHT discovery.
+//! These six tools are served by the bridge itself — no backend call needed.
+//! They expose the live peer table and outbound call capability that only
+//! exist inside the bridge process.
 //!
-//! The tools are injected into every `tools/list` response so that any MCP
-//! client can discover and call them alongside the backend's own tools.
+//! **Schemas live in `clawshake-tools::schema`** — any Rust MCP host imports
+//! them from there.  This module owns the handler logic that executes inside
+//! the bridge, reached either through the IPC socket (external callers) or
+//! the inbound proxy path (remote P2P callers, subject to permission store).
 
 use std::{
     collections::HashSet,
@@ -51,107 +53,6 @@ pub type OutboundCallTx = mpsc::Sender<OutboundCall>;
 /// Pass the receiver to `p2p::run()`; keep the sender for network call handlers.
 pub fn new_outbound_call_channel() -> (OutboundCallTx, mpsc::Receiver<OutboundCall>) {
     mpsc::channel(16)
-}
-
-// ---------------------------------------------------------------------------
-// Tool schema definitions (injected into tools/list)
-// ---------------------------------------------------------------------------
-
-/// Returns MCP tool schema objects for all five `network.*` tools.
-pub fn tool_definitions() -> Vec<Value> {
-    vec![
-        json!({
-            "name": "network.peers",
-            "description": "List all discovered bridge nodes on the network with their peer IDs, addresses, tool counts, and last-seen timestamps.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {},
-                "required": []
-            }
-        }),
-        json!({
-            "name": "network.tools",
-            "description": "Get the full tool list (name + description) for a specific peer.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "peer_id": {
-                        "type": "string",
-                        "description": "libp2p peer ID string (from network.peers)"
-                    }
-                },
-                "required": ["peer_id"]
-            }
-        }),
-        json!({
-            "name": "network.search",
-            "description": "Search for tools across all known peers by tool name or description substring.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Case-insensitive substring to match against tool names and descriptions"
-                    }
-                },
-                "required": ["query"]
-            }
-        }),
-        json!({
-            "name": "network.describe",
-            "description": "Get the description for a specific tool on a specific peer.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "peer_id": {
-                        "type": "string",
-                        "description": "libp2p peer ID string"
-                    },
-                    "tool_name": {
-                        "type": "string",
-                        "description": "Fully-qualified tool name (e.g. \"spotify.play\")"
-                    }
-                },
-                "required": ["peer_id", "tool_name"]
-            }
-        }),
-        json!({
-            "name": "network.ping",
-            "description": "Check whether a peer currently has an active connection to this node.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "peer_id": {
-                        "type": "string",
-                        "description": "libp2p peer ID string"
-                    }
-                },
-                "required": ["peer_id"]
-            }
-        }),
-        json!({
-            "name": "network.call",
-            "description": "Invoke a tool on a specific remote peer over the P2P network and return its result. The peer must be currently connected (use network.ping to check). Arguments must match the tool's inputSchema (use network.describe to inspect it).",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "peer_id": {
-                        "type": "string",
-                        "description": "libp2p peer ID string of the target peer"
-                    },
-                    "tool": {
-                        "type": "string",
-                        "description": "Fully-qualified tool name to invoke on the remote peer (e.g. \"spotify.play\")"
-                    },
-                    "arguments": {
-                        "type": "object",
-                        "description": "Arguments to pass to the tool. Must match the tool's inputSchema. Omit or pass {} for tools with no required arguments."
-                    }
-                },
-                "required": ["peer_id", "tool"]
-            }
-        }),
-    ]
 }
 
 // ---------------------------------------------------------------------------

@@ -7,6 +7,7 @@ use tracing::info;
 
 mod announce;
 mod backend;
+mod ipc;
 mod network;
 mod p2p;
 mod proxy;
@@ -102,9 +103,17 @@ async fn main() -> Result<()> {
     let table = Arc::new(PeerTable::new());
     let connected = network::new_connected_peers();
 
-    // Outbound P2P call channel: the broker (Track 2) will hold call_tx and
-    // use it to drive network.call.  For now it is unused at this layer.
-    let (_call_tx, call_rx) = network::new_outbound_call_channel();
+    // Outbound P2P call channel: the IPC task drives network.call from any
+    // local process; the p2p event loop owns the receiver.
+    let (call_tx, call_rx) = network::new_outbound_call_channel();
+
+    // Spawn the IPC socket listener so clawshake-tools CLI (and any other
+    // local process) can reach network.* handlers without in-process channels.
+    tokio::spawn(ipc::run(
+        Arc::clone(&table),
+        connected.clone(),
+        call_tx,
+    ));
 
     p2p::run(
         p2p_port,

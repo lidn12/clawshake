@@ -437,6 +437,7 @@ dependencies = [
  "async-trait",
  "clap",
  "clawshake-core",
+ "clawshake-tools",
  "dirs",
  "futures",
  "libp2p",
@@ -477,6 +478,17 @@ dependencies = [
  "serde_json",
  "sqlx",
  "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "clawshake-tools"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "serde_json",
  "tokio",
  "tracing",
 ]

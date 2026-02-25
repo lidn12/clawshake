@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/clawshake-core",
     "crates/clawshake-bridge",
+    "crates/clawshake-tools",
     "crates/clawshake-broker",
 ]
 
@@ -72,3 +73,4 @@ futures = "0.3"
 
 # Internal crates
 clawshake-core = { path = "crates/clawshake-core" }
+clawshake-tools = { path = "crates/clawshake-tools" }
