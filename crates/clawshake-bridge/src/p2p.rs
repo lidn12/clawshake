@@ -27,7 +27,7 @@ struct ClawshakeBehaviour {
     identify: identify::Behaviour,
     mdns: mdns::tokio::Behaviour,
     proxy: proxy::Behaviour,
-    relay_server: relay::Behaviour,
+    relay_server: Toggle<relay::Behaviour>,
     relay_client: relay::client::Behaviour,
     autonat: autonat::Behaviour,
     dcutr: dcutr::Behaviour,
@@ -139,21 +139,19 @@ pub async fn run(
 
             let proxy = proxy::new_behaviour();
 
-            // Only enable relay hop if the --relay-server flag was set.  For
-            // regular nodes we zero out the capacity so the behaviour is
-            // present in the struct (required by NetworkBehaviour derive) but
-            // accepts no reservations and forwards no circuits.
+            // Only enable relay hop if the --relay-server flag was set.
+            // Using Toggle so non-relay nodes don't advertise the
+            // relay-hop protocol and peers won't waste time trying
+            // to reserve slots on them.
             let is_relay = relay_server; // capture before shadowing
-            let relay_cfg = if is_relay {
-                relay::Config::default()
+            let relay_server = if is_relay {
+                Toggle::from(Some(relay::Behaviour::new(
+                    peer_id,
+                    relay::Config::default(),
+                )))
             } else {
-                relay::Config {
-                    max_reservations: 0,
-                    max_circuits: 0,
-                    ..relay::Config::default()
-                }
+                Toggle::from(None)
             };
-            let relay_server = relay::Behaviour::new(peer_id, relay_cfg);
             let autonat = autonat::Behaviour::new(peer_id, autonat::Config::default());
             let dcutr = dcutr::Behaviour::new(peer_id);
             let rendezvous_client = rendezvous::client::Behaviour::new(key.clone());
