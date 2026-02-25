@@ -602,7 +602,9 @@ fn handle_event(
                         .map(|(cid, _)| *cid)
                         .collect();
                     for cid in &relay_conns {
-                        info!("Closing relay connection {cid:?} to {peer_id} (direct path available)");
+                        info!(
+                            "Closing relay connection {cid:?} to {peer_id} (direct path available)"
+                        );
                         let _ = swarm.close_connection(*cid);
                     }
                 }
@@ -727,6 +729,24 @@ fn handle_event(
                     .behaviour_mut()
                     .kademlia
                     .add_address(&peer_id, addr.clone());
+            }
+
+            // Scrub loopback / unspecified addresses that libp2p's built-in
+            // Identify handler adds to the routing table.  Without this,
+            // DCUTR and Kademlia will try dialing 127.0.0.1 on the remote
+            // peer — which connects back to *ourselves* (WrongPeerId).
+            for addr in &info.listen_addrs {
+                let dominated_by_loopback = addr.iter().any(|p| match p {
+                    libp2p::multiaddr::Protocol::Ip4(ip) => ip.is_loopback() || ip.is_unspecified(),
+                    libp2p::multiaddr::Protocol::Ip6(ip) => ip.is_loopback() || ip.is_unspecified(),
+                    _ => false,
+                });
+                if dominated_by_loopback {
+                    swarm
+                        .behaviour_mut()
+                        .kademlia
+                        .remove_address(&peer_id, addr);
+                }
             }
 
             // Direct-connect upgrade: when we learn a peer's addresses via
