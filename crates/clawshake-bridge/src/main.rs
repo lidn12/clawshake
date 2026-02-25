@@ -102,6 +102,10 @@ async fn main() -> Result<()> {
     let table = Arc::new(PeerTable::new());
     let connected = network::new_connected_peers();
 
+    // Outbound P2P call channel: the broker (Track 2) will hold call_tx and
+    // use it to drive network.call.  For now it is unused at this layer.
+    let (_call_tx, call_rx) = network::new_outbound_call_channel();
+
     p2p::run(
         p2p_port,
         cli.boot_peers,
@@ -112,6 +116,7 @@ async fn main() -> Result<()> {
         connected,
         cli.no_default_boot,
         cli.relay_server,
+        call_rx,
     )
     .await
 }

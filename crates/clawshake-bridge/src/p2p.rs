@@ -12,10 +12,19 @@ use libp2p::{
     swarm::{behaviour::toggle::Toggle, ConnectionId, NetworkBehaviour, SwarmEvent},
     tcp, upnp, yamux, Multiaddr, PeerId, StreamProtocol, SwarmBuilder,
 };
-use tokio::{select, sync::mpsc, time::interval};
+use tokio::{
+    select,
+    sync::{mpsc, oneshot},
+    time::interval,
+};
 use tracing::{info, warn};
 
-use crate::{announce, backend::McpBackend, network::ConnectedPeers, proxy};
+use crate::{
+    announce,
+    backend::McpBackend,
+    network::{ConnectedPeers, OutboundCall},
+    proxy,
+};
 
 // ---------------------------------------------------------------------------
 // Composite behaviour
@@ -102,6 +111,7 @@ pub async fn run(
     connected: ConnectedPeers,
     no_default_boot: bool,
     relay_server: bool,
+    mut call_rx: mpsc::Receiver<OutboundCall>,
 ) -> Result<()> {
     let keypair = load_or_create_keypair(identity.as_deref())?;
     let local_peer_id = PeerId::from(&keypair.public());
@@ -332,6 +342,14 @@ pub async fn run(
     }
 
     // -- Main event loop ----------------------------------------------------
+    // Pending outbound P2P calls: request_id -> oneshot sender for the response.
+    // Populated when network.call sends a request through the swarm; resolved
+    // when the proxy Response or OutboundFailure event comes back.
+    let mut pending_outbound: std::collections::HashMap<
+        request_response::OutboundRequestId,
+        oneshot::Sender<Result<Vec<u8>, String>>,
+    > = std::collections::HashMap::new();
+
     let mut state = NodeState {
         relay_banner_shown: false,
         relay_reserved_peers: std::collections::HashSet::new(),
@@ -356,40 +374,84 @@ pub async fn run(
     loop {
         select! {
             event = swarm.select_next_some() => {
-                // Handle proxy inbound requests inline (needs async).
-                if let SwarmEvent::Behaviour(ClawshakeBehaviourEvent::Proxy(
-                    request_response::Event::Message {
-                        peer,
-                        message: request_response::Message::Request {
-                            request, channel, ..
+                match event {
+                    // ── Inbound proxy request from a remote peer ──────────────
+                    SwarmEvent::Behaviour(ClawshakeBehaviourEvent::Proxy(
+                        request_response::Event::Message {
+                            peer,
+                            message: request_response::Message::Request {
+                                request, channel, ..
+                            },
+                            ..
                         },
-                        ..
-                    },
-                )) = event
-                {
-                    if let Some(ref b) = backend {
-                        let b = b.clone();
-                        let s = store.clone();
-                        let tx = resp_tx.clone();
-                        tokio::spawn(async move {
-                            let response = proxy::forward(&b, &s, &peer, request).await;
-                            let _ = tx.send((channel, response)).await;
-                        });
-                    } else {
-                        // No backend — return a JSON-RPC error.
-                        let err = serde_json::to_vec(&serde_json::json!({
-                            "jsonrpc": "2.0",
-                            "id": null,
-                            "error": {
-                                "code": -32603,
-                                "message": "No MCP backend configured on this node"
-                            }
-                        }))
-                        .unwrap_or_default();
-                        let _ = resp_tx.send((channel, err)).await;
+                    )) => {
+                        if let Some(ref b) = backend {
+                            let b = b.clone();
+                            let s = store.clone();
+                            let tx = resp_tx.clone();
+                            tokio::spawn(async move {
+                                let response = proxy::forward(&b, &s, &peer, request).await;
+                                let _ = tx.send((channel, response)).await;
+                            });
+                        } else {
+                            // No backend — return a JSON-RPC error.
+                            let err = serde_json::to_vec(&serde_json::json!({
+                                "jsonrpc": "2.0",
+                                "id": null,
+                                "error": {
+                                    "code": -32603,
+                                    "message": "No MCP backend configured on this node"
+                                }
+                            }))
+                            .unwrap_or_default();
+                            let _ = resp_tx.send((channel, err)).await;
+                        }
                     }
-                } else {
-                    handle_event(&mut swarm, event, &ctx, &mut state);
+
+                    // ── Response to an outbound network.call ──────────────────
+                    SwarmEvent::Behaviour(ClawshakeBehaviourEvent::Proxy(
+                        request_response::Event::Message {
+                            message: request_response::Message::Response {
+                                request_id, response,
+                            },
+                            ..
+                        },
+                    )) => {
+                        if let Some(tx) = pending_outbound.remove(&request_id) {
+                            let _ = tx.send(Ok(response));
+                        } else {
+                            info!("Proxy: received response for unknown request {request_id:?}");
+                        }
+                    }
+
+                    // ── Outbound failure for a pending network.call ───────────
+                    SwarmEvent::Behaviour(ClawshakeBehaviourEvent::Proxy(
+                        request_response::Event::OutboundFailure {
+                            peer, request_id, error, ..
+                        },
+                    )) => {
+                        if let Some(tx) = pending_outbound.remove(&request_id) {
+                            let _ = tx.send(Err(format!("P2P call to {peer} failed: {error}")));
+                        } else {
+                            warn!("MCP outbound failure to {peer}: {error}");
+                        }
+                    }
+
+                    // ── Everything else ───────────────────────────────────────
+                    other => handle_event(&mut swarm, other, &ctx, &mut state),
+                }
+            }
+
+            // network.call: send an outbound MCP request to a remote peer.
+            Some(OutboundCall { peer_id, request, response_tx }) = call_rx.recv() => {
+                match peer_id.parse::<PeerId>() {
+                    Ok(pid) => {
+                        let req_id = swarm.behaviour_mut().proxy.send_request(&pid, request);
+                        pending_outbound.insert(req_id, response_tx);
+                    }
+                    Err(e) => {
+                        let _ = response_tx.send(Err(format!("invalid peer_id '{peer_id}': {e}")));
+                    }
                 }
             }
 
@@ -966,21 +1028,9 @@ fn handle_event(
             }
         },
 
-        // Proxy outbound responses / send errors
+        // Proxy inbound send errors (Response and OutboundFailure are handled
+        // inline in the main loop to service pending network.call requests).
         SwarmEvent::Behaviour(ClawshakeBehaviourEvent::Proxy(event)) => match event {
-            request_response::Event::Message {
-                peer,
-                message: request_response::Message::Response { response, .. },
-                ..
-            } => {
-                info!(
-                    "Received MCP response from {peer}: {} bytes",
-                    response.len()
-                );
-            }
-            request_response::Event::OutboundFailure { peer, error, .. } => {
-                warn!("MCP outbound failure to {peer}: {error}");
-            }
             request_response::Event::InboundFailure { peer, error, .. } => {
                 warn!("MCP inbound failure from {peer}: {error}");
             }
