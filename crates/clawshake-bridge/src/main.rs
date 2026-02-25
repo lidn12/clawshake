@@ -109,11 +109,7 @@ async fn main() -> Result<()> {
 
     // Spawn the IPC socket listener so clawshake-tools CLI (and any other
     // local process) can reach network.* handlers without in-process channels.
-    tokio::spawn(ipc::run(
-        Arc::clone(&table),
-        connected.clone(),
-        call_tx,
-    ));
+    tokio::spawn(ipc::run(Arc::clone(&table), connected.clone(), call_tx));
 
     p2p::run(
         p2p_port,

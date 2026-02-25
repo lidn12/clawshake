@@ -13,6 +13,7 @@ name = "clawshake_tools"
 path = "src/lib.rs"
 
 [dependencies]
+clawshake-core = { workspace = true }
 tokio = { workspace = true }
 serde_json = { workspace = true }
 clap = { workspace = true }
