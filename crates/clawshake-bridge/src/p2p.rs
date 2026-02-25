@@ -992,7 +992,7 @@ fn handle_event(
                             .add_address(&peer_id, addr.clone());
                     }
                     if let Err(e) = swarm.dial(peer_id) {
-                        warn!("Rendezvous: failed to dial {peer_id}: {e}");
+                        tracing::debug!("Rendezvous: skipped dial {peer_id}: {e}");
                     }
                 }
             }
