@@ -536,11 +536,15 @@ fn handle_event(
             ..
         } => {
             let addr = endpoint.get_remote_address();
-            let via = if addr
+            let is_relayed = addr
                 .iter()
-                .any(|p| matches!(p, libp2p::multiaddr::Protocol::P2pCircuit))
-            {
-                "relay"
+                .any(|p| matches!(p, libp2p::multiaddr::Protocol::P2pCircuit));
+            let via = if is_relayed {
+                if endpoint.is_dialer() {
+                    "outbound-relay" // we dialed relay → DCUTR responder
+                } else {
+                    "inbound-relay" // peer dialed relay → DCUTR initiator
+                }
             } else if endpoint.is_dialer() {
                 "outbound"
             } else {
@@ -892,7 +896,7 @@ fn handle_event(
         // protocols like Kademlia and Rendezvous.  The relay circuit address
         // (which *is* reachable) is confirmed by the relay client behaviour.
         SwarmEvent::NewExternalAddrCandidate { address } => {
-            tracing::debug!("External address candidate: {address}");
+            info!("DCUTR candidate address: {address}");
         }
 
         SwarmEvent::ExternalAddrConfirmed { address } => {
@@ -953,7 +957,7 @@ fn handle_event(
             remote_peer_id,
             result,
         })) => match result {
-            Ok(_) => info!("Hole punch succeeded with {remote_peer_id}"),
+            Ok(conn_id) => info!("Hole punch succeeded with {remote_peer_id} (conn={conn_id:?})"),
             Err(e) => warn!("Hole punch failed with {remote_peer_id}: {e:?}"),
         },
 
