@@ -9,7 +9,7 @@ use clawshake_core::{peer_table::PeerTable, permissions::PermissionStore};
 use libp2p::futures::StreamExt;
 use libp2p::{
     autonat, dcutr, identify, kad, mdns, noise, relay, rendezvous, request_response,
-    swarm::{behaviour::toggle::Toggle, NetworkBehaviour, SwarmEvent},
+    swarm::{behaviour::toggle::Toggle, ConnectionId, NetworkBehaviour, SwarmEvent},
     tcp, upnp, yamux, Multiaddr, PeerId, StreamProtocol, SwarmBuilder,
 };
 use tokio::{select, sync::mpsc, time::interval};
@@ -338,6 +338,7 @@ pub async fn run(
         rendezvous_cookies: std::collections::HashMap::new(),
         rendezvous_registered: std::collections::HashSet::new(),
         rendezvous_servers: std::collections::HashSet::new(),
+        peer_connections: std::collections::HashMap::new(),
     };
     let mut rendezvous_tick = interval(Duration::from_secs(10));
     let ctx = EventContext {
@@ -513,6 +514,10 @@ struct NodeState {
     rendezvous_cookies: std::collections::HashMap<PeerId, rendezvous::Cookie>,
     rendezvous_registered: std::collections::HashSet<PeerId>,
     rendezvous_servers: std::collections::HashSet<PeerId>,
+    /// Track each connection and whether it goes through a relay.
+    /// Used to prefer direct connections over relay and to re-establish
+    /// relay paths when direct connections drop.
+    peer_connections: std::collections::HashMap<PeerId, Vec<(ConnectionId, bool)>>,
 }
 
 /// Immutable context shared across event handling — avoids passing many
@@ -553,6 +558,7 @@ fn handle_event(
 
         SwarmEvent::ConnectionEstablished {
             peer_id,
+            connection_id,
             endpoint,
             num_established,
             ..
@@ -573,6 +579,35 @@ fn handle_event(
                 "inbound"
             };
             info!("Connected to {peer_id} ({via}) addr={addr}");
+
+            // Track connection type for preference logic.
+            state
+                .peer_connections
+                .entry(peer_id)
+                .or_default()
+                .push((connection_id, is_relayed));
+
+            // Connection preference: when a *direct* connection is established
+            // and we already have relay connections to this peer, close the
+            // relay connections to free relay slots.  Traffic will flow over
+            // the direct path.
+            //
+            // To change priority (e.g. prefer relay), flip the condition:
+            //   if is_relayed { ... close direct connections ... }
+            if !is_relayed {
+                if let Some(conns) = state.peer_connections.get(&peer_id) {
+                    let relay_conns: Vec<ConnectionId> = conns
+                        .iter()
+                        .filter(|(cid, relayed)| *relayed && *cid != connection_id)
+                        .map(|(cid, _)| *cid)
+                        .collect();
+                    for cid in &relay_conns {
+                        info!("Closing relay connection {cid:?} to {peer_id} (direct path available)");
+                        let _ = swarm.close_connection(*cid);
+                    }
+                }
+            }
+
             // Track as reachable for network.ping
             ctx.connected
                 .write()
@@ -589,11 +624,43 @@ fn handle_event(
 
         SwarmEvent::ConnectionClosed {
             peer_id,
+            connection_id,
             cause,
             num_established,
             ..
         } => {
+            // Check if the closing connection was direct (non-relay).
+            let was_direct = state
+                .peer_connections
+                .get(&peer_id)
+                .and_then(|conns| conns.iter().find(|(cid, _)| *cid == connection_id))
+                .map(|(_, relayed)| !relayed)
+                .unwrap_or(false);
+
+            // Remove this connection from tracking.
+            if let Some(conns) = state.peer_connections.get_mut(&peer_id) {
+                conns.retain(|(cid, _)| *cid != connection_id);
+                if conns.is_empty() {
+                    state.peer_connections.remove(&peer_id);
+                }
+            }
+
             info!("Disconnected from {peer_id}: {cause:?} (remaining={num_established})");
+
+            // Re-establish relay path: if a *direct* connection dropped and
+            // no connections remain, try re-dialing the peer so the relay
+            // client can re-establish the circuit.  Skip for relay servers
+            // (they don't need relay fallback) and skip for the relay node
+            // itself (we'll reconnect to bootstrap peers anyway).
+            if was_direct
+                && num_established == 0
+                && !ctx.relay_server
+                && peer_id != ctx.local_peer_id
+            {
+                info!("Direct connection to {peer_id} lost, re-dialing for relay fallback");
+                let _ = swarm.dial(peer_id);
+            }
+
             // Only clean up when the *last* connection to this peer closes.
             // A peer may have multiple connections (e.g. relay + direct after
             // DCUTR) and we must not wipe state while one is still alive.
