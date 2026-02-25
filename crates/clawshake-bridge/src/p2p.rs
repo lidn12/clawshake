@@ -637,6 +637,58 @@ fn handle_event(
                     .kademlia
                     .add_address(&peer_id, addr.clone());
             }
+
+            // Direct-connect upgrade: when we learn a peer's addresses via
+            // Identify over a *relay* connection, proactively try dialing
+            // their private (LAN) listen addresses.  If we share a LAN this
+            // establishes a direct path immediately — without waiting for
+            // the relay's 120 s idle timeout — and seeds DCUTR's candidate
+            // cache with LAN addresses for future hole-punch exchanges.
+            //
+            // We detect a relay-mediated Identify by a bare `/p2p/<id>`
+            // observed_addr (no IP component).
+            let is_relay_observed = !info.observed_addr.iter().any(|p| {
+                matches!(
+                    p,
+                    libp2p::multiaddr::Protocol::Ip4(_) | libp2p::multiaddr::Protocol::Ip6(_)
+                )
+            });
+            if is_relay_observed {
+                let private_addrs: Vec<Multiaddr> = info
+                    .listen_addrs
+                    .iter()
+                    .filter(|a| {
+                        !is_public_addr(a)
+                            && !a
+                                .iter()
+                                .any(|p| matches!(p, libp2p::multiaddr::Protocol::P2pCircuit))
+                            && a.iter().any(|p| match p {
+                                libp2p::multiaddr::Protocol::Ip4(ip) => {
+                                    !ip.is_loopback() && !ip.is_unspecified()
+                                }
+                                libp2p::multiaddr::Protocol::Ip6(ip) => {
+                                    !ip.is_loopback() && !ip.is_unspecified()
+                                }
+                                _ => false,
+                            })
+                    })
+                    .cloned()
+                    .collect();
+                if !private_addrs.is_empty() {
+                    tracing::debug!(
+                        "Attempting direct dial to {peer_id} via {} private addr(s)",
+                        private_addrs.len()
+                    );
+                    let opts = libp2p::swarm::dial_opts::DialOpts::peer_id(peer_id)
+                        .addresses(private_addrs)
+                        .condition(libp2p::swarm::dial_opts::PeerCondition::Always)
+                        .build();
+                    if let Err(e) = swarm.dial(opts) {
+                        tracing::debug!("Direct dial to {peer_id} failed: {e}");
+                    }
+                }
+            }
+
             // Rendezvous: if this peer runs a rendezvous server, discover peers
             // from it so we find other nodes immediately (no DHT polling wait).
             if !ctx.relay_server
