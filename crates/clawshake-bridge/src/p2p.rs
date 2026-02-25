@@ -8,9 +8,9 @@ use anyhow::{Context, Result};
 use clawshake_core::{peer_table::PeerTable, permissions::PermissionStore};
 use libp2p::futures::StreamExt;
 use libp2p::{
-    autonat, dcutr, identify, kad, mdns, noise, relay, rendezvous, request_response, upnp,
+    autonat, dcutr, identify, kad, mdns, noise, relay, rendezvous, request_response,
     swarm::{behaviour::toggle::Toggle, NetworkBehaviour, SwarmEvent},
-    tcp, yamux, Multiaddr, PeerId, StreamProtocol, SwarmBuilder,
+    tcp, upnp, yamux, Multiaddr, PeerId, StreamProtocol, SwarmBuilder,
 };
 use tokio::{select, sync::mpsc, time::interval};
 use tracing::{info, warn};
@@ -202,11 +202,11 @@ pub async fn run(
     // to bind; we log but don't treat it as fatal.
     let tcp6_addr: Multiaddr = format!("/ip6/::/tcp/{p2p_port}").parse()?;
     if let Err(e) = swarm.listen_on(tcp6_addr) {
-        tracing::debug!("IPv6 TCP listen failed (no v6 support?): {e}");
+        info!("IPv6 TCP listen failed (no v6 support?): {e}");
     }
     let quic6_addr: Multiaddr = format!("/ip6/::/udp/{p2p_port}/quic-v1").parse()?;
     if let Err(e) = swarm.listen_on(quic6_addr) {
-        tracing::debug!("IPv6 QUIC listen failed (no v6 support?): {e}");
+        info!("IPv6 QUIC listen failed (no v6 support?): {e}");
     }
 
     // Relay servers are publicly reachable — start Kademlia in Server mode.
@@ -699,7 +699,7 @@ fn handle_event(
                     .cloned()
                     .collect();
                 if !private_addrs.is_empty() {
-                    tracing::debug!(
+                    info!(
                         "Attempting direct dial to {peer_id} via {} private addr(s)",
                         private_addrs.len()
                     );
@@ -708,7 +708,7 @@ fn handle_event(
                         .condition(libp2p::swarm::dial_opts::PeerCondition::Always)
                         .build();
                     if let Err(e) = swarm.dial(opts) {
-                        tracing::debug!("Direct dial to {peer_id} failed: {e}");
+                        info!("Direct dial to {peer_id} failed: {e}");
                     }
                 }
             }
@@ -744,9 +744,7 @@ fn handle_event(
                             state.rendezvous_registered.insert(peer_id);
                         }
                         Err(e) => {
-                            tracing::debug!(
-                                "Rendezvous: register deferred (no external addrs yet): {e:?}"
-                            );
+                            info!("Rendezvous: register deferred (no external addrs yet): {e:?}");
                         }
                     }
                 }
@@ -871,13 +869,13 @@ fn handle_event(
                 info!("Relay slot reserved via {relay_peer_id}");
             }
             other => {
-                tracing::debug!("Relay client event: {other:?}");
+                info!("Relay client event: {other:?}");
             }
         },
 
-        // Relay server — log at debug only
+        // Relay server events
         SwarmEvent::Behaviour(ClawshakeBehaviourEvent::RelayServer(event)) => {
-            tracing::debug!("Relay server event: {event:?}");
+            info!("Relay server event: {event:?}");
         }
 
         // AutoNAT — log whenever NAT status changes; relay servers expose their
@@ -990,10 +988,10 @@ fn handle_event(
                 swarm.add_external_address(addr);
             }
             upnp::Event::GatewayNotFound => {
-                tracing::debug!("UPnP: no gateway found (router may not support UPnP)");
+                info!("UPnP: no gateway found (router may not support UPnP)");
             }
             upnp::Event::NonRoutableGateway => {
-                tracing::debug!("UPnP: gateway is not routable");
+                info!("UPnP: gateway is not routable");
             }
             upnp::Event::ExpiredExternalAddr(addr) => {
                 info!("UPnP: mapping expired for {addr}");
@@ -1116,7 +1114,7 @@ fn handle_event(
         }
 
         SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
-            tracing::debug!("Outgoing connection error (peer={peer_id:?}): {error:?}");
+            info!("Outgoing connection error (peer={peer_id:?}): {error:?}");
         }
 
         SwarmEvent::ExternalAddrExpired { address } => {
