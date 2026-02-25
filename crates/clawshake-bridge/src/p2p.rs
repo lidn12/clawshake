@@ -614,9 +614,21 @@ fn handle_event(
                 "Identified {peer_id}: agent=\"{}\" protocol=\"{}\" observed_addr={}",
                 info.agent_version, info.protocol_version, info.observed_addr
             );
-            // NOTE: We intentionally do NOT call `swarm.add_external_address()`
-            // here.  Identify internally emits `NewExternalAddrCandidate` for
-            // the observed address; AutoNAT is the authority for confirming it.
+            // NOTE: Regular (NATted) nodes must NOT call
+            // `swarm.add_external_address()` here — Identify internally emits
+            // `NewExternalAddrCandidate` for the observed address and AutoNAT
+            // is the authority for confirming it.  Confirming prematurely would
+            // block DCUTR candidates (see commit 88e1ead).
+            //
+            // Relay servers are the exception: they ARE publicly reachable (the
+            // operator asserts this with --relay-server) and they need their
+            // external address confirmed BEFORE the first RESERVE request
+            // arrives, otherwise the reservation response contains no addresses
+            // and clients get `NoAddressesInReservation`.  AutoNAT's 15s boot
+            // delay is too slow for this.
+            if ctx.relay_server && is_public_addr(&info.observed_addr) {
+                swarm.add_external_address(info.observed_addr.clone());
+            }
             // Add publicly routable advertised addresses to Kademlia.
             // Private/loopback addresses are useless for remote peers.
             for addr in info.listen_addrs.iter().filter(|a| is_public_addr(a)) {
