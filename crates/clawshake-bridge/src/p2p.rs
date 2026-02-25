@@ -564,9 +564,24 @@ fn handle_event(
             ..
         } => {
             let addr = endpoint.get_remote_address();
-            let is_relayed = addr
+            let has_circuit = addr
                 .iter()
                 .any(|p| matches!(p, libp2p::multiaddr::Protocol::P2pCircuit));
+            // A bare `/p2p/<id>` inbound address (no IP/transport layer)
+            // comes from a relay circuit that libp2p doesn't tag with
+            // P2pCircuit.  Classify it as relayed so connection preference
+            // doesn't treat it as a direct path.
+            let has_transport = addr.iter().any(|p| {
+                matches!(
+                    p,
+                    libp2p::multiaddr::Protocol::Ip4(_)
+                        | libp2p::multiaddr::Protocol::Ip6(_)
+                        | libp2p::multiaddr::Protocol::Dns(_)
+                        | libp2p::multiaddr::Protocol::Dns4(_)
+                        | libp2p::multiaddr::Protocol::Dns6(_)
+                )
+            });
+            let is_relayed = has_circuit || !has_transport;
             let via = if is_relayed {
                 if endpoint.is_dialer() {
                     "outbound-relay" // we dialed relay → DCUTR responder
