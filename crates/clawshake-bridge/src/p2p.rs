@@ -4,8 +4,13 @@ use std::{
     time::Duration,
 };
 
+use crate::{announce, backend::McpBackend, proxy};
 use anyhow::{Context, Result};
-use clawshake_core::{peer_table::PeerTable, permissions::PermissionStore};
+use clawshake_core::{
+    network_channel::{ConnectedPeers, OutboundCall},
+    peer_table::PeerTable,
+    permissions::PermissionStore,
+};
 use libp2p::futures::StreamExt;
 use libp2p::{
     autonat, dcutr, identify, kad, mdns, noise, relay, rendezvous, request_response,
@@ -18,13 +23,6 @@ use tokio::{
     time::interval,
 };
 use tracing::{info, warn};
-
-use crate::{
-    announce,
-    backend::McpBackend,
-    network::{ConnectedPeers, OutboundCall},
-    proxy,
-};
 
 // ---------------------------------------------------------------------------
 // Composite behaviour

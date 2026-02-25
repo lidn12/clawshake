@@ -2,13 +2,16 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use clap::Parser;
-use clawshake_core::{peer_table::PeerTable, permissions::PermissionStore};
+use clawshake_core::{
+    network_channel::{new_connected_peers, new_outbound_call_channel},
+    peer_table::PeerTable,
+    permissions::PermissionStore,
+};
 use tracing::info;
 
 mod announce;
 mod backend;
 mod ipc;
-mod network;
 mod p2p;
 mod proxy;
 
@@ -101,11 +104,11 @@ async fn main() -> Result<()> {
 
     // Peer table and connected-peer tracker for the network.* built-in tools.
     let table = Arc::new(PeerTable::new());
-    let connected = network::new_connected_peers();
+    let connected = new_connected_peers();
 
     // Outbound P2P call channel: the IPC task drives network.call from any
     // local process; the p2p event loop owns the receiver.
-    let (call_tx, call_rx) = network::new_outbound_call_channel();
+    let (call_tx, call_rx) = new_outbound_call_channel();
 
     // Spawn the IPC socket listener so clawshake-tools CLI (and any other
     // local process) can reach network.* handlers without in-process channels.

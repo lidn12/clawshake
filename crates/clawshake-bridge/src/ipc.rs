@@ -31,7 +31,7 @@ use tracing::{debug, error, warn};
 
 use clawshake_core::peer_table::PeerTable;
 
-use crate::network::{ConnectedPeers, OutboundCallTx};
+use clawshake_core::network_channel::{ConnectedPeers, OutboundCallTx};
 
 /// Named pipe path (Windows).
 #[cfg(windows)]
@@ -210,5 +210,5 @@ async fn dispatch(
     let empty = Value::Object(Default::default());
     let params = req.get("params").unwrap_or(&empty);
 
-    crate::network::handle(method, Some(params), table, connected, Some(call_tx)).await
+    clawshake_tools::network::handle(method, Some(params), table, connected, Some(call_tx)).await
 }
