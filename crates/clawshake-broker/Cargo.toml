@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[lib]
+name = "clawshake_broker"
+path = "src/lib.rs"
+
 [[bin]]
 name = "clawshake-broker"
 path = "src/main.rs"

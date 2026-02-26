@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[lib]
+name = "clawshake_bridge"
+path = "src/lib.rs"
+
 [[bin]]
 name = "clawshake-bridge"
 path = "src/main.rs"

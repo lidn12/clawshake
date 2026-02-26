@@ -5,6 +5,7 @@ members = [
     "crates/clawshake-bridge",
     "crates/clawshake-tools",
     "crates/clawshake-broker",
+    "crates/clawshake",
 ]
 
 [workspace.package]

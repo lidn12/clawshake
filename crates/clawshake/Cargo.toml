@@ -1,0 +1,23 @@
+[package]
+name = "clawshake"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "clawshake"
+path = "src/main.rs"
+
+[dependencies]
+clawshake-core  = { workspace = true }
+clawshake-tools = { workspace = true }
+clawshake-bridge = { path = "../clawshake-bridge" }
+clawshake-broker = { path = "../clawshake-broker" }
+
+tokio             = { workspace = true }
+clap              = { workspace = true }
+anyhow            = { workspace = true }
+tracing           = { workspace = true }
+tracing-subscriber = { workspace = true }
+dirs              = { workspace = true }
+serde_json        = { workspace = true }
