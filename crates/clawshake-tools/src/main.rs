@@ -12,7 +12,7 @@
 //! clawshake-tools network search --query <QUERY>
 //! clawshake-tools network describe --peer-id <PEER_ID> --tool-name <TOOL>
 //! clawshake-tools network ping    --peer-id <PEER_ID>
-//! clawshake-tools network call    --peer-id <PEER_ID> --tool <TOOL> [--args <JSON>]
+//! clawshake-tools network call    --peer-id <PEER_ID> --tool <TOOL> [--args <JSON>|-]
 //!
 //! # Generic interface (language-agnostic integration)
 //!
@@ -129,8 +129,9 @@ enum NetworkCmd {
         #[arg(long, value_name = "TOOL")]
         tool: String,
         /// Tool arguments as a JSON object string (e.g. '{"track":"Bohemian Rhapsody"}').
+        /// Pass "-" to read JSON from stdin instead (avoids shell quoting issues).
         /// Omit for tools with no required arguments.
-        #[arg(long, value_name = "JSON")]
+        #[arg(long, value_name = "JSON|-")]
         args: Option<String>,
     },
 }
@@ -182,8 +183,16 @@ async fn main() -> Result<()> {
                 tool,
                 args,
             } => {
-                let arguments: serde_json::Value = match args {
-                    Some(s) => serde_json::from_str(&s)
+                let arguments: serde_json::Value = match args.as_deref() {
+                    Some("-") => {
+                        let mut buf = String::new();
+                        std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf)
+                            .map_err(|e| anyhow::anyhow!("failed to read stdin: {e}"))?;
+                        serde_json::from_str(&buf)
+                            .map_err(|e| anyhow::anyhow!("stdin is not valid JSON: {e}"))?
+
+                    }
+                    Some(s) => serde_json::from_str(s)
                         .map_err(|e| anyhow::anyhow!("--args is not valid JSON: {e}"))?,
                     None => json!({}),
                 };
