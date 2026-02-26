@@ -3,6 +3,7 @@ use clap::Parser;
 use clawshake_core::permissions::PermissionStore;
 use tracing::info;
 
+mod builtins;
 mod consent;
 mod invoke;
 mod mcp_server;
@@ -41,6 +42,9 @@ async fn main() -> Result<()> {
 
     // Open permission store.
     let permissions = PermissionStore::open(&db_path).await?;
+
+    // Seed built-in manifests (no-op if files already exist).
+    builtins::seed(&manifests_dir)?;
 
     // Load manifests and start file watcher.
     let registry = watcher::ManifestRegistry::new();
