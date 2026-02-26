@@ -42,7 +42,7 @@ const NETWORK_MANIFEST: &str = r#"{
   "version": "1.0",
   "tools": [
     {
-      "name": "peers",
+      "name": "network_peers",
       "description": "List all discovered bridge nodes on the P2P network. Returns a JSON array of peer objects with peer_id, addrs, tools, and latency.",
       "inputSchema": {
         "type": "object",
@@ -55,7 +55,7 @@ const NETWORK_MANIFEST: &str = r#"{
       }
     },
     {
-      "name": "tools",
+      "name": "network_tools",
       "description": "List all tools exposed by a specific peer.",
       "inputSchema": {
         "type": "object",
@@ -74,7 +74,7 @@ const NETWORK_MANIFEST: &str = r#"{
       }
     },
     {
-      "name": "search",
+      "name": "network_search",
       "description": "Search for tools across all known peers by name or description substring.",
       "inputSchema": {
         "type": "object",
@@ -93,7 +93,7 @@ const NETWORK_MANIFEST: &str = r#"{
       }
     },
     {
-      "name": "describe",
+      "name": "network_describe",
       "description": "Get the full description and input schema for a specific tool on a peer.",
       "inputSchema": {
         "type": "object",
@@ -116,7 +116,7 @@ const NETWORK_MANIFEST: &str = r#"{
       }
     },
     {
-      "name": "ping",
+      "name": "network_ping",
       "description": "Check whether a peer is currently reachable from this node. Returns latency in milliseconds or an error.",
       "inputSchema": {
         "type": "object",
@@ -135,7 +135,7 @@ const NETWORK_MANIFEST: &str = r#"{
       }
     },
     {
-      "name": "record",
+      "name": "network_record",
       "description": "Fetch the raw DHT announcement record for a peer. Returns the full AnnouncementRecord including schema version, tools list, listen addresses, and timestamp.",
       "inputSchema": {
         "type": "object",
@@ -154,7 +154,7 @@ const NETWORK_MANIFEST: &str = r#"{
       }
     },
     {
-      "name": "call",
+      "name": "network_call",
       "description": "Invoke a tool on a remote peer and return the result. The peer must be reachable and have granted permission for this tool.",
       "inputSchema": {
         "type": "object",

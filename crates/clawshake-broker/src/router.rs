@@ -18,7 +18,11 @@ pub async fn dispatch(
         .ok_or_else(|| anyhow::anyhow!("Unknown tool: {tool_name}"))?;
 
     match &loaded.tool.invoke {
-        InvokeConfig::Cli { command, args } => invoke::cli::invoke(command, args, arguments).await,
+        InvokeConfig::Cli {
+            command,
+            args,
+            shell,
+        } => invoke::cli::invoke(command, args, *shell, arguments).await,
         InvokeConfig::Http {
             url,
             method,

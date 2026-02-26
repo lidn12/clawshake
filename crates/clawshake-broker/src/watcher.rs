@@ -35,7 +35,7 @@ impl ManifestRegistry {
     pub fn load_manifest(&self, manifest: &Manifest) {
         let mut map = self.inner.write().expect("registry lock");
         for tool in &manifest.tools {
-            let key = format!("{}.{}", manifest.app, tool.name);
+            let key = tool.name.clone();
             map.insert(
                 key,
                 LoadedTool {
@@ -56,11 +56,7 @@ impl ManifestRegistry {
     pub fn all(&self) -> Vec<LoadedTool> {
         let map = self.inner.read().expect("registry lock");
         let mut tools: Vec<LoadedTool> = map.values().cloned().collect();
-        tools.sort_by(|a, b| {
-            let qa = format!("{}.{}", a.app, a.tool.name);
-            let qb = format!("{}.{}", b.app, b.tool.name);
-            qa.cmp(&qb)
-        });
+        tools.sort_by(|a, b| a.tool.name.cmp(&b.tool.name));
         tools
     }
 

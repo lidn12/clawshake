@@ -70,6 +70,12 @@ pub enum InvokeConfig {
         command: String,
         #[serde(default)]
         args: Vec<String>,
+        /// When true, route through `cmd /C` (Windows) or `sh -c` (Unix).
+        /// Use only when you need shell features: `.cmd`/`.bat` files, pipes,
+        /// glob expansion, etc.  Default is direct process spawn, which
+        /// handles arguments with spaces, quotes, and JSON safely.
+        #[serde(default)]
+        shell: bool,
     },
     Http {
         url: String,

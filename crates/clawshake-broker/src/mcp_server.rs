@@ -89,11 +89,10 @@ async fn handle(
                 .all()
                 .into_iter()
                 .map(|lt| {
-                    let qualified = format!("{}.{}", lt.app, lt.tool.name);
                     let schema = serde_json::to_value(&lt.tool.input_schema)
                         .unwrap_or_else(|_| json!({"type":"object","properties":{}}));
                     McpToolDef {
-                        name: qualified,
+                        name: lt.tool.name.clone(),
                         description: lt.tool.description.clone(),
                         input_schema: schema,
                     }

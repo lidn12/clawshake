@@ -67,11 +67,11 @@ enum Namespace {
     /// Use `schema dump` to discover available methods and their input schemas.
     ///
     /// Example:
-    ///   clawshake-tools rpc network.peers '{}'
-    ///   clawshake-tools rpc network.search '{"query":"weather"}'
-    ///   clawshake-tools rpc network.call '{"peer_id":"12D3...","tool":"weather.now","arguments":{}}'
+    ///   clawshake-tools rpc network_peers '{}'
+    ///   clawshake-tools rpc network_search '{"query":"weather"}'
+    ///   clawshake-tools rpc network_call '{"peer_id":"12D3...","tool":"weather.now","arguments":{}}'
     Rpc {
-        /// Method name (e.g. "network.peers", "network.call").
+        /// Method name (e.g. "network_peers", "network_call").
         method: String,
         /// Parameters as a JSON object string.  Use '{}' for tools with no parameters.
         params: String,
@@ -171,20 +171,20 @@ async fn main() -> Result<()> {
         }
 
         Namespace::Network { cmd } => match cmd {
-            NetworkCmd::Peers => ("network.peers", json!({})),
+            NetworkCmd::Peers => ("network_peers", json!({})),
 
-            NetworkCmd::Tools { peer_id } => ("network.tools", json!({ "peer_id": peer_id })),
+            NetworkCmd::Tools { peer_id } => ("network_tools", json!({ "peer_id": peer_id })),
 
-            NetworkCmd::Search { query } => ("network.search", json!({ "query": query })),
+            NetworkCmd::Search { query } => ("network_search", json!({ "query": query })),
 
             NetworkCmd::Describe { peer_id, tool_name } => (
-                "network.describe",
+                "network_describe",
                 json!({ "peer_id": peer_id, "tool_name": tool_name }),
             ),
 
-            NetworkCmd::Ping { peer_id } => ("network.ping", json!({ "peer_id": peer_id })),
+            NetworkCmd::Ping { peer_id } => ("network_ping", json!({ "peer_id": peer_id })),
 
-            NetworkCmd::Record { peer_id } => ("network.record", json!({ "peer_id": peer_id })),
+            NetworkCmd::Record { peer_id } => ("network_record", json!({ "peer_id": peer_id })),
 
             NetworkCmd::Call {
                 peer_id,
@@ -204,7 +204,7 @@ async fn main() -> Result<()> {
                     None => json!({}),
                 };
                 (
-                    "network.call",
+                    "network_call",
                     json!({ "peer_id": peer_id, "tool": tool, "arguments": arguments }),
                 )
             }

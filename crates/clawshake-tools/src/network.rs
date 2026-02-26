@@ -36,13 +36,13 @@ pub async fn handle(
     let params = params.unwrap_or(&empty);
 
     match method {
-        "network.peers" => peers(table),
-        "network.tools" => tools(params, table),
-        "network.search" => search(params, table),
-        "network.describe" => describe(params, table),
-        "network.ping" => ping(params, connected),
-        "network.call" => call(params, call_tx).await,
-        "network.record" => record(params, table),
+        "network_peers" => peers(table),
+        "network_tools" => tools(params, table),
+        "network_search" => search(params, table),
+        "network_describe" => describe(params, table),
+        "network_ping" => ping(params, connected),
+        "network_call" => call(params, call_tx).await,
+        "network_record" => record(params, table),
         _ => err(&format!("unknown network method: {}", method)),
     }
 }

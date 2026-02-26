@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 pub fn tool_definitions() -> Vec<Value> {
     vec![
         json!({
-            "name": "network.peers",
+            "name": "network_peers",
             "description": "List all discovered bridge nodes on the network with their peer IDs, addresses, tool counts, and last-seen timestamps.",
             "inputSchema": {
                 "type": "object",
@@ -21,7 +21,7 @@ pub fn tool_definitions() -> Vec<Value> {
             }
         }),
         json!({
-            "name": "network.tools",
+            "name": "network_tools",
             "description": "Get the full tool list (name + description) for a specific peer.",
             "inputSchema": {
                 "type": "object",
@@ -35,7 +35,7 @@ pub fn tool_definitions() -> Vec<Value> {
             }
         }),
         json!({
-            "name": "network.search",
+            "name": "network_search",
             "description": "Search for tools across all known peers by tool name or description substring.",
             "inputSchema": {
                 "type": "object",
@@ -49,7 +49,7 @@ pub fn tool_definitions() -> Vec<Value> {
             }
         }),
         json!({
-            "name": "network.describe",
+            "name": "network_describe",
             "description": "Get the description for a specific tool on a specific peer.",
             "inputSchema": {
                 "type": "object",
@@ -67,7 +67,7 @@ pub fn tool_definitions() -> Vec<Value> {
             }
         }),
         json!({
-            "name": "network.ping",
+            "name": "network_ping",
             "description": "Check whether a peer currently has an active connection to this node.",
             "inputSchema": {
                 "type": "object",
@@ -81,7 +81,7 @@ pub fn tool_definitions() -> Vec<Value> {
             }
         }),
         json!({
-            "name": "network.call",
+            "name": "network_call",
             "description": "Invoke a tool on a specific remote peer over the P2P network and return its result. The peer must be currently connected (use network.ping to check). Arguments must match the tool's inputSchema (use network.describe to inspect it).",
             "inputSchema": {
                 "type": "object",
@@ -103,7 +103,7 @@ pub fn tool_definitions() -> Vec<Value> {
             }
         }),
         json!({
-            "name": "network.record",
+            "name": "network_record",
             "description": "Return the raw DHT announcement record for a peer exactly as stored in the Kademlia DHT — schema version, peer_id, tools, tool_details, addrs, and timestamp. Useful for verifying the live record matches the published spec or debugging schema mismatches.",
             "inputSchema": {
                 "type": "object",

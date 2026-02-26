@@ -1,0 +1,12 @@
+{
+    "servers": {
+        "clawshake": {
+            "type": "stdio",
+            "command": "${workspaceFolder}/target/release/clawshake-broker.exe",
+            "args": [],
+            "env": {
+                "PATH": "${workspaceFolder}/target/release;${env:PATH}"
+            }
+        }
+    }
+}
