@@ -39,7 +39,6 @@ pub async fn handle(
         "network_peers" => peers(table),
         "network_tools" => tools(params, table),
         "network_search" => search(params, table),
-        "network_describe" => describe(params, table),
         "network_ping" => ping(params, connected),
         "network_call" => call(params, call_tx).await,
         "network_record" => record(params, table),
@@ -77,7 +76,16 @@ fn tools(params: &Value, table: &PeerTable) -> Value {
             let tools: Vec<Value> = peer
                 .tools
                 .iter()
-                .map(|t| json!({ "name": t.name, "description": t.description }))
+                .map(|t| {
+                    let mut entry = json!({
+                        "name":        t.name,
+                        "description": t.description,
+                    });
+                    if let Some(schema) = &t.input_schema {
+                        entry["inputSchema"] = schema.clone();
+                    }
+                    entry
+                })
                 .collect();
             json!({ "peer_id": peer_id, "tools": tools })
         }
@@ -106,37 +114,6 @@ fn search(params: &Value, table: &PeerTable) -> Value {
         }
     }
     json!({ "query": query, "results": results })
-}
-
-fn describe(params: &Value, table: &PeerTable) -> Value {
-    let peer_id = match params["peer_id"].as_str() {
-        Some(s) => s,
-        None => return err("missing required parameter: peer_id"),
-    };
-    let tool_name = match params["tool_name"].as_str() {
-        Some(s) => s,
-        None => return err("missing required parameter: tool_name"),
-    };
-    match table.get(peer_id) {
-        Some(peer) => match peer.tools.iter().find(|t| t.name == tool_name) {
-            Some(tool) => {
-                let mut resp = json!({
-                    "peer_id":     peer_id,
-                    "tool_name":   tool.name,
-                    "description": tool.description,
-                });
-                if let Some(schema) = &tool.input_schema {
-                    resp["inputSchema"] = schema.clone();
-                }
-                resp
-            }
-            None => err(&format!(
-                "tool '{}' not found on peer {}",
-                tool_name, peer_id
-            )),
-        },
-        None => err(&format!("peer {} not found in table", peer_id)),
-    }
 }
 
 fn record(params: &Value, table: &PeerTable) -> Value {

@@ -56,7 +56,7 @@ const NETWORK_MANIFEST: &str = r#"{
     },
     {
       "name": "network_tools",
-      "description": "List all tools exposed by a specific peer.",
+      "description": "Get all tools for a specific peer with their names, descriptions, and inputSchema. Use this before network_call to inspect parameter requirements.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -90,29 +90,6 @@ const NETWORK_MANIFEST: &str = r#"{
         "type": "cli",
         "command": "clawshake-tools",
         "args": ["network", "search", "--query", "{{query}}"]
-      }
-    },
-    {
-      "name": "network_describe",
-      "description": "Get the full description and input schema for a specific tool on a peer.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "peer_id": {
-            "type": "string",
-            "description": "The libp2p peer ID of the target node."
-          },
-          "tool_name": {
-            "type": "string",
-            "description": "Fully-qualified tool name (e.g. \"spotify.play\")."
-          }
-        },
-        "required": ["peer_id", "tool_name"]
-      },
-      "invoke": {
-        "type": "cli",
-        "command": "clawshake-tools",
-        "args": ["network", "describe", "--peer-id", "{{peer_id}}", "--tool-name", "{{tool_name}}"]
       }
     },
     {

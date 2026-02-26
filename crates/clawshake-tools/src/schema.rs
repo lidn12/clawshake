@@ -22,7 +22,7 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "network_tools",
-            "description": "Get the full tool list (name + description) for a specific peer.",
+            "description": "Get all tools for a specific peer with their names, descriptions, and inputSchema. Use this before network_call to inspect parameter requirements.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -49,24 +49,6 @@ pub fn tool_definitions() -> Vec<Value> {
             }
         }),
         json!({
-            "name": "network_describe",
-            "description": "Get the full description and input schema for a specific tool on a peer.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "peer_id": {
-                        "type": "string",
-                        "description": "libp2p peer ID string"
-                    },
-                    "tool_name": {
-                        "type": "string",
-                        "description": "Fully-qualified tool name (e.g. \"spotify.play\")"
-                    }
-                },
-                "required": ["peer_id", "tool_name"]
-            }
-        }),
-        json!({
             "name": "network_ping",
             "description": "Check whether a peer currently has an active connection to this node.",
             "inputSchema": {
@@ -82,7 +64,7 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "network_call",
-            "description": "Invoke a tool on a specific remote peer over the P2P network and return its result. The peer must be currently connected (use network_ping to check). Arguments must match the tool's inputSchema (use network_describe to inspect it).",
+            "description": "Invoke a tool on a specific remote peer over the P2P network and return its result. The peer must be currently connected (use network_ping to check). Use network_tools to inspect the tool's inputSchema before calling.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

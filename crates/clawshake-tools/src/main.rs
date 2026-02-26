@@ -95,7 +95,7 @@ enum NetworkCmd {
     /// List all discovered bridge nodes on the network.
     Peers,
 
-    /// List all tools exposed by a specific peer.
+    /// Get the full tool listing (names, descriptions, inputSchemas) for a specific peer.
     Tools {
         #[arg(long, value_name = "PEER_ID")]
         peer_id: String,
@@ -105,14 +105,6 @@ enum NetworkCmd {
     Search {
         #[arg(long, value_name = "QUERY")]
         query: String,
-    },
-
-    /// Get the description and input schema for a specific tool on a peer.
-    Describe {
-        #[arg(long, value_name = "PEER_ID")]
-        peer_id: String,
-        #[arg(long, value_name = "TOOL_NAME")]
-        tool_name: String,
     },
 
     /// Check whether a peer is currently connected to this node.
@@ -176,11 +168,6 @@ async fn main() -> Result<()> {
             NetworkCmd::Tools { peer_id } => ("network_tools", json!({ "peer_id": peer_id })),
 
             NetworkCmd::Search { query } => ("network_search", json!({ "query": query })),
-
-            NetworkCmd::Describe { peer_id, tool_name } => (
-                "network_describe",
-                json!({ "peer_id": peer_id, "tool_name": tool_name }),
-            ),
 
             NetworkCmd::Ping { peer_id } => ("network_ping", json!({ "peer_id": peer_id })),
 
