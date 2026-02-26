@@ -1,12 +1,8 @@
 {
     "servers": {
         "clawshake": {
-            "type": "stdio",
-            "command": "${workspaceFolder}/target/release/clawshake-broker.exe",
-            "args": [],
-            "env": {
-                "PATH": "${workspaceFolder}/target/release;${env:PATH}"
-            }
+            "type": "sse",
+            "url": "http://127.0.0.1:7475/sse"
         }
     }
 }

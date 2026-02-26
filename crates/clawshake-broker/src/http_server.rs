@@ -26,7 +26,10 @@ use anyhow::Result;
 use axum::{
     extract::{Query, State},
     http::StatusCode,
-    response::sse::{Event, KeepAlive, Sse},
+    response::{
+        sse::{Event, KeepAlive, Sse},
+        IntoResponse, Json,
+    },
     routing::{get, post},
     Router,
 };
@@ -74,6 +77,7 @@ pub async fn serve(
     let app = Router::new()
         .route("/sse", get(sse_handler))
         .route("/messages", post(messages_handler))
+        .route("/", post(direct_handler))
         .with_state(state);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
@@ -181,7 +185,27 @@ async fn messages_handler(
 }
 
 // ---------------------------------------------------------------------------
-// CleanupStream — removes the session entry when the SSE connection drops
+// POST / — stateless direct JSON-RPC (used by clawshake-bridge --mcp-port)
+// ---------------------------------------------------------------------------
+
+/// Handle a single JSON-RPC request synchronously and return the response
+/// directly as JSON.  No session or SSE stream required.
+///
+/// This is the transport used by `clawshake-bridge --mcp-port <N>`, which
+/// POSTs JSON-RPC to the server root and expects a JSON response body.
+async fn direct_handler(State(state): State<AppState>, body: String) -> impl IntoResponse {
+    debug!(body = %body, "← POST /");
+    let response = match serde_json::from_str::<JsonRpcRequest>(&body) {
+        Err(e) => JsonRpcResponse::err(None, -32700, format!("Parse error: {e}")),
+        Ok(req) => match mcp_server::handle(&req, &state.registry, &state.permissions).await {
+            Some(resp) => resp,
+            // Notification — no response body; return empty 204.
+            None => return (StatusCode::NO_CONTENT, Json(serde_json::Value::Null)).into_response(),
+        },
+    };
+    debug!(resp = ?response, "→ POST /");
+    Json(serde_json::to_value(response).unwrap()).into_response()
+}
 // ---------------------------------------------------------------------------
 
 struct CleanupStream<S> {
