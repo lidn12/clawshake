@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use clawshake_core::{
     network_channel::{new_connected_peers, new_outbound_call_channel},
     peer_table::PeerTable,
-    permissions::PermissionStore,
+    permissions::{Decision, PermissionStore},
 };
 use tracing::info;
 
@@ -20,6 +20,10 @@ use backend::{HttpBackend, McpBackend, StdioBackend};
 #[derive(Parser, Debug)]
 #[command(name = "clawshake-bridge", version, about)]
 struct Cli {
+    /// Manage the local permission store (no bridge connection required).
+    #[command(subcommand)]
+    command: Option<Command>,
+
     /// TCP port to listen on for inbound P2P connections (0 = random).
     #[arg(long, default_value_t = 0)]
     p2p_port: u16,
@@ -61,6 +65,49 @@ struct Cli {
     mcp_cmd: Option<String>,
 }
 
+#[derive(Subcommand, Debug)]
+enum Command {
+    /// Manage the local permission store.
+    ///
+    /// Examples:
+    ///   clawshake-bridge permissions allow p2p:* *
+    ///   clawshake-bridge permissions allow p2p:12D3KooW... filesystem.*
+    ///   clawshake-bridge permissions deny  p2p:* mail.*
+    ///   clawshake-bridge permissions remove p2p:* *
+    ///   clawshake-bridge permissions list
+    Permissions {
+        #[command(subcommand)]
+        action: PermissionsAction,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum PermissionsAction {
+    /// Allow an agent to call a tool (or wildcard).
+    Allow {
+        /// Agent ID: "p2p:*", "p2p:<peer-id>", "tailscale:*", "local"
+        agent_id: String,
+        /// Tool name: "*", "filesystem.*", "read_file"
+        tool_name: String,
+    },
+    /// Deny an agent from calling a tool (or wildcard).
+    Deny {
+        /// Agent ID: "p2p:*", "p2p:<peer-id>", "tailscale:*", "local"
+        agent_id: String,
+        /// Tool name: "*", "filesystem.*", "read_file"
+        tool_name: String,
+    },
+    /// Remove a permission rule entirely (falls back to default behaviour).
+    Remove {
+        /// Agent ID to remove the rule for.
+        agent_id: String,
+        /// Tool name to remove the rule for.
+        tool_name: String,
+    },
+    /// List all permission rules.
+    List,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -71,6 +118,54 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
+
+    let db_path = dirs::home_dir()
+        .expect("cannot determine home directory")
+        .join(".clawshake")
+        .join("permissions.db");
+
+    // Handle permissions subcommand — no bridge startup required.
+    if let Some(Command::Permissions { action }) = cli.command {
+        let store = PermissionStore::open(&db_path).await?;
+        match action {
+            PermissionsAction::Allow {
+                agent_id,
+                tool_name,
+            } => {
+                store.set(&agent_id, &tool_name, Decision::Allow).await?;
+                println!("✓ allow  {agent_id}  {tool_name}");
+            }
+            PermissionsAction::Deny {
+                agent_id,
+                tool_name,
+            } => {
+                store.set(&agent_id, &tool_name, Decision::Deny).await?;
+                println!("✓ deny   {agent_id}  {tool_name}");
+            }
+            PermissionsAction::Remove {
+                agent_id,
+                tool_name,
+            } => {
+                store.remove(&agent_id, &tool_name).await?;
+                println!("✓ removed  {agent_id}  {tool_name}");
+            }
+            PermissionsAction::List => {
+                let records = store.list().await?;
+                if records.is_empty() {
+                    println!("(no rules)");
+                } else {
+                    println!("{:<12}  {:<40}  {}", "decision", "agent_id", "tool_name");
+                    println!("{}", "-".repeat(72));
+                    for r in records {
+                        println!("{:<12}  {:<40}  {}", r.decision, r.agent_id, r.tool_name);
+                    }
+                }
+            }
+        }
+        return Ok(());
+    }
+
+    // --- Normal bridge startup ---
 
     // Relay server mode: use a stable port so the address is predictable.
     let p2p_port = if cli.relay_server && cli.p2p_port == 0 {
@@ -93,10 +188,6 @@ async fn main() -> Result<()> {
     };
 
     // Open the permission store (creates DB + schema if absent, seeds p2p deny default).
-    let db_path = dirs::home_dir()
-        .expect("cannot determine home directory")
-        .join(".clawshake")
-        .join("permissions.db");
     let store = PermissionStore::open(&db_path).await?;
     store.seed_p2p_deny_default().await?;
     let store = Arc::new(store);

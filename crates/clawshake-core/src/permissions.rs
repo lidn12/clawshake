@@ -186,6 +186,40 @@ impl PermissionStore {
         Ok(())
     }
 
+    /// Remove a specific (agent_id, tool_name) rule.  No-op if the row does not exist.
+    pub async fn remove(&self, agent_id: &str, tool_name: &str) -> Result<()> {
+        sqlx::query("DELETE FROM permissions WHERE agent_id = ?1 AND tool_name = ?2")
+            .bind(agent_id)
+            .bind(tool_name)
+            .execute(&self.db)
+            .await
+            .context("removing permission record")?;
+        Ok(())
+    }
+
+    /// Return all rows in the permissions table, ordered by agent_id then tool_name.
+    pub async fn list(&self) -> Result<Vec<PermissionRecord>> {
+        let rows = sqlx::query(
+            "SELECT agent_id, tool_name, decision, granted_at
+             FROM permissions
+             ORDER BY agent_id, tool_name",
+        )
+        .fetch_all(&self.db)
+        .await
+        .context("listing permission records")?;
+
+        let records = rows
+            .iter()
+            .map(|row| PermissionRecord {
+                agent_id: row.try_get("agent_id").unwrap_or_default(),
+                tool_name: row.try_get("tool_name").unwrap_or_default(),
+                decision: Decision::from_db(row.try_get("decision").unwrap_or("deny")),
+                granted_at: row.try_get("granted_at").ok(),
+            })
+            .collect();
+        Ok(records)
+    }
+
     /// Seed a catch-all deny for all P2P callers (`p2p:*` / `*` / deny) if no
     /// such row exists yet.  Called on bridge startup so fresh installs are
     /// closed by default — users must explicitly grant access.
