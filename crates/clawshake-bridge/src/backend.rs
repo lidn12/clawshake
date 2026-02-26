@@ -111,17 +111,33 @@ impl StdioBackend {
     /// Spawn `command` as an MCP stdio server, run the initialisation
     /// handshake, and return a ready-to-use backend.
     pub async fn spawn(command: &str) -> Result<Arc<Self>> {
-        let mut parts = command.split_whitespace();
-        let program = parts.next().context("--mcp-cmd must not be empty")?;
-        let args: Vec<&str> = parts.collect();
+        // On Windows, batch file wrappers (.cmd / .bat) — such as `npx.cmd`,
+        // `node.cmd`, `python.cmd` installed by nvm or conda — cannot be
+        // executed directly by CreateProcess.  Route everything through
+        // `cmd /C` so the shell resolves the wrapper correctly.
+        // On Unix, use `sh -c` for the same reason (handles aliases, PATH
+        // differences between login and non-login shells).
+        #[cfg(windows)]
+        let mut child = {
+            tokio::process::Command::new("cmd")
+                .args(["/C", command])
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::inherit())
+                .spawn()
+                .with_context(|| format!("Failed to spawn MCP server: {command}"))?
+        };
 
-        let mut child = tokio::process::Command::new(program)
-            .args(&args)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::inherit()) // surface server logs to bridge stderr
-            .spawn()
-            .with_context(|| format!("Failed to spawn MCP server: {command}"))?;
+        #[cfg(not(windows))]
+        let mut child = {
+            tokio::process::Command::new("sh")
+                .args(["-c", command])
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::inherit())
+                .spawn()
+                .with_context(|| format!("Failed to spawn MCP server: {command}"))?
+        };
 
         let stdin: ChildStdin = child.stdin.take().context("child has no stdin")?;
         let stdout: ChildStdout = child.stdout.take().context("child has no stdout")?;
@@ -235,8 +251,7 @@ impl StdioBackend {
             stdin.flush().await?;
         }
 
-        rx.await
-            .context("MCP backend closed before responding")
+        rx.await.context("MCP backend closed before responding")
     }
 
     /// Forward a JSON-RPC request, assigning a fresh id (overwriting any
