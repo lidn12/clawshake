@@ -43,7 +43,10 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-use crate::{mcp_server, watcher::ManifestRegistry};
+use crate::{
+    mcp_server,
+    watcher::{ManifestRegistry, McpServerMap},
+};
 
 // ---------------------------------------------------------------------------
 // Shared state
@@ -56,6 +59,7 @@ struct AppState {
     registry: ManifestRegistry,
     permissions: PermissionStore,
     sessions: Sessions,
+    servers: McpServerMap,
 }
 
 // ---------------------------------------------------------------------------
@@ -67,11 +71,13 @@ pub async fn serve(
     port: u16,
     registry: ManifestRegistry,
     permissions: PermissionStore,
+    servers: McpServerMap,
 ) -> Result<()> {
     let state = AppState {
         registry,
         permissions,
         sessions: Arc::new(RwLock::new(HashMap::new())),
+        servers,
     };
 
     let app = Router::new()
@@ -164,6 +170,7 @@ async fn messages_handler(
 
     let registry = state.registry.clone();
     let permissions = state.permissions.clone();
+    let servers = state.servers.clone();
 
     tokio::spawn(async move {
         let response = match serde_json::from_str::<JsonRpcRequest>(&body) {
@@ -171,7 +178,7 @@ async fn messages_handler(
                 let r = JsonRpcResponse::err(None, -32700, format!("Parse error: {e}"));
                 serde_json::to_string(&r).unwrap()
             }
-            Ok(req) => match mcp_server::handle(&req, &registry, &permissions).await {
+            Ok(req) => match mcp_server::handle(&req, &registry, &permissions, &servers).await {
                 Some(resp) => serde_json::to_string(&resp).unwrap(),
                 None => return, // notification — no response needed
             },
@@ -197,11 +204,17 @@ async fn direct_handler(State(state): State<AppState>, body: String) -> impl Int
     debug!(body = %body, "← POST /");
     let response = match serde_json::from_str::<JsonRpcRequest>(&body) {
         Err(e) => JsonRpcResponse::err(None, -32700, format!("Parse error: {e}")),
-        Ok(req) => match mcp_server::handle(&req, &state.registry, &state.permissions).await {
-            Some(resp) => resp,
-            // Notification — no response body; return empty 204.
-            None => return (StatusCode::NO_CONTENT, Json(serde_json::Value::Null)).into_response(),
-        },
+        Ok(req) => {
+            match mcp_server::handle(&req, &state.registry, &state.permissions, &state.servers)
+                .await
+            {
+                Some(resp) => resp,
+                // Notification — no response body; return empty 204.
+                None => {
+                    return (StatusCode::NO_CONTENT, Json(serde_json::Value::Null)).into_response()
+                }
+            }
+        }
     };
     debug!(resp = ?response, "→ POST /");
     Json(serde_json::to_value(response).unwrap()).into_response()

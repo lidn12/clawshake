@@ -1,66 +1,70 @@
 {
-  "app": "finder",
-  "version": "1.0",
-  "tools": [
-    {
-      "name": "finder_open_path",
-      "description": "Open a folder or file in Finder.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "path": {
-            "type": "string",
-            "description": "Absolute path to the file or folder to open"
-          }
+    "app": "finder",
+    "version": "1.0",
+    "tools": [
+        {
+            "name": "finder_open_path",
+            "description": "Open a folder or file in Finder.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Absolute path to the file or folder to open"
+                    }
+                },
+                "required": [
+                    "path"
+                ]
+            },
+            "invoke": {
+                "type": "applescript",
+                "script": "tell application \"Finder\" to open POSIX file \"{{path}}\""
+            }
         },
-        "required": ["path"]
-      },
-      "invoke": {
-        "type": "applescript",
-        "script": "tell application \"Finder\" to open POSIX file \"{{path}}\""
-      }
-    },
-    {
-      "name": "finder_reveal_file",
-      "description": "Reveal a file or folder in Finder (scroll to and highlight it).",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "path": {
-            "type": "string",
-            "description": "Absolute path to the file or folder to reveal"
-          }
+        {
+            "name": "finder_reveal_file",
+            "description": "Reveal a file or folder in Finder (scroll to and highlight it).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Absolute path to the file or folder to reveal"
+                    }
+                },
+                "required": [
+                    "path"
+                ]
+            },
+            "invoke": {
+                "type": "applescript",
+                "script": "tell application \"Finder\" to reveal POSIX file \"{{path}}\""
+            }
         },
-        "required": ["path"]
-      },
-      "invoke": {
-        "type": "applescript",
-        "script": "tell application \"Finder\" to reveal POSIX file \"{{path}}\""
-      }
-    },
-    {
-      "name": "finder_empty_trash",
-      "description": "Empty the Trash.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {}
-      },
-      "invoke": {
-        "type": "applescript",
-        "script": "tell application \"Finder\" to empty the trash"
-      }
-    },
-    {
-      "name": "finder_get_desktop_path",
-      "description": "Get the path to the user's Desktop folder.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {}
-      },
-      "invoke": {
-        "type": "applescript",
-        "script": "return (path to desktop folder) as string"
-      }
-    }
-  ]
+        {
+            "name": "finder_empty_trash",
+            "description": "Empty the Trash.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {}
+            },
+            "invoke": {
+                "type": "applescript",
+                "script": "tell application \"Finder\" to empty the trash"
+            }
+        },
+        {
+            "name": "finder_get_desktop_path",
+            "description": "Get the path to the user's Desktop folder.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {}
+            },
+            "invoke": {
+                "type": "applescript",
+                "script": "return (path to desktop folder) as string"
+            }
+        }
+    ]
 }

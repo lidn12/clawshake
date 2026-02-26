@@ -50,13 +50,13 @@ async fn main() -> Result<()> {
 
     // Load manifests and start file watcher.
     let registry = watcher::ManifestRegistry::new();
-    watcher::start(manifests_dir, registry.clone())?;
+    let servers = watcher::start(manifests_dir, registry.clone())?;
     info!(tools = registry.tool_count(), "Broker ready");
 
     if let Some(port) = cli.port {
-        return http_server::serve(port, registry, permissions).await;
+        return http_server::serve(port, registry, permissions, servers).await;
     }
 
     // Default: MCP stdio loop.
-    mcp_server::serve_stdio(registry, permissions).await
+    mcp_server::serve_stdio(registry, permissions, servers).await
 }

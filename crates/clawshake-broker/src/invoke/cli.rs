@@ -5,11 +5,14 @@ use serde_json::Value;
 ///
 /// `arguments` is the MCP `tools/call` arguments object.  Any `{{param}}`
 /// placeholder in `command` or `args` is substituted with the matching value.
+/// Unresolved placeholders (no matching key in arguments) are replaced with an
+/// empty string.  Args that become empty after substitution — and any preceding
+/// flag (`--foo`) whose value arg is empty — are dropped automatically, making
+/// optional parameters work without special manifest logic.
 ///
-/// By default the process is spawned **directly** (no shell) so that arguments
-/// containing spaces, quotes, JSON, or any other special characters are passed
-/// verbatim.  Set `shell = true` to route through `cmd /C` (Windows) or
-/// `sh -c` (Unix) when shell features are needed (`.cmd`/`.bat`, pipes, etc.).
+/// By default the process is spawned **directly** (no shell) so arguments are
+/// passed verbatim.  Set `shell = true` to route through `cmd /C` (Windows) or
+/// `sh -c` (Unix) when shell features like `.cmd`/`.bat` or pipes are needed.
 pub async fn invoke(
     command: &str,
     args: &[String],
@@ -17,7 +20,23 @@ pub async fn invoke(
     arguments: &Value,
 ) -> Result<String> {
     let command_sub = substitute(command, arguments);
-    let args_sub: Vec<String> = args.iter().map(|a| substitute(a, arguments)).collect();
+
+    // Substitute then filter: drop empty args and the flag preceding them.
+    let raw_args: Vec<String> = args.iter().map(|a| substitute(a, arguments)).collect();
+    let mut args_sub: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < raw_args.len() {
+        let arg = &raw_args[i];
+        // Flag followed by an empty value → skip both.
+        if arg.starts_with('-') && i + 1 < raw_args.len() && raw_args[i + 1].is_empty() {
+            i += 2;
+            continue;
+        }
+        if !arg.is_empty() {
+            args_sub.push(arg.clone());
+        }
+        i += 1;
+    }
 
     // On Windows, .cmd/.bat files cannot be executed without a shell.
     // Auto-promote to shell mode transparently rather than failing.
@@ -28,28 +47,30 @@ pub async fn invoke(
     };
 
     let output = if shell {
-        // Shell mode: join into one string and let the shell parse it.
-        let mut parts = vec![shell_quote(&command_sub)];
-        parts.extend(args_sub.iter().map(|a| shell_quote(a)));
-        let full_cmd = parts.join(" ");
-
         #[cfg(windows)]
         {
+            // Pass command and each argument as separate tokens to cmd /C.
+            // This avoids all join-and-quote complexity while still letting
+            // cmd.exe resolve .cmd/.bat and PATH lookups.
             tokio::process::Command::new("cmd")
-                .args(["/C", &full_cmd])
+                .arg("/C")
+                .arg(&command_sub)
+                .args(&args_sub)
                 .output()
                 .await?
         }
         #[cfg(not(windows))]
         {
+            // Unix: sh -c requires a single string.
+            let mut parts = vec![shell_quote(&command_sub)];
+            parts.extend(args_sub.iter().map(|a| shell_quote(a)));
             tokio::process::Command::new("sh")
-                .args(["-c", &full_cmd])
+                .args(["-c", &parts.join(" ")])
                 .output()
                 .await?
         }
     } else {
-        // Direct spawn: each argument is passed as a discrete OS string.
-        // No shell quoting, no metacharacter interpretation.
+        // Direct spawn: each argument is a discrete OS string.
         tokio::process::Command::new(&command_sub)
             .args(&args_sub)
             .output()
@@ -67,6 +88,9 @@ pub async fn invoke(
 }
 
 /// Replace every `{{key}}` in `template` with the matching value from `args`.
+/// Any placeholders that remain unresolved are stripped, along with any
+/// immediately preceding separator character (`:` or `=`).
+/// e.g. `"path:{{line}}"` with no `line` arg → `"path"`
 fn substitute(template: &str, args: &Value) -> String {
     let mut result = template.to_string();
     if let Some(obj) = args.as_object() {
@@ -79,10 +103,26 @@ fn substitute(template: &str, args: &Value) -> String {
             result = result.replace(&placeholder, &value);
         }
     }
+    // Strip remaining unresolved placeholders (with optional preceding separator).
+    loop {
+        let Some(start) = result.find("{{") else {
+            break;
+        };
+        let prefix_start = if start > 0 && matches!(result.as_bytes()[start - 1], b':' | b'=') {
+            start - 1
+        } else {
+            start
+        };
+        let Some(rel_end) = result[start..].find("}}") else {
+            break;
+        };
+        result.drain(prefix_start..start + rel_end + 2);
+    }
     result
 }
 
-/// Wrap a token in double-quotes for shell safety (used only in shell mode).
+/// Wrap a token in double-quotes for shell safety (used only in Unix shell mode).
+#[cfg(not(windows))]
 fn shell_quote(s: &str) -> String {
     if s.contains(' ') || s.contains('"') || s.is_empty() {
         format!("\"{}\"", s.replace('"', "\\\""))

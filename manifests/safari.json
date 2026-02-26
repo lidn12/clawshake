@@ -1,48 +1,50 @@
 {
-  "app": "safari",
-  "version": "1.0",
-  "tools": [
-    {
-      "name": "safari_open_url",
-      "description": "Open a URL in Safari.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "url": {
-            "type": "string",
-            "description": "Full URL to open (e.g. https://google.com)"
-          }
+    "app": "safari",
+    "version": "1.0",
+    "tools": [
+        {
+            "name": "safari_open_url",
+            "description": "Open a URL in Safari.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "Full URL to open (e.g. https://google.com)"
+                    }
+                },
+                "required": [
+                    "url"
+                ]
+            },
+            "invoke": {
+                "type": "applescript",
+                "script": "tell application \"Safari\" to open location \"{{url}}\""
+            }
         },
-        "required": ["url"]
-      },
-      "invoke": {
-        "type": "applescript",
-        "script": "tell application \"Safari\" to open location \"{{url}}\""
-      }
-    },
-    {
-      "name": "safari_get_active_url",
-      "description": "Get the URL of the currently active tab in Safari.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {}
-      },
-      "invoke": {
-        "type": "applescript",
-        "script": "tell application \"Safari\" to return URL of current tab of window 1"
-      }
-    },
-    {
-      "name": "safari_get_active_title",
-      "description": "Get the title of the currently active tab in Safari.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {}
-      },
-      "invoke": {
-        "type": "applescript",
-        "script": "tell application \"Safari\" to return name of current tab of window 1"
-      }
-    }
-  ]
+        {
+            "name": "safari_get_active_url",
+            "description": "Get the URL of the currently active tab in Safari.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {}
+            },
+            "invoke": {
+                "type": "applescript",
+                "script": "tell application \"Safari\" to return URL of current tab of window 1"
+            }
+        },
+        {
+            "name": "safari_get_active_title",
+            "description": "Get the title of the currently active tab in Safari.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {}
+            },
+            "invoke": {
+                "type": "applescript",
+                "script": "tell application \"Safari\" to return name of current tab of window 1"
+            }
+        }
+    ]
 }

@@ -1,54 +1,63 @@
 {
-  "app": "vscode",
-  "version": "1.0",
-  "tools": [
-    {
-      "name": "vscode_open_file",
-      "description": "Open a file in VS Code.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "path": {
-            "type": "string",
-            "description": "Absolute or relative path to the file or directory to open"
-          },
-          "line": {
-            "type": "number",
-            "description": "Line number to jump to (optional)"
-          }
+    "app": "vscode",
+    "version": "1.0",
+    "tools": [
+        {
+            "name": "vscode_open_file",
+            "description": "Open a file in VS Code.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Absolute or relative path to the file or directory to open"
+                    },
+                    "line": {
+                        "type": "number",
+                        "description": "Line number to jump to (optional)"
+                    }
+                },
+                "required": [
+                    "path"
+                ]
+            },
+            "invoke": {
+                "type": "cli",
+                "command": "code",
+                "args": [
+                    "--goto",
+                    "{{path}}:{{line}}"
+                ],
+                "shell": true
+            }
         },
-        "required": ["path"]
-      },
-      "invoke": {
-        "type": "cli",
-        "command": "code",
-        "args": ["--goto", "{{path}}:{{line}}"],
-        "shell": false
-      }
-    },
-    {
-      "name": "vscode_open_workspace",
-      "description": "Open a workspace or folder in VS Code.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "folder": {
-            "type": "string",
-            "description": "Absolute path to folder or workspace file"
-          },
-          "new_window": {
-            "type": "boolean",
-            "description": "Open in a new window instead of the current one (default false)"
-          }
-        },
-        "required": ["folder"]
-      },
-      "invoke": {
-        "type": "cli",
-        "command": "code",
-        "args": ["{{folder}}"],
-        "shell": false
-      }
-    }
-  ]
+        {
+            "name": "vscode_open_workspace",
+            "description": "Open a workspace or folder in VS Code.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "folder": {
+                        "type": "string",
+                        "description": "Absolute path to folder or workspace file"
+                    },
+                    "new_window": {
+                        "type": "boolean",
+                        "description": "Open in a new window instead of the current one (default false)"
+                    }
+                },
+                "required": [
+                    "folder"
+                ]
+            },
+            "invoke": {
+                "type": "cli",
+                "command": "code",
+                "args": [
+                    "{{folder}}"
+                ],
+                "shell": true
+            }
+        }
+    ]
 }

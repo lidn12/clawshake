@@ -319,11 +319,11 @@ async fn main() -> Result<()> {
 
         builtins::seed(&manifests_dir)?;
         let registry = watcher::ManifestRegistry::new();
-        watcher::start(manifests_dir, registry.clone())?;
+        let servers = watcher::start(manifests_dir, registry.clone())?;
         info!(tools = registry.tool_count(), "Broker ready");
 
         let broker_port = cli.port;
-        tokio::spawn(http_server::serve(broker_port, registry, permissions));
+        tokio::spawn(http_server::serve(broker_port, registry, permissions, servers));
         info!("Broker HTTP server starting on :{broker_port}");
 
         Some(McpBackend::Http(HttpBackend::new(broker_port)))

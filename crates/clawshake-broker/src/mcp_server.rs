@@ -11,7 +11,10 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tracing::{debug, warn};
 
-use crate::{router, watcher::ManifestRegistry};
+use crate::{
+    router,
+    watcher::{ManifestRegistry, McpServerMap},
+};
 
 // JSON-RPC error codes
 const PARSE_ERROR: i64 = -32700;
@@ -23,7 +26,11 @@ const INTERNAL_ERROR: i64 = -32603;
 ///
 /// Reads newline-delimited JSON-RPC 2.0 from stdin, writes responses to stdout.
 /// All callers over stdio are treated as `AgentId::Local`.
-pub async fn serve_stdio(registry: ManifestRegistry, permissions: PermissionStore) -> Result<()> {
+pub async fn serve_stdio(
+    registry: ManifestRegistry,
+    permissions: PermissionStore,
+    servers: McpServerMap,
+) -> Result<()> {
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
     let mut lines = BufReader::new(stdin).lines();
@@ -42,7 +49,7 @@ pub async fn serve_stdio(registry: ManifestRegistry, permissions: PermissionStor
                 PARSE_ERROR,
                 format!("Parse error: {e}"),
             )),
-            Ok(req) => handle(&req, &registry, &permissions).await,
+            Ok(req) => handle(&req, &registry, &permissions, &servers).await,
         };
 
         if let Some(resp) = response {
@@ -61,6 +68,7 @@ pub(crate) async fn handle(
     req: &JsonRpcRequest,
     registry: &ManifestRegistry,
     permissions: &PermissionStore,
+    servers: &McpServerMap,
 ) -> Option<JsonRpcResponse> {
     let id = req.id.clone();
     match req.method.as_str() {
@@ -156,7 +164,7 @@ pub(crate) async fn handle(
             let arguments = serde_json::to_value(&params.arguments)
                 .unwrap_or(Value::Object(Default::default()));
             let (content, is_error) =
-                match router::dispatch(&params.name, &arguments, registry).await {
+                match router::dispatch(&params.name, &arguments, registry, servers).await {
                     Ok(text) => (vec![McpContent::text(text)], false),
                     Err(e) => (vec![McpContent::text(e.to_string())], true),
                 };

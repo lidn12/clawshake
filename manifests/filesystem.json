@@ -1,0 +1,14 @@
+{
+    "app": "filesystem",
+    "version": "1.0",
+    "description": "MCP filesystem server – read, write, search, and manage files",
+    "mcp": {
+        "transport": "stdio",
+        "command": "npx",
+        "args": [
+            "-y",
+            "@modelcontextprotocol/server-filesystem",
+            "C:\\Users\\li\\Desktop"
+        ]
+    }
+}

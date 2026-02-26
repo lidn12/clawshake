@@ -1,48 +1,51 @@
 {
-  "app": "calendar",
-  "version": "1.0",
-  "tools": [
-    {
-      "name": "calendar_create_event",
-      "description": "Create a new calendar event.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "title": {
-            "type": "string",
-            "description": "Event name or title"
-          },
-          "description": {
-            "type": "string",
-            "description": "Event description (optional)"
-          },
-          "start_date": {
-            "type": "string",
-            "description": "Start date as YYYY-MM-DD or ISO 8601 datetime"
-          },
-          "duration_minutes": {
-            "type": "number",
-            "description": "Duration in minutes (default 60)"
-          }
+    "app": "calendar",
+    "version": "1.0",
+    "tools": [
+        {
+            "name": "calendar_create_event",
+            "description": "Create a new calendar event.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "Event name or title"
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Event description (optional)"
+                    },
+                    "start_date": {
+                        "type": "string",
+                        "description": "Start date as YYYY-MM-DD or ISO 8601 datetime"
+                    },
+                    "duration_minutes": {
+                        "type": "number",
+                        "description": "Duration in minutes (default 60)"
+                    }
+                },
+                "required": [
+                    "title",
+                    "start_date"
+                ]
+            },
+            "invoke": {
+                "type": "applescript",
+                "script": "tell application \"Calendar\"\n  set newEvent to make new event at end of events of (first calendar) with properties {summary:\"{{title}}\", description:\"{{description}}\", start date:(date \"{{start_date}}\")}\n  return \"Event created: {{title}}\"\nend tell"
+            }
         },
-        "required": ["title", "start_date"]
-      },
-      "invoke": {
-        "type": "applescript",
-        "script": "tell application \"Calendar\"\n  set newEvent to make new event at end of events of (first calendar) with properties {summary:\"{{title}}\", description:\"{{description}}\", start date:(date \"{{start_date}}\")}\n  return \"Event created: {{title}}\"\nend tell"
-      }
-    },
-    {
-      "name": "calendar_list_today",
-      "description": "List all events scheduled for today.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {}
-      },
-      "invoke": {
-        "type": "applescript",
-        "script": "tell application \"Calendar\"\n  set todayEvents to events of (first calendar) whose start date is in (current date)\n  set eventList to {}\n  repeat with evt in todayEvents\n    copy summary of evt to the end of eventList\n  end repeat\n  return eventList as string\nend tell"
-      }
-    }
-  ]
+        {
+            "name": "calendar_list_today",
+            "description": "List all events scheduled for today.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {}
+            },
+            "invoke": {
+                "type": "applescript",
+                "script": "tell application \"Calendar\"\n  set todayEvents to events of (first calendar) whose start date is in (current date)\n  set eventList to {}\n  repeat with evt in todayEvents\n    copy summary of evt to the end of eventList\n  end repeat\n  return eventList as string\nend tell"
+            }
+        }
+    ]
 }

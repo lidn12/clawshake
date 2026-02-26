@@ -2,7 +2,7 @@ use anyhow::Result;
 use clawshake_core::manifest::InvokeConfig;
 use serde_json::Value;
 
-use crate::{invoke, watcher::ManifestRegistry};
+use crate::{invoke, watcher::{ManifestRegistry, McpServerMap}};
 
 /// Dispatch a `tools/call` for `tool_name` to the correct invoke backend.
 ///
@@ -12,6 +12,7 @@ pub async fn dispatch(
     tool_name: &str,
     arguments: &Value,
     registry: &ManifestRegistry,
+    servers: &McpServerMap,
 ) -> Result<String> {
     let loaded = registry
         .get(tool_name)
@@ -34,6 +35,12 @@ pub async fn dispatch(
         }
         InvokeConfig::PowerShell { script } => {
             invoke::script::invoke_powershell(script, arguments).await
+        }
+        InvokeConfig::Mcp { server_key } => {
+            let server = servers
+                .get(server_key)
+                .ok_or_else(|| anyhow::anyhow!("MCP server '{server_key}' not running"))?;
+            server.tools_call(tool_name, arguments).await
         }
     }
 }

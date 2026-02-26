@@ -1,48 +1,52 @@
 {
-  "app": "mail",
-  "version": "1.0",
-  "tools": [
-    {
-      "name": "mail_compose",
-      "description": "Compose and send an email. Opens Mail with the draft pre-filled.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "to": {
-            "type": "string",
-            "description": "Recipient email address or comma-separated addresses"
-          },
-          "subject": {
-            "type": "string",
-            "description": "Email subject"
-          },
-          "body": {
-            "type": "string",
-            "description": "Email body (plain text)"
-          },
-          "send": {
-            "type": "boolean",
-            "description": "Send immediately (true) or leave as draft (false, default)"
-          }
+    "app": "mail",
+    "version": "1.0",
+    "tools": [
+        {
+            "name": "mail_compose",
+            "description": "Compose and send an email. Opens Mail with the draft pre-filled.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "to": {
+                        "type": "string",
+                        "description": "Recipient email address or comma-separated addresses"
+                    },
+                    "subject": {
+                        "type": "string",
+                        "description": "Email subject"
+                    },
+                    "body": {
+                        "type": "string",
+                        "description": "Email body (plain text)"
+                    },
+                    "send": {
+                        "type": "boolean",
+                        "description": "Send immediately (true) or leave as draft (false, default)"
+                    }
+                },
+                "required": [
+                    "to",
+                    "subject",
+                    "body"
+                ]
+            },
+            "invoke": {
+                "type": "applescript",
+                "script": "tell application \"Mail\"\n  set newMessage to make new outgoing message with properties {subject:\"{{subject}}\", content:\"{{body}}\", visible:true}\n  tell newMessage\n    make new to recipient at end of to recipients with properties {address:\"{{to}}\"}\n    {{#send}}send{{/send}}\n  end tell\nend tell\nreturn \"Email drafted to {{to}}\""
+            }
         },
-        "required": ["to", "subject", "body"]
-      },
-      "invoke": {
-        "type": "applescript",
-        "script": "tell application \"Mail\"\n  set newMessage to make new outgoing message with properties {subject:\"{{subject}}\", content:\"{{body}}\", visible:true}\n  tell newMessage\n    make new to recipient at end of to recipients with properties {address:\"{{to}}\"}\n    {{#send}}send{{/send}}\n  end tell\nend tell\nreturn \"Email drafted to {{to}}\""
-      }
-    },
-    {
-      "name": "mail_unread_count",
-      "description": "Get the count of unread emails in the Inbox.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {}
-      },
-      "invoke": {
-        "type": "applescript",
-        "script": "tell application \"Mail\"\n  set inbox to mailbox \"INBOX\" of account 1\n  set unreadCount to (count of (messages of inbox whose read status is false))\n  return unreadCount as string\nend tell"
-      }
-    }
-  ]
+        {
+            "name": "mail_unread_count",
+            "description": "Get the count of unread emails in the Inbox.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {}
+            },
+            "invoke": {
+                "type": "applescript",
+                "script": "tell application \"Mail\"\n  set inbox to mailbox \"INBOX\" of account 1\n  set unreadCount to (count of (messages of inbox whose read status is false))\n  return unreadCount as string\nend tell"
+            }
+        }
+    ]
 }

@@ -1,84 +1,86 @@
 {
-  "app": "spotify",
-  "version": "1.0",
-  "tools": [
-    {
-      "name": "spotify_play",
-      "description": "Play a track, album, or playlist by name. Opens Spotify and plays the search result.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "query": {
-            "type": "string",
-            "description": "Artist name, track name, album name, or Spotify URI (e.g. 'Bohemian Rhapsody' or 'spotify:track:...')"
-          }
+    "app": "spotify",
+    "version": "1.0",
+    "tools": [
+        {
+            "name": "spotify_play",
+            "description": "Play a track, album, or playlist by name. Opens Spotify and plays the search result.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Artist name, track name, album name, or Spotify URI (e.g. 'Bohemian Rhapsody' or 'spotify:track:...')"
+                    }
+                },
+                "required": [
+                    "query"
+                ]
+            },
+            "invoke": {
+                "type": "deeplink",
+                "template": "spotify:search:{{query}}"
+            }
         },
-        "required": ["query"]
-      },
-      "invoke": {
-        "type": "deeplink",
-        "template": "spotify:search:{{query}}"
-      }
-    },
-    {
-      "name": "spotify_pause",
-      "description": "Pause playback on the active device.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {}
-      },
-      "invoke": {
-        "type": "applescript",
-        "script": "tell application \"Spotify\" to pause"
-      }
-    },
-    {
-      "name": "spotify_resume",
-      "description": "Resume playback on the active device.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {}
-      },
-      "invoke": {
-        "type": "applescript",
-        "script": "tell application \"Spotify\" to play"
-      }
-    },
-    {
-      "name": "spotify_now_playing",
-      "description": "Get the name and artist of the currently playing track.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {}
-      },
-      "invoke": {
-        "type": "applescript",
-        "script": "tell application \"Spotify\" to return name of current track & \" — \" & artist of current track as string"
-      }
-    },
-    {
-      "name": "spotify_next",
-      "description": "Skip to the next track.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {}
-      },
-      "invoke": {
-        "type": "applescript",
-        "script": "tell application \"Spotify\" to next track"
-      }
-    },
-    {
-      "name": "spotify_previous",
-      "description": "Go back to the previous track.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {}
-      },
-      "invoke": {
-        "type": "applescript",
-        "script": "tell application \"Spotify\" to previous track"
-      }
-    }
-  ]
+        {
+            "name": "spotify_pause",
+            "description": "Pause playback on the active device.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {}
+            },
+            "invoke": {
+                "type": "applescript",
+                "script": "tell application \"Spotify\" to pause"
+            }
+        },
+        {
+            "name": "spotify_resume",
+            "description": "Resume playback on the active device.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {}
+            },
+            "invoke": {
+                "type": "applescript",
+                "script": "tell application \"Spotify\" to play"
+            }
+        },
+        {
+            "name": "spotify_now_playing",
+            "description": "Get the name and artist of the currently playing track.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {}
+            },
+            "invoke": {
+                "type": "applescript",
+                "script": "tell application \"Spotify\" to return name of current track & \" — \" & artist of current track as string"
+            }
+        },
+        {
+            "name": "spotify_next",
+            "description": "Skip to the next track.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {}
+            },
+            "invoke": {
+                "type": "applescript",
+                "script": "tell application \"Spotify\" to next track"
+            }
+        },
+        {
+            "name": "spotify_previous",
+            "description": "Go back to the previous track.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {}
+            },
+            "invoke": {
+                "type": "applescript",
+                "script": "tell application \"Spotify\" to previous track"
+            }
+        }
+    ]
 }
