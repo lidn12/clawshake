@@ -80,3 +80,9 @@ uuid = { version = "1", features = ["v4"] }
 # Internal crates
 clawshake-core = { path = "crates/clawshake-core" }
 clawshake-tools = { path = "crates/clawshake-tools" }
+
+[profile.dist]
+inherits = "release"
+lto = true          # whole-program dead-code elimination across crate boundaries
+codegen-units = 1   # required for LTO to be effective
+opt-level = "z"     # optimise for size over speed (safe for I/O-bound workloads)
