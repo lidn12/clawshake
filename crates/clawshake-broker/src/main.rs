@@ -33,7 +33,8 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     // Resolve ~/.clawshake paths.
-    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
+    let home =
+        dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
     let clawshake_dir = home.join(".clawshake");
     let manifests_dir = clawshake_dir.join("manifests");
     let db_path = clawshake_dir.join("permissions.db");

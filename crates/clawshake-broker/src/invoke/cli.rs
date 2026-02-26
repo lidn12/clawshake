@@ -35,14 +35,12 @@ pub async fn invoke(command: &str, args: &[String], arguments: &Value) -> Result
     };
 
     if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).trim_end().to_string())
+        Ok(String::from_utf8_lossy(&output.stdout)
+            .trim_end()
+            .to_string())
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!(
-            "command exited {}: {}",
-            output.status,
-            stderr.trim()
-        )
+        anyhow::bail!("command exited {}: {}", output.status, stderr.trim())
     }
 }
 

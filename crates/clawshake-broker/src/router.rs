@@ -18,15 +18,13 @@ pub async fn dispatch(
         .ok_or_else(|| anyhow::anyhow!("Unknown tool: {tool_name}"))?;
 
     match &loaded.tool.invoke {
-        InvokeConfig::Cli { command, args } => {
-            invoke::cli::invoke(command, args, arguments).await
-        }
-        InvokeConfig::Http { url, method, headers } => {
-            invoke::http::invoke(url, method.as_deref(), headers, arguments).await
-        }
-        InvokeConfig::Deeplink { template } => {
-            invoke::deeplink::invoke(template, arguments).await
-        }
+        InvokeConfig::Cli { command, args } => invoke::cli::invoke(command, args, arguments).await,
+        InvokeConfig::Http {
+            url,
+            method,
+            headers,
+        } => invoke::http::invoke(url, method.as_deref(), headers, arguments).await,
+        InvokeConfig::Deeplink { template } => invoke::deeplink::invoke(template, arguments).await,
         InvokeConfig::AppleScript { script } => {
             invoke::script::invoke_applescript(script, arguments).await
         }

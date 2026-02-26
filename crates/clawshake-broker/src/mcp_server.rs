@@ -100,7 +100,10 @@ async fn handle(
                 })
                 .collect();
             let result = ToolsListResult { tools: defs };
-            Some(JsonRpcResponse::ok(id, serde_json::to_value(result).unwrap()))
+            Some(JsonRpcResponse::ok(
+                id,
+                serde_json::to_value(result).unwrap(),
+            ))
         }
 
         // ---------------------------------------------------------------
@@ -121,9 +124,7 @@ async fn handle(
             };
 
             // Permission check.
-            let decision = permissions
-                .check(&AgentId::Local, &params.name)
-                .await;
+            let decision = permissions.check(&AgentId::Local, &params.name).await;
 
             match decision {
                 Decision::Allow => {}
@@ -143,7 +144,10 @@ async fn handle(
                 Decision::Ask => {
                     // First-run: auto-allow for Local callers (can be
                     // upgraded to interactive prompt in a later milestone).
-                    if let Err(e) = permissions.set("local", &params.name, Decision::Allow).await {
+                    if let Err(e) = permissions
+                        .set("local", &params.name, Decision::Allow)
+                        .await
+                    {
                         warn!("Failed to persist permission: {e}");
                     }
                 }
@@ -152,21 +156,23 @@ async fn handle(
             // Dispatch.
             let arguments = serde_json::to_value(&params.arguments)
                 .unwrap_or(Value::Object(Default::default()));
-            let (content, is_error) = match router::dispatch(&params.name, &arguments, registry).await {
-                Ok(text) => (vec![McpContent::text(text)], false),
-                Err(e) => (vec![McpContent::text(e.to_string())], true),
-            };
+            let (content, is_error) =
+                match router::dispatch(&params.name, &arguments, registry).await {
+                    Ok(text) => (vec![McpContent::text(text)], false),
+                    Err(e) => (vec![McpContent::text(e.to_string())], true),
+                };
             let result = ToolsCallResult { content, is_error };
-            Some(JsonRpcResponse::ok(id, serde_json::to_value(result).unwrap()))
+            Some(JsonRpcResponse::ok(
+                id,
+                serde_json::to_value(result).unwrap(),
+            ))
         }
 
         // ---------------------------------------------------------------
-        other => {
-            Some(JsonRpcResponse::err(
-                id,
-                METHOD_NOT_FOUND,
-                format!("Method not found: {other}"),
-            ))
-        }
+        other => Some(JsonRpcResponse::err(
+            id,
+            METHOD_NOT_FOUND,
+            format!("Method not found: {other}"),
+        )),
     }
 }

@@ -12,7 +12,9 @@ pub async fn invoke_powershell(script: &str, arguments: &Value) -> Result<String
         .output()
         .await?;
     if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).trim_end().to_string())
+        Ok(String::from_utf8_lossy(&output.stdout)
+            .trim_end()
+            .to_string())
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
         anyhow::bail!("powershell exited {}: {}", output.status, stderr.trim())
@@ -34,7 +36,9 @@ pub async fn invoke_applescript(script: &str, arguments: &Value) -> Result<Strin
             .output()
             .await?;
         if output.status.success() {
-            Ok(String::from_utf8_lossy(&output.stdout).trim_end().to_string())
+            Ok(String::from_utf8_lossy(&output.stdout)
+                .trim_end()
+                .to_string())
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr);
             anyhow::bail!("osascript exited {}: {}", output.status, stderr.trim())
