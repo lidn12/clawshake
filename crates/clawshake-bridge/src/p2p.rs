@@ -296,13 +296,19 @@ pub async fn run(
             tick.tick().await; // burn the immediate first tick
             loop {
                 tick.tick().await;
-                let addrs: Vec<Multiaddr> = addrs_clone
-                    .read()
-                    .expect("listen_addrs lock")
-                    .iter()
-                    .filter(|a| is_globally_reachable(a))
-                    .cloned()
-                    .collect();
+                let addrs: Vec<Multiaddr> = {
+                    let raw = addrs_clone.read().expect("listen_addrs lock");
+                    let mut seen_relays: std::collections::HashSet<Vec<u8>> =
+                        std::collections::HashSet::new();
+                    raw.iter()
+                        .filter(|a| is_globally_reachable(a))
+                        .filter(|a| match relay_circuit_key(a) {
+                            Some(key) => seen_relays.insert(key),
+                            None => true,
+                        })
+                        .cloned()
+                        .collect()
+                };
                 match announce::build_record(peer_id_clone, &addrs, &backend_clone).await {
                     Ok(record) => {
                         if dht_tx_clone.send(record).await.is_err() {
@@ -322,13 +328,19 @@ pub async fn run(
         let addrs_event = listen_addrs.clone();
         tokio::spawn(async move {
             while announce_rx.recv().await.is_some() {
-                let addrs: Vec<Multiaddr> = addrs_event
-                    .read()
-                    .expect("listen_addrs lock")
-                    .iter()
-                    .filter(|a| is_globally_reachable(a))
-                    .cloned()
-                    .collect();
+                let addrs: Vec<Multiaddr> = {
+                    let raw = addrs_event.read().expect("listen_addrs lock");
+                    let mut seen_relays: std::collections::HashSet<Vec<u8>> =
+                        std::collections::HashSet::new();
+                    raw.iter()
+                        .filter(|a| is_globally_reachable(a))
+                        .filter(|a| match relay_circuit_key(a) {
+                            Some(key) => seen_relays.insert(key),
+                            None => true,
+                        })
+                        .cloned()
+                        .collect()
+                };
                 match announce::build_record(local_peer_id, &addrs, &backend_event).await {
                     Ok(record) => {
                         let _ = dht_tx_event.send(record).await;
@@ -567,6 +579,23 @@ fn is_globally_reachable(addr: &Multiaddr) -> bool {
     is_public_addr(addr)
 }
 
+/// For a relay circuit multiaddr (`.../p2p/<relay>/p2p-circuit/...`), returns
+/// the relay peer's raw multihash bytes — used to keep exactly one circuit
+/// address per relay when deduplicating the announce address list.
+/// Returns `None` for non-circuit addresses.
+fn relay_circuit_key(addr: &Multiaddr) -> Option<Vec<u8>> {
+    use libp2p::multiaddr::Protocol;
+    let mut last_peer: Option<Vec<u8>> = None;
+    for p in addr.iter() {
+        match p {
+            Protocol::P2p(h) => last_peer = Some(h.to_bytes()),
+            Protocol::P2pCircuit => return last_peer,
+            _ => {}
+        }
+    }
+    None
+}
+
 /// Mutable state tracked across the main event loop.
 struct NodeState {
     relay_banner_shown: bool,
@@ -602,10 +631,10 @@ fn handle_event(
     match event {
         SwarmEvent::NewListenAddr { ref address, .. } => {
             info!("Listening on {address}");
-            ctx.listen_addrs
-                .write()
-                .expect("listen_addrs lock")
-                .push(address.clone());
+            let mut addrs = ctx.listen_addrs.write().expect("listen_addrs lock");
+            if !addrs.contains(address) {
+                addrs.push(address.clone());
+            }
         }
 
         SwarmEvent::ExpiredListenAddr { ref address, .. } => {
