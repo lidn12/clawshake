@@ -1226,11 +1226,21 @@ fn handle_event(
                         "Rendezvous: found peer {peer_id} with {} addr(s)",
                         addrs.len()
                     );
+                    // Only add globally-reachable addresses (public IPs and
+                    // relay circuits).  Private/loopback addresses from the
+                    // remote node's listen set would cause WrongPeerId errors
+                    // when dialed, since they resolve to our own localhost.
                     for addr in addrs {
-                        swarm
-                            .behaviour_mut()
-                            .kademlia
-                            .add_address(&peer_id, addr.clone());
+                        if is_globally_reachable(addr) {
+                            swarm
+                                .behaviour_mut()
+                                .kademlia
+                                .add_address(&peer_id, addr.clone());
+                        } else {
+                            tracing::debug!(
+                                "Rendezvous: skipped non-routable addr for {peer_id}: {addr}"
+                            );
+                        }
                     }
                     if let Err(e) = swarm.dial(peer_id) {
                         tracing::debug!("Rendezvous: skipped dial {peer_id}: {e}");
