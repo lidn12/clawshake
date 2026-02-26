@@ -28,7 +28,7 @@
 //!
 //! ```text
 //! schemas = parse(exec("clawshake-tools schema dump"))   # → register tools
-//! result  = parse(exec("clawshake-tools rpc network.search {\"query\":\"weather\"}"))
+//! result  = parse(exec("clawshake-tools rpc network_search {\"query\":\"weather\"}"))
 //! ```
 
 use anyhow::Result;

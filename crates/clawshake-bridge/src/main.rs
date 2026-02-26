@@ -196,7 +196,7 @@ async fn main() -> Result<()> {
     let table = Arc::new(PeerTable::new());
     let connected = new_connected_peers();
 
-    // Outbound P2P call channel: the IPC task drives network.call from any
+    // Outbound P2P call channel: the IPC task drives network_call from any
     // local process; the p2p event loop owns the receiver.
     let (call_tx, call_rx) = new_outbound_call_channel();
 

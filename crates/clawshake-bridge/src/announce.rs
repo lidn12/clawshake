@@ -6,7 +6,7 @@
 //! does not expire from the DHT.
 //!
 //! Any other node that knows a peer's ID can do a DHT GET with the same key
-//! to discover its tool list — this is how `network.tools(peer_id)` will work.
+//! to discover its tool list — this is how `network_tools(peer_id)` will work.
 
 use anyhow::Result;
 use clawshake_core::peer_table::{PeerInfo, PeerSource, ToolSummary};

@@ -353,7 +353,7 @@ pub async fn run(
 
     // -- Main event loop ----------------------------------------------------
     // Pending outbound P2P calls: request_id -> oneshot sender for the response.
-    // Populated when network.call sends a request through the swarm; resolved
+    // Populated when network_call sends a request through the swarm; resolved
     // when the proxy Response or OutboundFailure event comes back.
     let mut pending_outbound: std::collections::HashMap<
         request_response::OutboundRequestId,
@@ -418,7 +418,7 @@ pub async fn run(
                         }
                     }
 
-                    // ── Response to an outbound network.call ──────────────────
+                    // ── Response to an outbound network_call ──────────────────
                     SwarmEvent::Behaviour(ClawshakeBehaviourEvent::Proxy(
                         request_response::Event::Message {
                             message: request_response::Message::Response {
@@ -434,7 +434,7 @@ pub async fn run(
                         }
                     }
 
-                    // ── Outbound failure for a pending network.call ───────────
+                    // ── Outbound failure for a pending network_call ───────────
                     SwarmEvent::Behaviour(ClawshakeBehaviourEvent::Proxy(
                         request_response::Event::OutboundFailure {
                             peer, request_id, error, ..
@@ -452,7 +452,7 @@ pub async fn run(
                 }
             }
 
-            // network.call: send an outbound MCP request to a remote peer.
+            // network_call: send an outbound MCP request to a remote peer.
             Some(OutboundCall { peer_id, request, response_tx }) = call_rx.recv() => {
                 match peer_id.parse::<PeerId>() {
                     Ok(pid) => {
@@ -725,7 +725,7 @@ fn handle_event(
                 }
             }
 
-            // Track as reachable for network.ping
+            // Track as reachable for network_ping
             ctx.connected
                 .write()
                 .expect("connected peers lock poisoned")
@@ -1056,7 +1056,7 @@ fn handle_event(
         },
 
         // Proxy inbound send errors (Response and OutboundFailure are handled
-        // inline in the main loop to service pending network.call requests).
+        // inline in the main loop to service pending network_call requests).
         SwarmEvent::Behaviour(ClawshakeBehaviourEvent::Proxy(event)) => match event {
             request_response::Event::InboundFailure { peer, error, .. } => {
                 warn!("MCP inbound failure from {peer}: {error}");

@@ -28,7 +28,7 @@ pub fn tool_definitions() -> Vec<Value> {
                 "properties": {
                     "peer_id": {
                         "type": "string",
-                        "description": "libp2p peer ID string (from network.peers)"
+                        "description": "libp2p peer ID string (from network_peers)"
                     }
                 },
                 "required": ["peer_id"]
@@ -82,7 +82,7 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "network_call",
-            "description": "Invoke a tool on a specific remote peer over the P2P network and return its result. The peer must be currently connected (use network.ping to check). Arguments must match the tool's inputSchema (use network.describe to inspect it).",
+            "description": "Invoke a tool on a specific remote peer over the P2P network and return its result. The peer must be currently connected (use network_ping to check). Arguments must match the tool's inputSchema (use network_describe to inspect it).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -110,7 +110,7 @@ pub fn tool_definitions() -> Vec<Value> {
                 "properties": {
                     "peer_id": {
                         "type": "string",
-                        "description": "libp2p peer ID string (from network.peers)"
+                        "description": "libp2p peer ID string (from network_peers)"
                     }
                 },
                 "required": ["peer_id"]

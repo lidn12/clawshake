@@ -24,7 +24,7 @@ use tokio::sync::oneshot;
 /// Returns the result value to embed in the MCP `tools/call` response content.
 /// Never panics — all errors are returned as `{ "error": "..." }`.
 ///
-/// `call_tx` must be `Some` for `network.call`; the other five handlers ignore it.
+/// `call_tx` must be `Some` for `network_call`; the other five handlers ignore it.
 pub async fn handle(
     method: &str,
     params: Option<&Value>,
@@ -156,7 +156,7 @@ fn ping(params: &Value, connected: &ConnectedPeers) -> Value {
 async fn call(params: &Value, call_tx: Option<&OutboundCallTx>) -> Value {
     let tx = match call_tx {
         Some(tx) => tx,
-        None => return err("network.call: no P2P call channel available"),
+        None => return err("network_call: no P2P call channel available"),
     };
     let peer_id = match params["peer_id"].as_str() {
         Some(s) => s,
@@ -194,7 +194,7 @@ async fn call(params: &Value, call_tx: Option<&OutboundCallTx>) -> Value {
     };
 
     if tx.send(outbound).await.is_err() {
-        return err("network.call: P2P call channel closed");
+        return err("network_call: P2P call channel closed");
     }
 
     match response_rx.await {
@@ -203,7 +203,7 @@ async fn call(params: &Value, call_tx: Option<&OutboundCallTx>) -> Value {
             Err(e) => err(&format!("failed to parse response from peer: {e}")),
         },
         Ok(Err(e)) => err(&format!("P2P call failed: {e}")),
-        Err(_) => err("network.call: response channel dropped unexpectedly"),
+        Err(_) => err("network_call: response channel dropped unexpectedly"),
     }
 }
 

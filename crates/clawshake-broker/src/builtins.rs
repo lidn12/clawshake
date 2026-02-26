@@ -34,7 +34,7 @@ pub fn seed(manifests_dir: &Path) -> Result<()> {
 // is always used.  Arguments are passed as discrete array entries to avoid
 // shell-quoting issues with {{param}} substitution.
 //
-// network.call accepts `args` as a raw JSON string (e.g. '{"track":"Bohemian
+// network_call accepts `args` as a raw JSON string (e.g. '{"track":"Bohemian
 // Rhapsody"}') exactly as clawshake-tools expects.
 
 const NETWORK_MANIFEST: &str = r#"{

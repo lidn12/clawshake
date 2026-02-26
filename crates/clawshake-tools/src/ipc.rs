@@ -14,7 +14,7 @@
 //! response line back.
 //!
 //! ```text
-//! → {"method":"network.peers","params":{}}\n
+//! → {"method":"network_peers","params":{}}\n
 //! ← {"peers":[...]}\n
 //! ```
 //!

@@ -5,7 +5,7 @@
 //! - **Linux / macOS**: Unix domain socket `/tmp/clawshake-bridge.sock`
 //!
 //! The wire protocol is newline-delimited JSON.
-//! Request:  `{"method":"network.peers","params":{}}\n`
+//! Request:  `{"method":"network_peers","params":{}}\n`
 //! Response: `{ ... }\n`
 
 use anyhow::{Context, Result};
