@@ -456,6 +456,7 @@ dependencies = [
  "anyhow",
  "clap",
  "clawshake-core",
+ "dirs",
  "notify",
  "open",
  "reqwest",

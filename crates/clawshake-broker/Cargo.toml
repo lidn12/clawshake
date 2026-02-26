@@ -22,3 +22,4 @@ reqwest = { workspace = true }
 sqlx = { workspace = true }
 notify = { workspace = true }
 open = { workspace = true }
+dirs = { workspace = true }
