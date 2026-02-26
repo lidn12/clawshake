@@ -102,5 +102,19 @@ pub fn tool_definitions() -> Vec<Value> {
                 "required": ["peer_id", "tool"]
             }
         }),
+        json!({
+            "name": "network.record",
+            "description": "Return the raw DHT announcement record for a peer exactly as stored in the Kademlia DHT — schema version, peer_id, tools, tool_details, addrs, and timestamp. Useful for verifying the live record matches the published spec or debugging schema mismatches.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "peer_id": {
+                        "type": "string",
+                        "description": "libp2p peer ID string (from network.peers)"
+                    }
+                },
+                "required": ["peer_id"]
+            }
+        }),
     ]
 }

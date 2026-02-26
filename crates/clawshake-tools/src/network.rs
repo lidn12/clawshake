@@ -42,6 +42,7 @@ pub async fn handle(
         "network.describe" => describe(params, table),
         "network.ping" => ping(params, connected),
         "network.call" => call(params, call_tx).await,
+        "network.record" => record(params, table),
         _ => err(&format!("unknown network method: {}", method)),
     }
 }
@@ -124,6 +125,20 @@ fn describe(params: &Value, table: &PeerTable) -> Value {
                 "description": tool.description,
             }),
             None => err(&format!("tool {} not found on peer {}", tool_name, peer_id)),
+        },
+        None => err(&format!("peer {} not found in table", peer_id)),
+    }
+}
+
+fn record(params: &Value, table: &PeerTable) -> Value {
+    let peer_id = match params["peer_id"].as_str() {
+        Some(s) => s,
+        None => return err("missing required parameter: peer_id"),
+    };
+    match table.get(peer_id) {
+        Some(peer) => match peer.raw_record {
+            Some(raw) => raw,
+            None => err(&format!("no raw DHT record stored for peer {} (discovered via mDNS or not yet seen via DHT)", peer_id)),
         },
         None => err(&format!("peer {} not found in table", peer_id)),
     }

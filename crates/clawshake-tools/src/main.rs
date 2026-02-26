@@ -121,6 +121,12 @@ enum NetworkCmd {
         peer_id: String,
     },
 
+    /// Fetch the raw DHT announcement record for a peer (schema version, tools, addrs, timestamp).
+    Record {
+        #[arg(long, value_name = "PEER_ID")]
+        peer_id: String,
+    },
+
     /// Invoke a tool on a remote peer and print the result.
     Call {
         #[arg(long, value_name = "PEER_ID")]
@@ -178,6 +184,8 @@ async fn main() -> Result<()> {
 
             NetworkCmd::Ping { peer_id } => ("network.ping", json!({ "peer_id": peer_id })),
 
+            NetworkCmd::Record { peer_id } => ("network.record", json!({ "peer_id": peer_id })),
+
             NetworkCmd::Call {
                 peer_id,
                 tool,
@@ -190,7 +198,6 @@ async fn main() -> Result<()> {
                             .map_err(|e| anyhow::anyhow!("failed to read stdin: {e}"))?;
                         serde_json::from_str(&buf)
                             .map_err(|e| anyhow::anyhow!("stdin is not valid JSON: {e}"))?
-
                     }
                     Some(s) => serde_json::from_str(s)
                         .map_err(|e| anyhow::anyhow!("--args is not valid JSON: {e}"))?,

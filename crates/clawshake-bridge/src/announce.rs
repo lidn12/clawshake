@@ -70,6 +70,7 @@ impl AnnouncementRecord {
             tools,
             source: PeerSource::Libp2p,
             last_seen: self.ts,
+            raw_record: serde_json::to_value(self).ok(),
         }
     }
 }

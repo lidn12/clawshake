@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 /// A name + description pair for a single tool on a remote peer.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -23,6 +24,9 @@ pub struct PeerInfo {
     pub source: PeerSource,
     /// Unix timestamp (seconds) when this record was last observed.
     pub last_seen: u64,
+    /// The raw DHT announcement JSON, if this peer came from the DHT.
+    /// `None` for peers discovered via mDNS or other non-DHT sources.
+    pub raw_record: Option<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
