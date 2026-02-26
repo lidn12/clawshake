@@ -119,12 +119,21 @@ fn describe(params: &Value, table: &PeerTable) -> Value {
     };
     match table.get(peer_id) {
         Some(peer) => match peer.tools.iter().find(|t| t.name == tool_name) {
-            Some(tool) => json!({
-                "peer_id":     peer_id,
-                "tool_name":   tool.name,
-                "description": tool.description,
-            }),
-            None => err(&format!("tool {} not found on peer {}", tool_name, peer_id)),
+            Some(tool) => {
+                let mut resp = json!({
+                    "peer_id":     peer_id,
+                    "tool_name":   tool.name,
+                    "description": tool.description,
+                });
+                if let Some(schema) = &tool.input_schema {
+                    resp["inputSchema"] = schema.clone();
+                }
+                resp
+            }
+            None => err(&format!(
+                "tool '{}' not found on peer {}",
+                tool_name, peer_id
+            )),
         },
         None => err(&format!("peer {} not found in table", peer_id)),
     }

@@ -22,6 +22,9 @@ pub struct ToolAnnounce {
     pub name: String,
     #[serde(default)]
     pub description: String,
+    /// Full JSON Schema for the tool's input parameters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_schema: Option<serde_json::Value>,
 }
 
 /// The value stored in the DHT for each clawshake-bridge node.
@@ -52,6 +55,7 @@ impl AnnouncementRecord {
                 .map(|t| ToolSummary {
                     name: t.name.clone(),
                     description: t.description.clone(),
+                    input_schema: t.input_schema.clone(),
                 })
                 .collect()
         } else {
@@ -61,6 +65,7 @@ impl AnnouncementRecord {
                 .map(|n| ToolSummary {
                     name: n.clone(),
                     description: String::new(),
+                    input_schema: None,
                 })
                 .collect()
         };
@@ -100,6 +105,7 @@ pub async fn build_record(
             t["name"].as_str().map(|name| ToolAnnounce {
                 name: name.to_string(),
                 description: t["description"].as_str().unwrap_or("").to_string(),
+                input_schema: t.get("inputSchema").cloned(),
             })
         })
         .collect();

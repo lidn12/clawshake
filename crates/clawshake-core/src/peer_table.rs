@@ -10,6 +10,9 @@ pub struct ToolSummary {
     pub name: String,
     #[serde(default)]
     pub description: String,
+    /// Full JSON Schema for the tool's input parameters, if available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_schema: Option<Value>,
 }
 
 /// A discovered peer node on the network.

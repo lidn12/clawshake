@@ -50,7 +50,7 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "network_describe",
-            "description": "Get the description for a specific tool on a specific peer.",
+            "description": "Get the full description and input schema for a specific tool on a peer.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
