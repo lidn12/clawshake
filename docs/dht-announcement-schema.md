@@ -27,9 +27,9 @@ The value is a **UTF-8 encoded JSON object** with the following fields:
 {
   "v": 1,
   "peer_id": "12D3KooW...",
-  "tools": ["tool.name", ...],
+  "tools": ["tool_name", ...],
   "tool_details": [
-    { "name": "tool.name", "description": "Human-readable description" },
+    { "name": "tool_name", "description": "Human-readable description", "input_schema": { "type": "object", "properties": { ... } } },
     ...
   ],
   "addrs": [
@@ -46,7 +46,7 @@ The value is a **UTF-8 encoded JSON object** with the following fields:
 | `v` | integer | yes | Schema version. Always `1` for records conforming to this spec. |
 | `peer_id` | string | yes | Base58btc-encoded `PeerId` of the publishing node (libp2p multibase string form). Redundant with the DHT key but included for self-contained parsing. |
 | `tools` | string array | yes | Flat list of fully-qualified tool names (e.g. `"spotify.play"`). Present in all versions. Readers that only need tool names can use this field and ignore `tool_details`. |
-| `tool_details` | object array | yes (v1+) | Full tool entries with `name` and `description`. Supersedes `tools` for readers that want descriptions. May be empty `[]` on nodes with no backend. |
+| `tool_details` | object array | yes (v1+) | Full tool entries with `name`, `description`, and `input_schema`. Supersedes `tools` for readers that want descriptions or parameter schemas. May be empty `[]` on nodes with no backend. |
 | `addrs` | string array | yes | Multiaddr strings for reaching this node. In practice, relay circuit addresses: `/ip4/<relay>/tcp|udp/<port>/p2p/<relay_id>/p2p-circuit/p2p/<peer_id>`. One entry per relay. May be empty if no relay reservation is active yet. |
 | `ts` | integer | yes | Unix timestamp (seconds) when the record was built. Use to detect stale records — records older than 10 minutes should be treated as potentially stale. |
 
@@ -54,27 +54,40 @@ The value is a **UTF-8 encoded JSON object** with the following fields:
 
 ```json
 {
-  "name": "spotify.play",
-  "description": "Play a track, album, or playlist by name or URI"
+  "name": "write_file",
+  "description": "Create a new file or completely overwrite an existing file with new content.",
+  "input_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "path": { "type": "string" },
+      "content": { "type": "string" }
+    },
+    "required": ["path", "content"]
+  }
 }
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `name` | string | Fully-qualified tool name. Dot-separated namespace prefix + tool name. |
+| `name` | string | Tool name. Must use only `[a-z0-9_-]` characters (required by MCP clients such as VS Code). Use underscore as a word separator. |
 | `description` | string | Human-readable description, suitable for display or agent reasoning. May be empty string `""`. |
+| `input_schema` | object | JSON Schema object describing the tool's input parameters. Omitted if the backend did not provide one. When present, an agent can use this to construct a valid `network_call` without guessing parameter names. |
 
 ---
 
 ## Tool Naming Convention
 
-Tool names follow the pattern `<namespace>.<tool>`:
+Tool names must only use characters from the set `[a-z0-9_-]`. Dots (`.`) are not permitted — MCP clients such as VS Code reject tool names containing dots.
 
-- `spotify.play`, `spotify.pause` — tools registered from the Spotify manifest
-- `network.peers`, `network.call` — built-in network explorer tools (present on every node)
-- `agent.ping`, `agent.ask` — built-in agent channel tools (when implemented)
+Use underscore as a word separator:
 
-The namespace prefix is a naming convention only — it has no semantic meaning in the DHT record itself.
+- `write_file`, `list_directory` — tools from a filesystem MCP backend
+- `network_peers`, `network_call` — built-in network explorer tools (present on every node)
+- `agent_ping`, `agent_ask` — built-in agent channel tools (when implemented)
+- `spotify_play`, `spotify_pause` — tools registered from a Spotify manifest
+
+For namespaced tools (where multiple apps expose tools on the same node), use an underscore-separated prefix: `spotify_play` rather than `spotify.play`. This is a naming convention only — it has no semantic meaning in the DHT record itself.
 
 ---
 
@@ -96,12 +109,12 @@ Once a peer's record is retrieved from the DHT, tool invocation uses the Clawsha
 
 **Request** — standard MCP `tools/call` JSON-RPC:
 ```json
-{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"spotify.play","arguments":{"query":"Bohemian Rhapsody"}}}
+{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"write_file","arguments":{"path":"C:/Users/li/Desktop/hello.txt","content":"Hello from clawshake!"}}}
 ```
 
 **Response** — standard MCP `tools/call` result:
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"Now playing: Bohemian Rhapsody — Queen"}]}}
+{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"Successfully wrote to C:/Users/li/Desktop/hello.txt"}]}}
 ```
 
 The bridge on the receiving end stamps caller identity from the Noise-verified peer ID, checks the permission store, and either proxies the call to its local MCP backend or returns a permission error.
@@ -132,9 +145,21 @@ From the live test network (February 2026):
     "search_files", "get_file_info", "list_allowed_directories"
   ],
   "tool_details": [
-    { "name": "read_file", "description": "Read the complete contents of a file as text." },
-    { "name": "write_file", "description": "Create a new file or completely overwrite an existing file with new content." },
-    { "name": "list_directory", "description": "Get a detailed listing of all files and directories in a specified path." }
+    {
+      "name": "read_text_file",
+      "description": "Read the complete contents of a file from the file system as text.",
+      "input_schema": { "type": "object", "properties": { "path": { "type": "string" } }, "required": ["path"] }
+    },
+    {
+      "name": "write_file",
+      "description": "Create a new file or completely overwrite an existing file with new content.",
+      "input_schema": { "type": "object", "properties": { "path": { "type": "string" }, "content": { "type": "string" } }, "required": ["path", "content"] }
+    },
+    {
+      "name": "list_directory",
+      "description": "Get a detailed listing of all files and directories in a specified path.",
+      "input_schema": { "type": "object", "properties": { "path": { "type": "string" } }, "required": ["path"] }
+    }
   ],
   "addrs": [
     "/ip4/43.143.33.106/tcp/7474/p2p/12D3KooWDi1ntKAkUYpHfijLNExUTsirFyofnkEB3yjC8P3EGcY5/p2p-circuit/p2p/12D3KooWHZq8jRUBzS8ArgQFhzg5M9NXAfDL3vcimLxgQtsFFyyC",
