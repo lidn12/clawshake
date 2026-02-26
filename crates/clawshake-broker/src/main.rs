@@ -5,6 +5,7 @@ use tracing::info;
 
 mod builtins;
 mod consent;
+mod http_server;
 mod invoke;
 mod mcp_server;
 mod router;
@@ -14,8 +15,9 @@ mod watcher;
 #[derive(Parser, Debug)]
 #[command(name = "clawshake-broker", version, about)]
 struct Cli {
-    /// Run as a stdio MCP server (default when no --port given).
-    /// Pass `--port <N>` to listen on a TCP port instead (not yet implemented).
+    /// Run as an HTTP SSE MCP server on this port (e.g. --port 7475).
+    /// VS Code config: { "type": "sse", "url": "http://127.0.0.1:<port>/sse" }
+    /// Omit to use stdio mode instead.
     #[arg(long)]
     port: Option<u16>,
 }
@@ -52,7 +54,7 @@ async fn main() -> Result<()> {
     info!(tools = registry.tool_count(), "Broker ready");
 
     if let Some(port) = cli.port {
-        anyhow::bail!("TCP mode (--port {port}) is not yet implemented; omit --port to use stdio");
+        return http_server::serve(port, registry, permissions).await;
     }
 
     // Default: MCP stdio loop.

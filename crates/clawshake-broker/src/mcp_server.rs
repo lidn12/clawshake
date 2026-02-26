@@ -57,7 +57,7 @@ pub async fn serve_stdio(registry: ManifestRegistry, permissions: PermissionStor
 }
 
 /// Handle one decoded request.  Returns `None` for notifications (no response).
-async fn handle(
+pub(crate) async fn handle(
     req: &JsonRpcRequest,
     registry: &ManifestRegistry,
     permissions: &PermissionStore,
