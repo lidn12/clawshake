@@ -97,6 +97,20 @@ pub async fn run_network_cmd(cmd: &NetworkCmd) -> Result<()> {
     };
 
     let result = client::send_request(method, params).await?;
-    println!("{}", serde_json::to_string_pretty(&result)?);
+
+    // If the result contains an "error" key (set by network::err()), propagate
+    // it as a proper error so the broker's invoke/cli backend sees a non-zero
+    // exit code and marks the MCP response with isError: true.
+    if let Some(msg) = result.get("error").and_then(|v| v.as_str()) {
+        anyhow::bail!("{msg}");
+    }
+
+    // For network_call, the unwrapped result is {"result": "..."} — print
+    // just the inner text so the agent sees plain content, not a JSON wrapper.
+    if let Some(text) = result.get("result").and_then(|v| v.as_str()) {
+        println!("{text}");
+    } else {
+        println!("{}", serde_json::to_string_pretty(&result)?);
+    }
     Ok(())
 }

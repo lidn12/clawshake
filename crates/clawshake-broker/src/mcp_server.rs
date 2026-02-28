@@ -167,10 +167,7 @@ pub(crate) async fn handle(
                 match router::dispatch(&params.name, &arguments, registry, servers).await {
                     Ok(text) => (vec![McpContent::text(text)], false),
                     Err(e) => (
-                        vec![McpContent::text(format!(
-                            "Tool '{}': {}",
-                            params.name, e
-                        ))],
+                        vec![McpContent::text(format!("Tool '{}': {}", params.name, e))],
                         true,
                     ),
                 };

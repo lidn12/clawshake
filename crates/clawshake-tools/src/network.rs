@@ -185,13 +185,51 @@ async fn call(params: &Value, call_tx: Option<&OutboundCallTx>) -> Value {
         return err("network_call: P2P call channel closed");
     }
 
-    match response_rx.await {
+    let raw = match response_rx.await {
         Ok(Ok(bytes)) => match serde_json::from_slice::<Value>(&bytes) {
             Ok(v) => v,
-            Err(e) => err(&format!("failed to parse response from peer: {e}")),
+            Err(e) => return err(&format!("failed to parse response from peer: {e}")),
         },
-        Ok(Err(e)) => err(&format!("P2P call failed: {e}")),
-        Err(_) => err("network_call: response channel dropped unexpectedly"),
+        Ok(Err(e)) => return err(&format!("P2P call failed: {e}")),
+        Err(_) => return err("network_call: response channel dropped unexpectedly"),
+    };
+
+    // Unwrap the MCP JSON-RPC envelope so the caller sees the same content
+    // shape as a local tools/call — plain text (or error text), not a nested
+    // JSON-RPC response serialised inside a string.
+    //
+    // Success: {"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"..."}],"isError":false}}
+    // Error:   {"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"..."}}
+    if let Some(result) = raw.get("result") {
+        let is_error = result
+            .get("isError")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        // Collect text from all content entries.
+        let text = result
+            .get("content")
+            .and_then(|c| c.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|item| item.get("text").and_then(|t| t.as_str()))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .unwrap_or_default();
+        if is_error {
+            err(&text)
+        } else {
+            json!({ "result": text })
+        }
+    } else if let Some(error) = raw.get("error") {
+        let message = error
+            .get("message")
+            .and_then(|m| m.as_str())
+            .unwrap_or("unknown error");
+        err(&format!("Remote node returned JSON-RPC error: {message}"))
+    } else {
+        // Unrecognised response shape — return as-is.
+        raw
     }
 }
 
