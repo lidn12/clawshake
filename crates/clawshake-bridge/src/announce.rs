@@ -93,7 +93,8 @@ pub async fn build_record(
     let tools: Vec<ToolAnnounce> = raw_tools
         .iter()
         .filter_map(|t| {
-            t["name"].as_str().map(|name| ToolAnnounce {
+            let name = t["name"].as_str()?;
+            Some(ToolAnnounce {
                 name: name.to_string(),
                 description: t["description"].as_str().unwrap_or("").to_string(),
                 input_schema: t
