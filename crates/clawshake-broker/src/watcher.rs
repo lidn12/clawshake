@@ -14,15 +14,18 @@ use crate::invoke::mcp::McpServer;
 // Registry
 // ---------------------------------------------------------------------------
 
-/// A single tool entry as loaded from a manifest, with its app prefix.
+/// A single tool entry as loaded from a manifest, tagged with its source.
+///
+/// The `source` is derived from the manifest file stem (e.g. `"spotify"`
+/// for `spotify.json`).
 #[derive(Debug, Clone)]
 pub struct LoadedTool {
     pub tool: Tool,
-    pub app: String,
+    pub source: String,
 }
 
-/// Thread-safe map of qualified tool name → loaded tool.
-/// e.g. `"spotify.play"` → `LoadedTool { tool: ..., app: "spotify" }`
+/// Thread-safe map of tool name → loaded tool.
+/// e.g. `"spotify_play"` → `LoadedTool { tool: ..., source: "spotify" }`
 #[derive(Debug, Clone, Default)]
 pub struct ManifestRegistry {
     inner: Arc<RwLock<HashMap<String, LoadedTool>>>,
@@ -33,8 +36,8 @@ impl ManifestRegistry {
         Self::default()
     }
 
-    /// Insert all tools from a manifest, keyed by qualified name.
-    pub fn load_manifest(&self, manifest: &Manifest) {
+    /// Insert all tools from a manifest, keyed by tool name.
+    pub fn load_manifest(&self, source: &str, manifest: &Manifest) {
         let mut map = self.inner.write().expect("registry lock");
         for tool in &manifest.tools {
             let key = tool.name.clone();
@@ -42,15 +45,15 @@ impl ManifestRegistry {
                 key,
                 LoadedTool {
                     tool: tool.clone(),
-                    app: manifest.app.clone(),
+                    source: source.to_string(),
                 },
             );
         }
     }
 
     /// Insert tools discovered from an MCP server, all tagged with the
-    /// given `app` and pointing at `server_key` for dispatch.
-    pub fn load_mcp_tools(&self, app: &str, server_key: &str, tools: Vec<Tool>) {
+    /// given `source` and pointing at `server_key` for dispatch.
+    pub fn load_mcp_tools(&self, source: &str, server_key: &str, tools: Vec<Tool>) {
         let mut map = self.inner.write().expect("registry lock");
         for mut tool in tools {
             tool.invoke = InvokeConfig::Mcp {
@@ -61,16 +64,16 @@ impl ManifestRegistry {
                 key,
                 LoadedTool {
                     tool,
-                    app: app.to_string(),
+                    source: source.to_string(),
                 },
             );
         }
     }
 
-    /// Remove all tools that came from a specific app (on manifest removal/rename).
-    pub fn unload_app(&self, app: &str) {
+    /// Remove all tools that came from a specific source (on manifest removal/rename).
+    pub fn unload_source(&self, source: &str) {
         let mut map = self.inner.write().expect("registry lock");
-        map.retain(|_, v| v.app != app);
+        map.retain(|_, v| v.source != source);
     }
 
     /// Return all currently loaded tools, sorted by name.
@@ -81,10 +84,10 @@ impl ManifestRegistry {
         tools
     }
 
-    /// Look up a tool by its qualified name.
-    pub fn get(&self, qualified_name: &str) -> Option<LoadedTool> {
+    /// Look up a tool by its name.
+    pub fn get(&self, name: &str) -> Option<LoadedTool> {
         let map = self.inner.read().expect("registry lock");
-        map.get(qualified_name).cloned()
+        map.get(name).cloned()
     }
 
     pub fn tool_count(&self) -> usize {
@@ -96,7 +99,7 @@ impl ManifestRegistry {
 // MCP server handle map
 // ---------------------------------------------------------------------------
 
-/// Thread-safe map of server_key (= app name) → running McpServer handle.
+/// Thread-safe map of server_key (= source name / file stem) → running McpServer handle.
 #[derive(Clone, Default)]
 pub struct McpServerMap {
     inner: Arc<RwLock<HashMap<String, McpServer>>>,
@@ -164,24 +167,28 @@ fn load_file(
         }
     };
 
-    let app = manifest.app.clone();
+    let source = path
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
 
     // Load static tools (if any).
     if !manifest.tools.is_empty() {
         info!(
-            app = app,
+            source = source,
             tools = manifest.tools.len(),
             "Loaded static tools from {:?}",
             path.file_name().unwrap_or_default()
         );
-        registry.load_manifest(&manifest);
+        registry.load_manifest(&source, &manifest);
     }
 
     // If this manifest has an MCP source, spawn a task to connect and discover.
     if let Some(ref mcp) = manifest.mcp {
         // Skip if this server is already running (e.g. duplicate load).
-        if servers.contains(&app) {
-            info!(app = app, "MCP server already running, skipping spawn");
+        if servers.contains(&source) {
+            info!(source = source, "MCP server already running, skipping spawn");
             return;
         }
 
@@ -194,21 +201,21 @@ fn load_file(
             .to_string_lossy()
             .to_string();
         rt.spawn(async move {
-            match connect_mcp_source(&app, &mcp).await {
+            match connect_mcp_source(&source, &mcp).await {
                 Ok(server) => match server.tools_list().await {
                     Ok(raw_tools) => {
                         let tools = parse_mcp_tools(&raw_tools);
                         info!(
-                            app = app,
+                            source = source,
                             tools = tools.len(),
                             "Discovered MCP tools from {filename}"
                         );
-                        registry.load_mcp_tools(&app, &app, tools);
-                        servers.insert(&app, server);
+                        registry.load_mcp_tools(&source, &source, tools);
+                        servers.insert(&source, server);
                     }
-                    Err(e) => warn!("Failed to list tools from MCP server '{app}': {e}"),
+                    Err(e) => warn!("Failed to list tools from MCP server '{source}': {e}"),
                 },
-                Err(e) => warn!("Failed to connect MCP server '{app}': {e}"),
+                Err(e) => warn!("Failed to connect MCP server '{source}': {e}"),
             }
         });
     }
@@ -223,14 +230,14 @@ fn load_file(
 }
 
 /// Connect to an MCP server based on the source config.
-async fn connect_mcp_source(app: &str, source: &McpSource) -> Result<McpServer> {
-    match source {
+async fn connect_mcp_source(source: &str, mcp: &McpSource) -> Result<McpServer> {
+    match mcp {
         McpSource::Stdio { command, args } => {
-            info!(app, command, "Spawning MCP stdio server");
+            info!(source, command, "Spawning MCP stdio server");
             McpServer::spawn_stdio(command, args).await
         }
         McpSource::Http { url } => {
-            info!(app, url, "Connecting to MCP HTTP server");
+            info!(source, url, "Connecting to MCP HTTP server");
             Ok(McpServer::connect_http(url))
         }
     }
@@ -267,12 +274,10 @@ fn parse_mcp_tools(raw: &[serde_json::Value]) -> Vec<Tool> {
         .collect()
 }
 
-/// Derive the app name from a manifest file path by parsing the file.
-/// Returns `None` if the file can't be read or parsed.
-fn app_name_from_path(path: &Path) -> Option<String> {
-    let content = std::fs::read_to_string(path).ok()?;
-    let manifest: Manifest = serde_json::from_str(&content).ok()?;
-    Some(manifest.app.clone())
+/// Derive the source name from a manifest file path (its file stem).
+/// e.g. `/home/user/.clawshake/manifests/spotify.json` → `"spotify"`.
+fn source_name_from_path(path: &Path) -> Option<String> {
+    Some(path.file_stem()?.to_string_lossy().to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -366,9 +371,9 @@ fn handle_event(
         Create(_) | Modify(_) => {
             for path in paths {
                 // Unload the old version first so renamed tools don't linger.
-                if let Some(app) = app_name_from_path(path) {
-                    registry.unload_app(&app);
-                    servers.remove(&app);
+                if let Some(source) = source_name_from_path(path) {
+                    registry.unload_source(&source);
+                    servers.remove(&source);
                 }
                 load_file(path, registry, servers, rt);
                 changed = true;
@@ -376,10 +381,10 @@ fn handle_event(
         }
         Remove(_) => {
             for path in paths {
-                if let Some(app) = app_name_from_path(path) {
-                    registry.unload_app(&app);
-                    servers.remove(&app);
-                    info!(app, "Unloaded manifest (file removed)");
+                if let Some(source) = source_name_from_path(path) {
+                    registry.unload_source(&source);
+                    servers.remove(&source);
+                    info!(source, "Unloaded manifest (file removed)");
                     changed = true;
                 }
             }

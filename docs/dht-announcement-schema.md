@@ -85,7 +85,7 @@ Use underscore as a word separator:
 - `agent_ping`, `agent_ask` — built-in agent channel tools (when implemented)
 - `spotify_play`, `spotify_pause` — tools registered from a Spotify manifest
 
-For namespaced tools (where multiple apps expose tools on the same node), use an underscore-separated prefix: `spotify_play` rather than `spotify.play`. This is a naming convention only — it has no semantic meaning in the DHT record itself.
+For namespaced tools (where multiple apps expose tools on the same node), use an underscore-separated prefix: `spotify_play`, `calendar_create_event`. This is a naming convention only — it has no semantic meaning in the DHT record itself.
 
 ---
 

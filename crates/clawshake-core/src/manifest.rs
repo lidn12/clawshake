@@ -2,14 +2,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
-/// Top-level manifest file — one per app, dropped into ~/.clawshake/manifests/.
+/// Top-level manifest file, dropped into ~/.clawshake/manifests/.
+///
+/// The file stem (e.g. `spotify` from `spotify.json`) serves as the
+/// grouping key — there is no explicit `app` field.
 ///
 /// A manifest either contains static tool definitions (`tools`) or points to
 /// an external MCP server whose tools are discovered dynamically (`mcp`).
 /// Both fields are optional but at least one must be present.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Manifest {
-    pub app: String,
     pub version: String,
     /// Static tool definitions with explicit invoke configs.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -118,9 +120,4 @@ pub enum InvokeConfig {
     },
 }
 
-impl Manifest {
-    /// Returns the qualified MCP tool name: `{app}.{tool.name}`.
-    pub fn qualified_name(app: &str, tool_name: &str) -> String {
-        format!("{app}.{tool_name}")
-    }
-}
+

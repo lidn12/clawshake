@@ -38,7 +38,6 @@ pub fn seed(manifests_dir: &Path) -> Result<()> {
 // Rhapsody"}') exactly as clawshake-tools expects.
 
 const NETWORK_MANIFEST: &str = r#"{
-  "app": "network",
   "version": "1.0",
   "tools": [
     {
@@ -142,7 +141,7 @@ const NETWORK_MANIFEST: &str = r#"{
           },
           "tool": {
             "type": "string",
-            "description": "Fully-qualified tool name to invoke (e.g. \"spotify.play\")."
+            "description": "Fully-qualified tool name to invoke (e.g. \"spotify_play\")."
           },
           "args": {
             "type": "string",

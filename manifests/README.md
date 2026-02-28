@@ -30,7 +30,6 @@ Use the examples as templates. A basic manifest looks like:
 
 ```json
 {
-  "app": "myapp",
   "version": "1.0",
   "tools": [
     {
