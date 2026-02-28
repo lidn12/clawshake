@@ -89,7 +89,7 @@ fn tools(params: &Value, table: &PeerTable) -> Value {
                     entry
                 })
                 .collect();
-            json!({ "peer_id": peer_id, "tools": tools })
+            json!({ "tools": tools })
         }
         None => err(&format!("peer {} not found in table", peer_id)),
     }
