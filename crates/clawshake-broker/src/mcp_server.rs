@@ -168,7 +168,7 @@ pub(crate) async fn handle(
                     Ok(text) => (vec![McpContent::text(text)], false),
                     Err(e) => (
                         vec![McpContent::text(format!(
-                            "Tool '{}' failed: {}",
+                            "Tool '{}': {}",
                             params.name, e
                         ))],
                         true,

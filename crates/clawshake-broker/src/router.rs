@@ -2,7 +2,10 @@ use anyhow::Result;
 use clawshake_core::manifest::InvokeConfig;
 use serde_json::Value;
 
-use crate::{invoke, watcher::{ManifestRegistry, McpServerMap}};
+use crate::{
+    invoke,
+    watcher::{ManifestRegistry, McpServerMap},
+};
 
 /// Dispatch a `tools/call` for `tool_name` to the correct invoke backend.
 ///
@@ -14,9 +17,12 @@ pub async fn dispatch(
     registry: &ManifestRegistry,
     servers: &McpServerMap,
 ) -> Result<String> {
-    let loaded = registry
-        .get(tool_name)
-        .ok_or_else(|| anyhow::anyhow!("Tool '{tool_name}' not found. Run `clawshake tools list` to see available tools."))?;
+    let loaded = registry.get(tool_name).ok_or_else(|| {
+        anyhow::anyhow!(
+            "no tool with this name is registered on the node. \
+             Re-check available tools via tools/list."
+        )
+    })?;
 
     match &loaded.tool.invoke {
         InvokeConfig::Cli {
@@ -37,9 +43,12 @@ pub async fn dispatch(
             invoke::script::invoke_powershell(script, arguments).await
         }
         InvokeConfig::Mcp { server_key } => {
-            let server = servers
-                .get(server_key)
-                .ok_or_else(|| anyhow::anyhow!("Tool '{tool_name}' is unavailable because its MCP server ('{server_key}') is not running. The node operator may need to restart the broker."))?;
+            let server = servers.get(server_key).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "its MCP server ('{server_key}') is not running. \
+                     The node operator may need to restart the broker."
+                )
+            })?;
             server.tools_call(tool_name, arguments).await
         }
     }
