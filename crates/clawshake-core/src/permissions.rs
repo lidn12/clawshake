@@ -2,12 +2,10 @@
 //!
 //! Waterfall lookup (first match wins, most-specific first):
 //!   1. (exact agent,    exact tool)
-//!   2. (exact agent,    prefix.*)
-//!   3. (exact agent,    *)
-//!   4. (wildcard agent, exact tool)
-//!   5. (wildcard agent, prefix.*)
-//!   6. (wildcard agent, *)
-//!   7. not found → Local: Ask | P2P/Tailscale: Deny
+//!   2. (exact agent,    *)
+//!   3. (wildcard agent, exact tool)
+//!   4. (wildcard agent, *)
+//!   5. not found → Local: Ask | P2P/Tailscale: Deny
 
 use std::path::Path;
 
@@ -129,25 +127,18 @@ impl PermissionStore {
             AgentId::Local => "", // empty string won't match any real row
         };
 
-        // Tool-prefix wildcard: "nas.download" → "nas.*", "play" → "" (no prefix).
-        let prefix_wildcard = match tool_name.split_once('.') {
-            Some((prefix, _)) => format!("{prefix}.*"),
-            None => String::new(),
-        };
-
         let result = sqlx::query(
             "SELECT decision FROM permissions
              WHERE agent_id IN (?1, ?2)
-               AND tool_name IN (?3, ?4, '*')
+               AND tool_name IN (?3, '*')
              ORDER BY
                CASE agent_id   WHEN ?1 THEN 0 ELSE 1 END,
-               CASE tool_name  WHEN ?3 THEN 0 WHEN ?4 THEN 1 ELSE 2 END
+               CASE tool_name  WHEN ?3 THEN 0 ELSE 1 END
              LIMIT 1",
         )
         .bind(exact_agent.as_str())
         .bind(wildcard_agent)
         .bind(tool_name)
-        .bind(prefix_wildcard.as_str())
         .fetch_optional(&self.db)
         .await;
 
