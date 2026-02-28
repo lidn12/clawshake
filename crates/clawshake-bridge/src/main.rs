@@ -38,9 +38,11 @@ enum Command {
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "clawshake_bridge=info,libp2p=warn".parse().expect("valid tracing filter")),
-
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                "clawshake_bridge=info,libp2p=warn"
+                    .parse()
+                    .expect("valid tracing filter")
+            }),
         )
         .init();
 
