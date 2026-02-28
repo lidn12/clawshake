@@ -34,10 +34,8 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use clawshake_bridge::{
-    backend::{HttpBackend, McpBackend, StdioBackend},
-    p2p,
-};
+use clawshake_bridge::p2p;
+use clawshake_core::mcp_client::{HttpClient, McpClient, StdioClient};
 use clawshake_broker::{builtins, http_server, watcher};
 use clawshake_core::{
     network_channel::{new_connected_peers, new_outbound_call_channel},
@@ -303,15 +301,15 @@ async fn main() -> Result<()> {
     };
 
     // Build the MCP backend.
-    let backend: Option<McpBackend> = if let Some(cmd) = &cli.mcp_cmd {
+    let backend: Option<McpClient> = if let Some(cmd) = &cli.mcp_cmd {
         // Track-1 mode: proxy a stdio MCP server.
         info!("MCP backend: stdio — {cmd}");
-        let b = StdioBackend::spawn(cmd).await?;
-        Some(McpBackend::Stdio(b))
+        let b = StdioClient::spawn(cmd, &[], "clawshake-bridge").await?;
+        Some(McpClient::Stdio(b))
     } else if let Some(port) = cli.mcp_port {
         // Track-1 mode: proxy an existing HTTP MCP server.
         info!("MCP backend: HTTP — http://127.0.0.1:{port}");
-        Some(McpBackend::Http(HttpBackend::new(port)))
+        Some(McpClient::Http(HttpClient::new(format!("http://127.0.0.1:{port}"))))
     } else {
         // Default mode: start the local broker and point the bridge at it.
         let manifests_dir = clawshake_dir.join("manifests");
@@ -326,7 +324,7 @@ async fn main() -> Result<()> {
         tokio::spawn(http_server::serve(broker_port, registry, permissions, servers));
         info!("Broker HTTP server starting on :{broker_port}");
 
-        Some(McpBackend::Http(HttpBackend::new(broker_port)))
+        Some(McpClient::Http(HttpClient::new(format!("http://127.0.0.1:{broker_port}"))))
     };
 
     // Open the permission store for the bridge (p2p inbound gate).

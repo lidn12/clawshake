@@ -14,7 +14,7 @@ use libp2p::{kad, Multiaddr, PeerId};
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
-use crate::backend::McpBackend;
+use clawshake_core::mcp_client::McpClient;
 
 /// A single tool entry in the DHT announcement.
 /// Matches the MCP `tools/list` tool definition shape.
@@ -86,7 +86,7 @@ impl AnnouncementRecord {
 pub async fn build_record(
     peer_id: PeerId,
     listen_addrs: &[Multiaddr],
-    backend: &McpBackend,
+    backend: &McpClient,
 ) -> Result<kad::Record> {
     let raw_tools = backend.tools_list().await?;
 

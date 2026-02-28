@@ -10,11 +10,10 @@ use clawshake_core::{
 use tracing::info;
 
 mod announce;
-mod backend;
 mod p2p;
 mod proxy;
 
-use backend::{HttpBackend, McpBackend, StdioBackend};
+use clawshake_core::mcp_client::{HttpClient, McpClient, StdioClient};
 
 /// Clawshake Bridge — expose an existing MCP server to the peer-to-peer network.
 #[derive(Parser, Debug)]
@@ -175,13 +174,13 @@ async fn main() -> Result<()> {
     };
 
     // Build the MCP backend (if any).
-    let backend: Option<McpBackend> = if let Some(cmd) = &cli.mcp_cmd {
+    let backend: Option<McpClient> = if let Some(cmd) = &cli.mcp_cmd {
         info!("MCP backend: stdio — {cmd}");
-        let b = StdioBackend::spawn(cmd).await?;
-        Some(McpBackend::Stdio(b))
+        let b = StdioClient::spawn(cmd, &[], "clawshake-bridge").await?;
+        Some(McpClient::Stdio(b))
     } else if let Some(port) = cli.mcp_port {
         info!("MCP backend: HTTP — http://127.0.0.1:{port}");
-        Some(McpBackend::Http(HttpBackend::new(port)))
+        Some(McpClient::Http(HttpClient::new(format!("http://127.0.0.1:{port}"))))
     } else {
         info!("No MCP backend configured — running in discovery-only mode");
         None

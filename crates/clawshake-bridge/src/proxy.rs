@@ -26,7 +26,7 @@ use libp2p::{
 use serde_json::Value;
 use tracing::{info, warn};
 
-use crate::backend::McpBackend;
+use clawshake_core::mcp_client::McpClient;
 
 // The maximum payload we'll accept from a remote peer (16 MiB).
 const MAX_PAYLOAD: u32 = 16 * 1024 * 1024;
@@ -148,7 +148,7 @@ pub fn new_behaviour() -> Behaviour {
 /// default (`p2p:* → * → deny`).  Network tools are served on the local
 /// caller surface, which does not go through this proxy.
 pub async fn forward(
-    backend: &McpBackend,
+    backend: &McpClient,
     store: &PermissionStore,
     caller: &PeerId,
     raw: Vec<u8>,

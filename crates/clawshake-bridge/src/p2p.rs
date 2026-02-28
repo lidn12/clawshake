@@ -4,9 +4,10 @@ use std::{
     time::Duration,
 };
 
-use crate::{announce, backend::McpBackend, proxy};
+use crate::{announce, proxy};
 use anyhow::{Context, Result};
 use clawshake_core::{
+    mcp_client::McpClient,
     network_channel::{ConnectedPeers, OutboundCall},
     peer_table::PeerTable,
     permissions::PermissionStore,
@@ -103,7 +104,7 @@ pub async fn run(
     p2p_port: u16,
     boot_peers: Vec<String>,
     identity: Option<std::path::PathBuf>,
-    backend: Option<McpBackend>,
+    backend: Option<McpClient>,
     store: Arc<PermissionStore>,
     table: Arc<PeerTable>,
     connected: ConnectedPeers,
