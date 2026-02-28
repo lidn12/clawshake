@@ -1,7 +1,7 @@
-//! Shared domain types for the `network.*` P2P call channel.
+//! Shared domain types for the `network_*` P2P call channel.
 //!
 //! Used by both `clawshake-bridge` (swarm event loop, IPC listener)
-//! and `clawshake-tools` (network.* handler logic).
+//! and `clawshake-tools` (network_* handler logic).
 //!
 //! Kept in `clawshake-core` so neither consuming crate depends on the other.
 

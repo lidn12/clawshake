@@ -203,7 +203,7 @@ pub async fn start_bridge(
     // Watch permissions.db so DHT re-announces when permissions change.
     crate::watch::watch_permissions_db(db_path, reannounce_tx);
 
-    // Peer table and connected-peer tracker for network.* built-in tools.
+    // Peer table and connected-peer tracker for network_* built-in tools.
     let table = Arc::new(PeerTable::new());
     let connected = new_connected_peers();
 
@@ -212,7 +212,7 @@ pub async fn start_bridge(
     let (call_tx, call_rx) = new_outbound_call_channel();
 
     // Spawn the IPC socket listener so clawshake-tools CLI (and any other
-    // local process) can reach network.* handlers.
+    // local process) can reach network_* handlers.
     tokio::spawn(clawshake_tools::ipc::run(
         Arc::clone(&table),
         connected.clone(),

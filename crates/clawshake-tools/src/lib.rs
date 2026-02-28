@@ -1,7 +1,7 @@
-//! `clawshake-tools` — portable `network.*` tool layer for the Clawshake network.
+//! `clawshake-tools` — portable `network_*` tool layer for the Clawshake network.
 //!
 //! This crate provides:
-//! - [`schema`] — MCP tool schema definitions for all `network.*` tools.
+//! - [`schema`] — MCP tool schema definitions for all `network_*` tools.
 //!   Importable by any Rust MCP host (broker, etc.) to inject network tools
 //!   into their `tools/list` response without duplicating the schema.
 //! - [`client`] — async socket client that talks to the running

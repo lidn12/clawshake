@@ -1,4 +1,4 @@
-//! `network.*` tool handlers.
+//! `network_*` tool handlers.
 //!
 //! This module owns all handler logic for the six built-in P2P network tools.
 //! The MCP schemas for these tools live in [`crate::schema`].
@@ -6,7 +6,7 @@
 //! Called by:
 //! - `clawshake-bridge::ipc` — inbound from any local process via the IPC socket
 //! - `clawshake-bridge`'s inbound proxy path — remote P2P callers (subject to
-//!   permission store; `network.*` is blocked for remote callers by default)
+//!   permission store; `network_*` is blocked for remote callers by default)
 
 use clawshake_core::{
     network_channel::{ConnectedPeers, OutboundCall, OutboundCallTx},
@@ -19,7 +19,7 @@ use tokio::sync::oneshot;
 // Dispatcher
 // ---------------------------------------------------------------------------
 
-/// Handle a `network.*` tool call.
+/// Handle a `network_*` tool call.
 ///
 /// Returns the result value to embed in the MCP `tools/call` response content.
 /// Never panics — all errors are returned as `{ "error": "..." }`.

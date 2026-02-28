@@ -20,7 +20,7 @@ pub const SOCKET_PATH: &str = r"\\.\pipe\clawshake-bridge";
 #[cfg(not(windows))]
 pub const SOCKET_PATH: &str = "/tmp/clawshake-bridge.sock";
 
-/// Send a single `network.*` request to the bridge daemon and return the
+/// Send a single `network_*` request to the bridge daemon and return the
 /// JSON response.
 ///
 /// Opens a fresh connection for each call — connections are short-lived since

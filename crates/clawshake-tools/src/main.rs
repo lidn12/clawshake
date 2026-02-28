@@ -1,6 +1,6 @@
 //! `clawshake-tools` CLI binary.
 //!
-//! Exposes all `network.*` capabilities as subcommands.  Each invocation
+//! Exposes all `network_*` capabilities as subcommands.  Each invocation
 //! connects to the running `clawshake-bridge` daemon, executes one request,
 //! prints the JSON result to stdout, and exits.
 //!
@@ -79,7 +79,7 @@ enum Namespace {
 
 #[derive(Subcommand)]
 enum SchemaCmd {
-    /// Print the MCP tool schemas for all network.* tools as a JSON array.
+    /// Print the MCP tool schemas for all network_* tools as a JSON array.
     ///
     /// Pipe this into your MCP host's list_tools handler so schemas stay in
     /// sync automatically — no manual copying required.

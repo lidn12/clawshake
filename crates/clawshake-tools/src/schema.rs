@@ -1,4 +1,4 @@
-//! MCP tool schema definitions for the `network.*` namespace.
+//! MCP tool schema definitions for the `network_*` tools.
 //!
 //! These are the canonical schemas for all six built-in P2P tools.  The bridge
 //! daemon serves them to inbound P2P callers; any Rust MCP host (broker, etc.)
@@ -7,7 +7,7 @@
 
 use serde_json::{json, Value};
 
-/// Returns MCP tool schema objects for all six `network.*` tools.
+/// Returns MCP tool schema objects for all six `network_*` tools.
 /// Suitable for embedding directly in a `tools/list` JSON-RPC response.
 pub fn tool_definitions() -> Vec<Value> {
     vec![

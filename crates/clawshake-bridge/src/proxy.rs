@@ -143,8 +143,8 @@ pub fn new_behaviour() -> Behaviour {
 /// verified via the Noise handshake) and checked against the permission store
 /// before the call is forwarded.
 ///
-/// `network.*` tools are **not** intercepted here.  This function is the P2P
-/// path only — remote callers are denied `network.*` by the permission store
+/// `network_*` tools are **not** intercepted here.  This function is the P2P
+/// path only — remote callers are denied `network_*` by the permission store
 /// default (`p2p:* → * → deny`).  Network tools are served on the local
 /// caller surface, which does not go through this proxy.
 pub async fn forward(

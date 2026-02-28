@@ -1,6 +1,6 @@
 //! Local IPC socket listener for the `clawshake-bridge` daemon.
 //!
-//! Exposes the `network.*` tool handlers to any process on the local machine
+//! Exposes the `network_*` tool handlers to any process on the local machine
 //! through a platform-specific socket:
 //! - **Windows**: named pipe `\\.\pipe\clawshake-bridge`
 //! - **Linux / macOS**: Unix domain socket `/tmp/clawshake-bridge.sock`

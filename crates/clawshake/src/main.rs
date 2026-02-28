@@ -203,7 +203,7 @@ async fn list_tools(
     db_path: &std::path::Path,
     json: bool,
 ) -> Result<()> {
-    // Seed built-in manifests so network.* always appears.
+    // Seed built-in manifests so network_* always appears.
     builtins::seed(manifests_dir)?;
 
     // Load all manifests exactly the way the broker does.
@@ -271,7 +271,7 @@ fn check_tools_binary() {
     };
     if which::which(name).is_err() {
         warn!(
-            "clawshake-tools not found on PATH; network.* tools will not work. \
+            "clawshake-tools not found on PATH; network_* tools will not work. \
              Install it alongside clawshake or add it to your PATH."
         );
     }
