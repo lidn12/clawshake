@@ -13,6 +13,7 @@
 //!
 //! ```text
 //! clawshake run [flags]               # start unified node
+//! clawshake status [--json]           # peer ID, running state, stats
 //! clawshake permissions allow|deny|remove|list ...
 //! clawshake network peers|tools|search|ping|call|record ...
 //! clawshake tools [--json]            # list locally registered tools
@@ -88,6 +89,17 @@ enum Command {
         cmd: NetworkCmd,
     },
 
+    /// Show node identity and status.
+    ///
+    /// Displays the local peer ID (always available from the key on disk)
+    /// and, if a node is running, live stats such as connected peer count
+    /// and registered tool count.
+    Status {
+        /// Output as JSON instead of a human-readable table.
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
+
     /// List all tools registered with the local broker.
     ///
     /// Shows tool name, published status (whether the tool is advertised on
@@ -138,6 +150,10 @@ async fn main() -> Result<()> {
         Command::Tools { json } => {
             let manifests_dir = clawshake_dir.join("manifests");
             list_tools(&manifests_dir, &db_path, json).await?;
+        }
+
+        Command::Status { json } => {
+            show_status(&clawshake_dir, json).await?;
         }
 
         // ---- Node startup -------------------------------------------------
@@ -275,4 +291,82 @@ fn check_tools_binary() {
              Install it alongside clawshake or add it to your PATH."
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// status subcommand
+// ---------------------------------------------------------------------------
+
+/// Show the local peer ID and, if a node is running, live stats.
+async fn show_status(clawshake_dir: &std::path::Path, json: bool) -> Result<()> {
+    // ---- Peer ID (always available from disk) -----
+    let peer_id = match clawshake_bridge::p2p::peer_id_from_disk(None) {
+        Ok(id) => Some(id.to_string()),
+        Err(_) => None,
+    };
+
+    // ---- Probe for a running node via IPC -----
+    let live = probe_node().await;
+
+    // ---- Tool / published counts from disk -----
+    let manifests_dir = clawshake_dir.join("manifests");
+    let db_path = clawshake_dir.join("permissions.db");
+    let (tool_count, published_count) = tool_counts(&manifests_dir, &db_path).await;
+
+    if json {
+        let obj = serde_json::json!({
+            "peer_id": peer_id,
+            "running": live.is_some(),
+            "peers": live.as_ref().map(|l| l.peer_count),
+            "tools": tool_count,
+            "published": published_count,
+        });
+        println!("{}", serde_json::to_string_pretty(&obj)?);
+    } else {
+        println!(
+            "Peer ID:    {}",
+            peer_id.as_deref().unwrap_or("(no identity key yet — run the node once to generate)")
+        );
+        if let Some(stats) = &live {
+            println!("Node:       running");
+            println!("Peers:      {} connected", stats.peer_count);
+        } else {
+            println!("Node:       not running");
+        }
+        println!("Tools:      {} registered ({} published)", tool_count, published_count);
+    }
+
+    Ok(())
+}
+
+struct LiveStats {
+    peer_count: usize,
+}
+
+/// Try to reach the bridge daemon via IPC and return live stats.
+async fn probe_node() -> Option<LiveStats> {
+    let resp = clawshake_tools::client::send_request("network_peers", serde_json::json!({})).await.ok()?;
+    let peers = resp.as_array().map(|a| a.len()).unwrap_or(0);
+    Some(LiveStats { peer_count: peers })
+}
+
+/// Count total tools and published tools from disk.
+async fn tool_counts(manifests_dir: &std::path::Path, db_path: &std::path::Path) -> (usize, usize) {
+    let _ = builtins::seed(manifests_dir);
+    let registry = watcher::ManifestRegistry::new();
+    let _ = watcher::load_manifests_from_dir(manifests_dir, &registry);
+    let tools = registry.all();
+    let total = tools.len();
+    let published = if let Ok(perms) = PermissionStore::open(db_path).await {
+        let mut count = 0;
+        for t in &tools {
+            if perms.is_network_exposed(&t.tool.name).await {
+                count += 1;
+            }
+        }
+        count
+    } else {
+        0
+    };
+    (total, published)
 }

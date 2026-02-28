@@ -2,6 +2,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use clawshake_bridge::cli::{run_permissions_action, McpArgs, P2pArgs, PermissionsAction};
 use clawshake_core::permissions::PermissionStore;
+use serde_json;
 
 /// Clawshake Bridge — expose an existing MCP server to the peer-to-peer network.
 #[derive(Parser, Debug)]
@@ -28,6 +29,15 @@ enum Command {
 
         #[command(flatten)]
         mcp: McpArgs,
+    },
+
+    /// Show node identity and status.
+    ///
+    /// Displays the local peer ID and, if a node is running, live stats.
+    Status {
+        /// Output as JSON instead of a human-readable table.
+        #[arg(long, default_value_t = false)]
+        json: bool,
     },
 
     /// Manage the local permission store.
@@ -69,6 +79,11 @@ async fn main() -> Result<()> {
             run_permissions_action(&action, &store).await?;
         }
 
+        Command::Status { json } => {
+            let clawshake_dir = db_path.parent().expect("db_path has parent");
+            show_status(clawshake_dir, json).await?;
+        }
+
         Command::Run { p2p, mcp } => {
             let backend = mcp.build("clawshake-bridge").await?;
             let (reannounce_tx, reannounce_rx) = tokio::sync::mpsc::channel::<()>(4);
@@ -84,4 +99,53 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// status subcommand
+// ---------------------------------------------------------------------------
+
+/// Show the local peer ID and, if a node is running, live stats.
+async fn show_status(_clawshake_dir: &std::path::Path, json: bool) -> Result<()> {
+    // ---- Peer ID (always available from disk) -----
+    let peer_id = match clawshake_bridge::p2p::peer_id_from_disk(None) {
+        Ok(id) => Some(id.to_string()),
+        Err(_) => None,
+    };
+
+    // ---- Probe for a running node via IPC -----
+    let live = probe_node().await;
+
+    if json {
+        let obj = serde_json::json!({
+            "peer_id": peer_id,
+            "running": live.is_some(),
+            "peers": live.as_ref().map(|l| l.peer_count),
+        });
+        println!("{}", serde_json::to_string_pretty(&obj)?);
+    } else {
+        println!(
+            "Peer ID:    {}",
+            peer_id.as_deref().unwrap_or("(no identity key yet — run the node once to generate)")
+        );
+        if let Some(stats) = &live {
+            println!("Node:       running");
+            println!("Peers:      {} connected", stats.peer_count);
+        } else {
+            println!("Node:       not running");
+        }
+    }
+
+    Ok(())
+}
+
+struct LiveStats {
+    peer_count: usize,
+}
+
+/// Try to reach the bridge daemon via IPC and return live stats.
+async fn probe_node() -> Option<LiveStats> {
+    let resp = clawshake_tools::client::send_request("network_peers", serde_json::json!({})).await.ok()?;
+    let peers = resp.as_array().map(|a| a.len()).unwrap_or(0);
+    Some(LiveStats { peer_count: peers })
 }

@@ -8,7 +8,28 @@ use std::{
 };
 
 use crate::{announce, proxy};
-use anyhow::Result;
+use anyhow::{Context, Result};
+
+/// Read the local keypair from disk and return the derived `PeerId`.
+///
+/// Uses the same key file that `run()` loads (`~/.clawshake/identity.key` or
+/// the override path).  Does **not** generate a new key if none exists.
+pub fn peer_id_from_disk(override_path: Option<&std::path::Path>) -> Result<PeerId> {
+    let path = match override_path {
+        Some(p) => p.to_path_buf(),
+        None => {
+            let home = dirs::home_dir()
+                .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
+            home.join(".clawshake").join("identity.key")
+        }
+    };
+    anyhow::ensure!(path.exists(), "Identity key not found at {}", path.display());
+    let bytes = std::fs::read(&path)
+        .with_context(|| format!("reading keypair from {}", path.display()));
+    let kp = libp2p::identity::Keypair::from_protobuf_encoding(&bytes?)
+        .map_err(|e| anyhow::anyhow!("decoding keypair: {e}"))?;
+    Ok(PeerId::from(&kp.public()))
+}
 use clawshake_core::{
     mcp_client::McpClient,
     network_channel::{ConnectedPeers, OutboundCall},
