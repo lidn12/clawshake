@@ -30,19 +30,12 @@
 //! clawshake rpc <method> <params_json>
 //! ```
 
-use std::sync::Arc;
-
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use clawshake_bridge::{
-    cli::{run_permissions_action, McpArgs, P2pArgs, PermissionsAction},
-    p2p, watch,
-};
+use clawshake_bridge::cli::{run_permissions_action, McpArgs, P2pArgs, PermissionsAction};
 use clawshake_broker::{builtins, http_server, watcher};
 use clawshake_core::{
     mcp_client::{HttpClient, McpClient},
-    network_channel::{new_connected_peers, new_outbound_call_channel},
-    peer_table::PeerTable,
     permissions::PermissionStore,
 };
 use clawshake_tools::{
@@ -192,12 +185,6 @@ async fn main() -> Result<()> {
     // Node startup.
     // -----------------------------------------------------------------------
 
-    let p2p_port = if cli.p2p.relay_server && cli.p2p.p2p_port == 0 {
-        p2p::RELAY_DEFAULT_PORT
-    } else {
-        cli.p2p.p2p_port
-    };
-
     // Build the MCP backend.
     //
     // Track-1 (--mcp-cmd / --mcp-port): proxy an existing server directly.
@@ -236,36 +223,6 @@ async fn main() -> Result<()> {
         ))))
     };
 
-    // Open the permission store for the bridge (p2p inbound gate).
-    let store = PermissionStore::open(&db_path).await?;
-    store.seed_p2p_deny_default().await?;
-    let store = Arc::new(store);
-
-    // Watch permissions.db so DHT re-announces when permissions change.
-    watch::watch_permissions_db(&db_path, reannounce_tx);
-
-    let table = Arc::new(PeerTable::new());
-    let connected = new_connected_peers();
-    let (call_tx, call_rx) = new_outbound_call_channel();
-
-    tokio::spawn(clawshake_tools::ipc::run(
-        Arc::clone(&table),
-        connected.clone(),
-        call_tx,
-    ));
-
-    p2p::run(
-        p2p_port,
-        cli.p2p.boot_peers,
-        cli.p2p.identity,
-        backend,
-        store,
-        table,
-        connected,
-        cli.p2p.no_default_boot,
-        cli.p2p.relay_server,
-        call_rx,
-        Some(reannounce_rx),
-    )
-    .await
+    clawshake_bridge::cli::start_bridge(cli.p2p, backend, &db_path, reannounce_tx, reannounce_rx)
+        .await
 }

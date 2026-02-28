@@ -1,13 +1,7 @@
-use std::sync::Arc;
-
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use clawshake_bridge::cli::{run_permissions_action, McpArgs, P2pArgs, PermissionsAction};
-use clawshake_core::{
-    network_channel::{new_connected_peers, new_outbound_call_channel},
-    peer_table::PeerTable,
-    permissions::PermissionStore,
-};
+use clawshake_core::permissions::PermissionStore;
 
 /// Clawshake Bridge — expose an existing MCP server to the peer-to-peer network.
 #[derive(Parser, Debug)]
@@ -63,55 +57,11 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    // --- Normal bridge startup ---
-
-    // Relay server mode: use a stable port so the address is predictable.
-    let p2p_port = if cli.p2p.relay_server && cli.p2p.p2p_port == 0 {
-        clawshake_bridge::p2p::RELAY_DEFAULT_PORT
-    } else {
-        cli.p2p.p2p_port
-    };
-
     // Build the MCP backend (if any).
     let backend = cli.mcp.build("clawshake-bridge").await?;
 
-    // Open the permission store (creates DB + schema if absent, seeds p2p deny default).
-    let store = PermissionStore::open(&db_path).await?;
-    store.seed_p2p_deny_default().await?;
-    let store = Arc::new(store);
-
-    // Watch permissions.db so DHT re-announces when permissions change.
     let (reannounce_tx, reannounce_rx) = tokio::sync::mpsc::channel::<()>(4);
-    clawshake_bridge::watch::watch_permissions_db(&db_path, reannounce_tx);
 
-    // Peer table and connected-peer tracker for the network.* built-in tools.
-    let table = Arc::new(PeerTable::new());
-    let connected = new_connected_peers();
-
-    // Outbound P2P call channel: the IPC task drives network_call from any
-    // local process; the p2p event loop owns the receiver.
-    let (call_tx, call_rx) = new_outbound_call_channel();
-
-    // Spawn the IPC socket listener so clawshake-tools CLI (and any other
-    // local process) can reach network.* handlers without in-process channels.
-    tokio::spawn(clawshake_tools::ipc::run(
-        Arc::clone(&table),
-        connected.clone(),
-        call_tx,
-    ));
-
-    clawshake_bridge::p2p::run(
-        p2p_port,
-        cli.p2p.boot_peers,
-        cli.p2p.identity,
-        backend,
-        store,
-        table,
-        connected,
-        cli.p2p.no_default_boot,
-        cli.p2p.relay_server,
-        call_rx,
-        Some(reannounce_rx),
-    )
-    .await
+    clawshake_bridge::cli::start_bridge(cli.p2p, backend, &db_path, reannounce_tx, reannounce_rx)
+        .await
 }

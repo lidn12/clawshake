@@ -1,14 +1,21 @@
 //! Shared CLI building blocks reused by `clawshake-bridge` and `clawshake`.
 //!
-//! Centralises the P2P flags, MCP backend construction, and the permissions
-//! subcommand so both binaries stay in sync without copy-paste.
+//! Centralises the P2P flags, MCP backend construction, the permissions
+//! subcommand, and the bridge startup sequence so both binaries stay in sync
+//! without copy-paste.
+
+use std::path::Path;
+use std::sync::Arc;
 
 use anyhow::Result;
 use clap::{Args, Subcommand};
 use clawshake_core::{
     mcp_client::{HttpClient, McpClient, StdioClient},
+    network_channel::{new_connected_peers, new_outbound_call_channel},
+    peer_table::PeerTable,
     permissions::{Decision, PermissionStore},
 };
+use tokio::sync::mpsc;
 use tracing::info;
 
 // ---------------------------------------------------------------------------
@@ -162,4 +169,68 @@ pub async fn run_permissions_action(
         }
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Bridge startup
+// ---------------------------------------------------------------------------
+
+/// Run the bridge node: open PermissionStore, watch for permission changes,
+/// spawn IPC, and start the P2P swarm.
+///
+/// Both `clawshake-bridge` and the unified `clawshake` binary call this after
+/// building the MCP backend.  The caller creates the `reannounce` channel so
+/// it can clone `tx` for other watchers (e.g. the broker manifest watcher)
+/// before handing it in here.
+pub async fn start_bridge(
+    p2p_args: P2pArgs,
+    backend: Option<McpClient>,
+    db_path: &Path,
+    reannounce_tx: mpsc::Sender<()>,
+    reannounce_rx: mpsc::Receiver<()>,
+) -> Result<()> {
+    let p2p_port = if p2p_args.relay_server && p2p_args.p2p_port == 0 {
+        crate::p2p::RELAY_DEFAULT_PORT
+    } else {
+        p2p_args.p2p_port
+    };
+
+    // Open the permission store (creates DB + schema if absent).
+    let store = PermissionStore::open(db_path).await?;
+    store.seed_p2p_deny_default().await?;
+    let store = Arc::new(store);
+
+    // Watch permissions.db so DHT re-announces when permissions change.
+    crate::watch::watch_permissions_db(db_path, reannounce_tx);
+
+    // Peer table and connected-peer tracker for network.* built-in tools.
+    let table = Arc::new(PeerTable::new());
+    let connected = new_connected_peers();
+
+    // Outbound P2P call channel: the IPC task drives network_call from any
+    // local process; the p2p event loop owns the receiver.
+    let (call_tx, call_rx) = new_outbound_call_channel();
+
+    // Spawn the IPC socket listener so clawshake-tools CLI (and any other
+    // local process) can reach network.* handlers.
+    tokio::spawn(clawshake_tools::ipc::run(
+        Arc::clone(&table),
+        connected.clone(),
+        call_tx,
+    ));
+
+    crate::p2p::run(
+        p2p_port,
+        p2p_args.boot_peers,
+        p2p_args.identity,
+        backend,
+        store,
+        table,
+        connected,
+        p2p_args.no_default_boot,
+        p2p_args.relay_server,
+        call_rx,
+        Some(reannounce_rx),
+    )
+    .await
 }
