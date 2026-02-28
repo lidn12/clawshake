@@ -4,6 +4,7 @@ use clawshake_core::permissions::PermissionStore;
 use tracing::info;
 
 mod builtins;
+mod cli;
 mod http_server;
 mod invoke;
 mod mcp_server;
@@ -69,44 +70,7 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Command::Tools { json } => {
-            // Seed and load manifests, then display tool listing.
-            builtins::seed(&manifests_dir)?;
-            let registry = watcher::ManifestRegistry::new();
-            watcher::load_manifests_from_dir(&manifests_dir, &registry)?;
-            let permissions = PermissionStore::open(&db_path).await?;
-            let tools = registry.all();
-
-            if json {
-                let mut entries = Vec::new();
-                for t in &tools {
-                    let published = permissions.is_network_exposed(&t.tool.name).await;
-                    entries.push(serde_json::json!({
-                        "name": t.tool.name,
-                        "description": t.tool.description,
-                        "source": t.source,
-                        "published": published,
-                    }));
-                }
-                println!("{}", serde_json::to_string_pretty(&entries)?);
-            } else {
-                if tools.is_empty() {
-                    println!("No tools registered.");
-                    println!("Add manifests to {}", manifests_dir.display());
-                    return Ok(());
-                }
-                println!("{:<30}  {:<5}  {}", "Name", "Pub", "Description");
-                println!("{}", "-".repeat(78));
-                for t in &tools {
-                    let published = permissions.is_network_exposed(&t.tool.name).await;
-                    let marker = if published { "  ✓" } else { "  ✗" };
-                    let desc = if t.tool.description.len() > 40 {
-                        format!("{}…", &t.tool.description[..39])
-                    } else {
-                        t.tool.description.clone()
-                    };
-                    println!("{:<30}  {:<5}  {}", t.tool.name, marker, desc);
-                }
-            }
+            cli::list_tools(&manifests_dir, &db_path, json).await?;
         }
 
         Command::Run { port } => {

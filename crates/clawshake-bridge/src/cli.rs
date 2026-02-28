@@ -234,3 +234,74 @@ pub async fn start_bridge(
     )
     .await
 }
+
+// ---------------------------------------------------------------------------
+// Status subcommand
+// ---------------------------------------------------------------------------
+
+/// Live stats obtained by probing the bridge IPC socket.
+pub struct LiveStats {
+    pub peer_count: usize,
+}
+
+/// Try to reach the bridge daemon via IPC and return live stats.
+///
+/// Returns `None` if the socket is unreachable (node not running).
+pub async fn probe_node() -> Option<LiveStats> {
+    let resp =
+        clawshake_tools::client::send_request("network_peers", serde_json::json!({}))
+            .await
+            .ok()?;
+    let peers = resp.as_array().map(|a| a.len()).unwrap_or(0);
+    Some(LiveStats { peer_count: peers })
+}
+
+/// Show the local peer ID and, if a node is running, live stats.
+///
+/// `tool_info` is an optional `(total, published)` pair — the unified binary
+/// passes manifest/permission counts here; the bridge-only binary passes
+/// `None`.
+pub async fn show_status(
+    json: bool,
+    tool_info: Option<(usize, usize)>,
+) -> Result<()> {
+    // ---- Peer ID (always available from disk) -----
+    let peer_id = match crate::p2p::peer_id_from_disk(None) {
+        Ok(id) => Some(id.to_string()),
+        Err(_) => None,
+    };
+
+    // ---- Probe for a running node via IPC -----
+    let live = probe_node().await;
+
+    if json {
+        let mut obj = serde_json::json!({
+            "peer_id": peer_id,
+            "running": live.is_some(),
+            "peers": live.as_ref().map(|l| l.peer_count),
+        });
+        if let Some((total, published)) = tool_info {
+            obj["tools"] = serde_json::json!(total);
+            obj["published"] = serde_json::json!(published);
+        }
+        println!("{}", serde_json::to_string_pretty(&obj)?);
+    } else {
+        println!(
+            "Peer ID:    {}",
+            peer_id.as_deref().unwrap_or(
+                "(no identity key yet — run the node once to generate)"
+            )
+        );
+        if let Some(stats) = &live {
+            println!("Node:       running");
+            println!("Peers:      {} connected", stats.peer_count);
+        } else {
+            println!("Node:       not running");
+        }
+        if let Some((total, published)) = tool_info {
+            println!("Tools:      {} registered ({} published)", total, published);
+        }
+    }
+
+    Ok(())
+}
