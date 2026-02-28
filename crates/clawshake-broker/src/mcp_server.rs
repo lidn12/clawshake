@@ -20,7 +20,6 @@ use crate::{
 const PARSE_ERROR: i64 = -32700;
 const METHOD_NOT_FOUND: i64 = -32601;
 const INVALID_PARAMS: i64 = -32602;
-const INTERNAL_ERROR: i64 = -32603;
 
 /// MCP stdio server.
 ///
