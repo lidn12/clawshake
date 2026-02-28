@@ -34,8 +34,8 @@ pub fn seed(manifests_dir: &Path) -> Result<()> {
 // is always used.  Arguments are passed as discrete array entries to avoid
 // shell-quoting issues with {{param}} substitution.
 //
-// network_call accepts `args` as a raw JSON string (e.g. '{"track":"Bohemian
-// Rhapsody"}') exactly as clawshake-tools expects.
+// network_call passes `{{arguments}}` through substitute(), which serialises
+// the object to its JSON string representation — exactly what `--args` expects.
 
 const NETWORK_MANIFEST: &str = r#"{
   "version": "1.0",
@@ -131,29 +131,29 @@ const NETWORK_MANIFEST: &str = r#"{
     },
     {
       "name": "network_call",
-      "description": "Invoke a tool on a remote peer and return the result. The peer must be reachable and have granted permission for this tool.",
+      "description": "Invoke a tool on a specific remote peer over the P2P network and return its result. The peer must be currently connected (use network_ping to check). Use network_tools to inspect the tool's inputSchema before calling.",
       "inputSchema": {
         "type": "object",
         "properties": {
           "peer_id": {
             "type": "string",
-            "description": "The libp2p peer ID of the node that owns the tool."
+            "description": "libp2p peer ID string of the target peer"
           },
           "tool": {
             "type": "string",
-            "description": "Fully-qualified tool name to invoke (e.g. \"spotify_play\")."
+            "description": "Fully-qualified tool name to invoke on the remote peer (e.g. \"spotify_play\")"
           },
-          "args": {
-            "type": "string",
-            "description": "Tool arguments as a JSON object string, e.g. '{\"track\":\"Bohemian Rhapsody\"}'. Omit or pass '{}' for tools with no arguments."
+          "arguments": {
+            "type": "object",
+            "description": "Arguments to pass to the tool. Must match the tool's inputSchema. Omit or pass {} for tools with no required arguments."
           }
         },
-          "required": ["peer_id", "tool", "args"]
+        "required": ["peer_id", "tool"]
       },
       "invoke": {
         "type": "cli",
         "command": "clawshake-tools",
-        "args": ["network", "call", "--peer-id", "{{peer_id}}", "--tool", "{{tool}}", "--args", "{{args}}"]
+        "args": ["network", "call", "--peer-id", "{{peer_id}}", "--tool", "{{tool}}", "--args", "{{arguments}}"]
       }
     }
   ]
