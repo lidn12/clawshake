@@ -16,15 +16,21 @@ use tracing::info;
 
 use crate::backend::McpBackend;
 
-/// A single tool entry in the DHT announcement (v2+).
+/// A single tool entry in the DHT announcement.
+/// Matches the MCP `tools/list` tool definition shape.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolAnnounce {
     pub name: String,
     #[serde(default)]
     pub description: String,
     /// Full JSON Schema for the tool's input parameters.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub input_schema: Option<serde_json::Value>,
+    /// Defaults to `{"type": "object"}` per MCP spec.
+    #[serde(rename = "inputSchema", default = "default_input_schema")]
+    pub input_schema: serde_json::Value,
+}
+
+fn default_input_schema() -> serde_json::Value {
+    serde_json::json!({ "type": "object" })
 }
 
 /// The value stored in the DHT for each clawshake-bridge node.
@@ -34,12 +40,8 @@ pub struct AnnouncementRecord {
     pub v: u8,
     /// String form of the publishing peer's PeerId.
     pub peer_id: String,
-    /// Qualified tool names exposed by this node (e.g. `"spotify.play"`).
-    /// Kept for backward-compat with v1 readers; v2+ readers use tool_details.
-    pub tools: Vec<String>,
-    /// Full tool entries with name + description.
-    #[serde(default)]
-    pub tool_details: Vec<ToolAnnounce>,
+    /// Tool entries with name, description, and input schema.
+    pub tools: Vec<ToolAnnounce>,
     /// Listen multiaddrs for direct connections.
     pub addrs: Vec<String>,
     /// Unix timestamp (seconds) when this record was built.
@@ -49,26 +51,15 @@ pub struct AnnouncementRecord {
 impl AnnouncementRecord {
     /// Convert this announcement into a `PeerInfo` suitable for the peer table.
     pub fn to_peer_info(&self) -> PeerInfo {
-        let tools: Vec<ToolSummary> = if !self.tool_details.is_empty() {
-            self.tool_details
-                .iter()
-                .map(|t| ToolSummary {
-                    name: t.name.clone(),
-                    description: t.description.clone(),
-                    input_schema: t.input_schema.clone(),
-                })
-                .collect()
-        } else {
-            // Fallback for v1 records that only have names.
-            self.tools
-                .iter()
-                .map(|n| ToolSummary {
-                    name: n.clone(),
-                    description: String::new(),
-                    input_schema: None,
-                })
-                .collect()
-        };
+        let tools: Vec<ToolSummary> = self
+            .tools
+            .iter()
+            .map(|t| ToolSummary {
+                name: t.name.clone(),
+                description: t.description.clone(),
+                input_schema: Some(t.input_schema.clone()),
+            })
+            .collect();
         PeerInfo {
             peer_id: self.peer_id.clone(),
             addrs: self.addrs.clone(),
@@ -97,21 +88,23 @@ pub async fn build_record(
     listen_addrs: &[Multiaddr],
     backend: &McpBackend,
 ) -> Result<kad::Record> {
-    let tools = backend.tools_list().await?;
+    let raw_tools = backend.tools_list().await?;
 
-    let tool_details: Vec<ToolAnnounce> = tools
+    let tools: Vec<ToolAnnounce> = raw_tools
         .iter()
         .filter_map(|t| {
             t["name"].as_str().map(|name| ToolAnnounce {
                 name: name.to_string(),
                 description: t["description"].as_str().unwrap_or("").to_string(),
-                input_schema: t.get("inputSchema").cloned(),
+                input_schema: t
+                    .get("inputSchema")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!({ "type": "object" })),
             })
         })
         .collect();
 
-    let tool_names: Vec<String> = tool_details.iter().map(|t| t.name.clone()).collect();
-    let count = tool_names.len();
+    let count = tools.len();
 
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -121,8 +114,7 @@ pub async fn build_record(
     let record = AnnouncementRecord {
         v: 1,
         peer_id: peer_id.to_string(),
-        tools: tool_names,
-        tool_details,
+        tools,
         addrs: listen_addrs.iter().map(|a| a.to_string()).collect(),
         ts,
     };

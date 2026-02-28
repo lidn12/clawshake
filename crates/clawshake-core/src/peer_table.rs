@@ -11,7 +11,11 @@ pub struct ToolSummary {
     #[serde(default)]
     pub description: String,
     /// Full JSON Schema for the tool's input parameters, if available.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "inputSchema",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub input_schema: Option<Value>,
 }
 

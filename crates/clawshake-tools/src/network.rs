@@ -83,6 +83,8 @@ fn tools(params: &Value, table: &PeerTable) -> Value {
                     });
                     if let Some(schema) = &t.input_schema {
                         entry["inputSchema"] = schema.clone();
+                    } else {
+                        entry["inputSchema"] = json!({ "type": "object" });
                     }
                     entry
                 })

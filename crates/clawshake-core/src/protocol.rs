@@ -69,6 +69,7 @@ pub struct ToolsListResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpToolDef {
     pub name: String,
+    #[serde(default)]
     pub description: String,
     #[serde(rename = "inputSchema")]
     pub input_schema: Value,
@@ -92,18 +93,51 @@ pub struct ToolsCallResult {
     pub is_error: bool,
 }
 
+/// MCP content item — returned inside `tools/call` results.
+///
+/// Supports all three MCP content types:
+/// - `text`     — plain text
+/// - `image`    — base64-encoded image with MIME type
+/// - `resource` — embedded resource with URI and text/blob content
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct McpContent {
-    #[serde(rename = "type")]
-    pub content_type: String,
-    pub text: String,
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum McpContent {
+    Text {
+        text: String,
+    },
+    Image {
+        data: String,
+        #[serde(rename = "mimeType")]
+        mime_type: String,
+    },
+    Resource {
+        resource: ResourceContent,
+    },
+}
+
+/// Embedded resource content within an MCP response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResourceContent {
+    pub uri: String,
+    #[serde(rename = "mimeType", default, skip_serializing_if = "Option::is_none")]
+    pub mime_type: Option<String>,
+    /// Text content (mutually exclusive with `blob`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// Base64-encoded binary content (mutually exclusive with `text`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blob: Option<String>,
 }
 
 impl McpContent {
     pub fn text(s: impl Into<String>) -> Self {
-        Self {
-            content_type: "text".into(),
-            text: s.into(),
+        McpContent::Text { text: s.into() }
+    }
+
+    pub fn image(data: impl Into<String>, mime_type: impl Into<String>) -> Self {
+        McpContent::Image {
+            data: data.into(),
+            mime_type: mime_type.into(),
         }
     }
 }

@@ -179,11 +179,11 @@ pub async fn forward(
         Decision::Ask => {
             // `Ask` means "prompt locally" — no UI for remote callers, auto-deny.
             warn!(%caller, method, "Permission denied (ask → deny for P2P callers)");
-            return error_response(id, -32603, "Permission denied");
+            return permission_denied_response(id, &method);
         }
         Decision::Deny => {
             warn!(%caller, method, "Permission denied");
-            return error_response(id, -32603, "Permission denied");
+            return permission_denied_response(id, &method);
         }
     }
 
@@ -211,6 +211,22 @@ fn error_response(id: Option<Value>, code: i64, message: &str) -> Vec<u8> {
         "jsonrpc": "2.0",
         "id": id,
         "error": { "code": code, "message": message }
+    });
+    serde_json::to_vec(&r).unwrap()
+}
+
+/// Return a well-formed MCP `tools/call` result with `isError: true`.
+/// Per MCP spec, tool-level errors (including permission denied) should be
+/// reported as successful JSON-RPC responses with error content, not as
+/// JSON-RPC error objects.
+fn permission_denied_response(id: Option<Value>, tool_name: &str) -> Vec<u8> {
+    let r = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "result": {
+            "content": [{ "type": "text", "text": format!("Permission denied for tool '{}'", tool_name) }],
+            "isError": true
+        }
     });
     serde_json::to_vec(&r).unwrap()
 }

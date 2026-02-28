@@ -27,9 +27,8 @@ The value is a **UTF-8 encoded JSON object** with the following fields:
 {
   "v": 1,
   "peer_id": "12D3KooW...",
-  "tools": ["tool_name", ...],
-  "tool_details": [
-    { "name": "tool_name", "description": "Human-readable description", "input_schema": { "type": "object", "properties": { ... } } },
+  "tools": [
+    { "name": "tool_name", "description": "Human-readable description", "inputSchema": { "type": "object", "properties": { ... } } },
     ...
   ],
   "addrs": [
@@ -45,18 +44,17 @@ The value is a **UTF-8 encoded JSON object** with the following fields:
 |-------|------|----------|-------------|
 | `v` | integer | yes | Schema version. Always `1` for records conforming to this spec. |
 | `peer_id` | string | yes | Base58btc-encoded `PeerId` of the publishing node (libp2p multibase string form). Redundant with the DHT key but included for self-contained parsing. |
-| `tools` | string array | yes | Flat list of fully-qualified tool names (e.g. `"spotify.play"`). Present in all versions. Readers that only need tool names can use this field and ignore `tool_details`. |
-| `tool_details` | object array | yes (v1+) | Full tool entries with `name`, `description`, and `input_schema`. Supersedes `tools` for readers that want descriptions or parameter schemas. May be empty `[]` on nodes with no backend. |
+| `tools` | object array | yes | Tool entries with `name`, `description`, and `inputSchema`, matching the MCP `tools/list` tool definition shape. May be empty `[]` on nodes with no backend. |
 | `addrs` | string array | yes | Multiaddr strings for reaching this node. In practice, relay circuit addresses: `/ip4/<relay>/tcp|udp/<port>/p2p/<relay_id>/p2p-circuit/p2p/<peer_id>`. One entry per relay. May be empty if no relay reservation is active yet. |
 | `ts` | integer | yes | Unix timestamp (seconds) when the record was built. Use to detect stale records — records older than 10 minutes should be treated as potentially stale. |
 
-### `tool_details` entry
+### `tools` entry
 
 ```json
 {
   "name": "write_file",
   "description": "Create a new file or completely overwrite an existing file with new content.",
-  "input_schema": {
+  "inputSchema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "type": "object",
     "properties": {
@@ -72,7 +70,7 @@ The value is a **UTF-8 encoded JSON object** with the following fields:
 |-------|------|-------------|
 | `name` | string | Tool name. Must use only `[a-z0-9_-]` characters (required by MCP clients such as VS Code). Use underscore as a word separator. |
 | `description` | string | Human-readable description, suitable for display or agent reasoning. May be empty string `""`. |
-| `input_schema` | object | JSON Schema object describing the tool's input parameters. Omitted if the backend did not provide one. When present, an agent can use this to construct a valid `network_call` without guessing parameter names. |
+| `inputSchema` | object | JSON Schema object describing the tool's input parameters. Always present; defaults to `{"type": "object"}` per MCP spec. |
 
 ---
 
@@ -126,7 +124,7 @@ The bridge on the receiving end stamps caller identity from the Noise-verified p
 - **Any libp2p node** that can perform a Kademlia GET with the above key format and parse the JSON value can read tool announcements from the Clawshake network.
 - **Any libp2p node** that speaks `/clawshake/mcp/1.0.0` with the length-prefixed JSON codec can invoke tools on a bridge node, subject to its permission policy.
 - The permission policy is enforced by the bridge — a remote node must be explicitly allowed (`clawshake-bridge permissions allow <peer_id> <tool>`) before calls are accepted. Fresh installs default-deny all P2P callers.
-- The `tools` array is kept for backward compatibility with v1 readers. New implementations should read `tool_details` and fall back to `tools` if `tool_details` is absent or empty.
+- The `tools` array contains full tool objects with `name`, `description`, and `inputSchema`, matching the MCP tool definition shape.
 
 ---
 
@@ -139,26 +137,20 @@ From the live test network (February 2026):
   "v": 1,
   "peer_id": "12D3KooWHZq8jRUBzS8ArgQFhzg5M9NXAfDL3vcimLxgQtsFFyyC",
   "tools": [
-    "read_file", "read_text_file", "read_media_file", "read_multiple_files",
-    "write_file", "edit_file", "create_directory", "list_directory",
-    "list_directory_with_sizes", "directory_tree", "move_file",
-    "search_files", "get_file_info", "list_allowed_directories"
-  ],
-  "tool_details": [
     {
       "name": "read_text_file",
       "description": "Read the complete contents of a file from the file system as text.",
-      "input_schema": { "type": "object", "properties": { "path": { "type": "string" } }, "required": ["path"] }
+      "inputSchema": { "type": "object", "properties": { "path": { "type": "string" } }, "required": ["path"] }
     },
     {
       "name": "write_file",
       "description": "Create a new file or completely overwrite an existing file with new content.",
-      "input_schema": { "type": "object", "properties": { "path": { "type": "string" }, "content": { "type": "string" } }, "required": ["path", "content"] }
+      "inputSchema": { "type": "object", "properties": { "path": { "type": "string" }, "content": { "type": "string" } }, "required": ["path", "content"] }
     },
     {
       "name": "list_directory",
       "description": "Get a detailed listing of all files and directories in a specified path.",
-      "input_schema": { "type": "object", "properties": { "path": { "type": "string" } }, "required": ["path"] }
+      "inputSchema": { "type": "object", "properties": { "path": { "type": "string" } }, "required": ["path"] }
     }
   ],
   "addrs": [
