@@ -6,7 +6,7 @@ use serde_json::Value;
 /// `{{param}}` placeholders in `script` are substituted from `arguments`.
 /// Stdout is returned as the result.
 pub async fn invoke_powershell(script: &str, arguments: &Value) -> Result<String> {
-    let script_sub = super::substitute(script, arguments);
+    let script_sub = super::substitute_escaped(script, arguments, super::escape_powershell);
     let output = tokio::process::Command::new("powershell")
         .args(["-NoProfile", "-NonInteractive", "-Command", &script_sub])
         .output()
@@ -30,7 +30,7 @@ pub async fn invoke_powershell(script: &str, arguments: &Value) -> Result<String
 pub async fn invoke_applescript(script: &str, arguments: &Value) -> Result<String> {
     #[cfg(target_os = "macos")]
     {
-        let script_sub = super::substitute(script, arguments);
+        let script_sub = super::substitute_escaped(script, arguments, super::escape_applescript);
         let output = tokio::process::Command::new("osascript")
             .args(["-e", &script_sub])
             .output()

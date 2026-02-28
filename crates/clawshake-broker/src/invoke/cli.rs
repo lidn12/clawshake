@@ -64,9 +64,10 @@ pub async fn invoke(
         }
         #[cfg(not(windows))]
         {
-            // Unix: sh -c requires a single string.
-            let mut parts = vec![shell_quote(&command_sub)];
-            parts.extend(args_sub.iter().map(|a| shell_quote(a)));
+            // Unix: sh -c requires a single string.  Each token is
+            // single-quoted so the shell cannot interpret metacharacters.
+            let mut parts = vec![super::escape_shell(&command_sub)];
+            parts.extend(args_sub.iter().map(|a| super::escape_shell(a)));
             tokio::process::Command::new("sh")
                 .args(["-c", &parts.join(" ")])
                 .output()
@@ -87,15 +88,5 @@ pub async fn invoke(
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
         anyhow::bail!("command exited {}: {}", output.status, stderr.trim())
-    }
-}
-
-/// Wrap a token in double-quotes for shell safety (used only in Unix shell mode).
-#[cfg(not(windows))]
-fn shell_quote(s: &str) -> String {
-    if s.contains(' ') || s.contains('"') || s.is_empty() {
-        format!("\"{}\"", s.replace('"', "\\\""))
-    } else {
-        s.to_string()
     }
 }
