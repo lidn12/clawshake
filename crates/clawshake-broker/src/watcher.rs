@@ -283,9 +283,17 @@ fn app_name_from_path(path: &Path) -> Option<String> {
 /// background task that watches for file-system changes and keeps the registry
 /// live.  Returns immediately after the initial load.
 ///
+/// If `change_tx` is provided the watcher will send `()` through it whenever
+/// the tool set changes (manifest created / modified / removed).  The bridge
+/// uses this to re-publish the DHT announcement immediately.
+///
 /// Returns an `McpServerMap` used by the router to dispatch calls to MCP
 /// server-backed tools.
-pub fn start(manifests_dir: PathBuf, registry: ManifestRegistry) -> Result<McpServerMap> {
+pub fn start(
+    manifests_dir: PathBuf,
+    registry: ManifestRegistry,
+    change_tx: Option<tokio::sync::mpsc::Sender<()>>,
+) -> Result<McpServerMap> {
     let servers = McpServerMap::new();
     let rt = tokio::runtime::Handle::current();
 
@@ -320,7 +328,14 @@ pub fn start(manifests_dir: PathBuf, registry: ManifestRegistry) -> Result<McpSe
         let _watcher = watcher;
         for res in rx {
             match res {
-                Ok(event) => handle_event(event, &registry, &watch_servers, &rt),
+                Ok(event) => {
+                    let changed = handle_event(event, &registry, &watch_servers, &rt);
+                    if changed {
+                        if let Some(ref tx) = change_tx {
+                            let _ = tx.try_send(());
+                        }
+                    }
+                }
                 Err(e) => warn!("Manifest watcher error: {e}"),
             }
         }
@@ -329,12 +344,14 @@ pub fn start(manifests_dir: PathBuf, registry: ManifestRegistry) -> Result<McpSe
     Ok(servers)
 }
 
+/// Process a single file-system event.  Returns `true` if the tool set
+/// was modified (so the caller can fire a re-announce signal).
 fn handle_event(
     event: Event,
     registry: &ManifestRegistry,
     servers: &McpServerMap,
     rt: &tokio::runtime::Handle,
-) {
+) -> bool {
     use notify::EventKind::*;
     let paths: Vec<&PathBuf> = event
         .paths
@@ -342,8 +359,9 @@ fn handle_event(
         .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("json"))
         .collect();
     if paths.is_empty() {
-        return;
+        return false;
     }
+    let mut changed = false;
     match event.kind {
         Create(_) | Modify(_) => {
             for path in paths {
@@ -353,6 +371,7 @@ fn handle_event(
                     servers.remove(&app);
                 }
                 load_file(path, registry, servers, rt);
+                changed = true;
             }
         }
         Remove(_) => {
@@ -361,9 +380,11 @@ fn handle_event(
                     registry.unload_app(&app);
                     servers.remove(&app);
                     info!(app, "Unloaded manifest (file removed)");
+                    changed = true;
                 }
             }
         }
         _ => {}
     }
+    changed
 }

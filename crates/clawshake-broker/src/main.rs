@@ -50,7 +50,7 @@ async fn main() -> Result<()> {
 
     // Load manifests and start file watcher.
     let registry = watcher::ManifestRegistry::new();
-    let servers = watcher::start(manifests_dir, registry.clone())?;
+    let servers = watcher::start(manifests_dir, registry.clone(), None)?;
     info!(tools = registry.tool_count(), "Broker ready");
 
     if let Some(port) = cli.port {

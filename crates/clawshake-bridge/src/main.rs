@@ -180,7 +180,9 @@ async fn main() -> Result<()> {
         Some(McpClient::Stdio(b))
     } else if let Some(port) = cli.mcp_port {
         info!("MCP backend: HTTP — http://127.0.0.1:{port}");
-        Some(McpClient::Http(HttpClient::new(format!("http://127.0.0.1:{port}"))))
+        Some(McpClient::Http(HttpClient::new(format!(
+            "http://127.0.0.1:{port}"
+        ))))
     } else {
         info!("No MCP backend configured — running in discovery-only mode");
         None
@@ -218,6 +220,7 @@ async fn main() -> Result<()> {
         cli.no_default_boot,
         cli.relay_server,
         call_rx,
+        None, // no manifest watcher in standalone bridge mode
     )
     .await
 }

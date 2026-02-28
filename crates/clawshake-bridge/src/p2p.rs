@@ -111,6 +111,7 @@ pub async fn run(
     no_default_boot: bool,
     relay_server: bool,
     mut call_rx: mpsc::Receiver<OutboundCall>,
+    tools_changed_rx: Option<mpsc::Receiver<()>>,
 ) -> Result<()> {
     let keypair = load_or_create_keypair(identity.as_deref())?;
     let local_peer_id = PeerId::from(&keypair.public());
@@ -321,14 +322,28 @@ pub async fn run(
             }
         });
 
-        // Event-driven announce: whenever ExternalAddrConfirmed fires, the
-        // main loop sends a () through announce_tx so we re-publish right away
-        // instead of waiting for the next 5-minute tick.
+        // Event-driven announce: re-publish immediately when:
+        //  - ExternalAddrConfirmed fires (main loop sends through announce_tx)
+        //  - Manifest tools change (watcher sends through tools_changed_rx)
         let backend_event = b.clone();
         let dht_tx_event = dht_tx.clone();
         let addrs_event = listen_addrs.clone();
+        let mut tools_changed_rx = tools_changed_rx;
         tokio::spawn(async move {
-            while announce_rx.recv().await.is_some() {
+            loop {
+                // Wait for either signal.
+                let got = tokio::select! {
+                    v = announce_rx.recv() => v.is_some(),
+                    v = async {
+                        match tools_changed_rx.as_mut() {
+                            Some(rx) => rx.recv().await,
+                            None => std::future::pending().await,
+                        }
+                    } => v.is_some(),
+                };
+                if !got {
+                    break;
+                }
                 let addrs: Vec<Multiaddr> = {
                     let raw = addrs_event.read().expect("listen_addrs lock");
                     let mut seen_relays: std::collections::HashSet<Vec<u8>> =
