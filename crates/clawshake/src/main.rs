@@ -212,7 +212,8 @@ async fn main() -> Result<()> {
 
         builtins::seed(&manifests_dir)?;
         let registry = watcher::ManifestRegistry::new();
-        let servers = watcher::start(manifests_dir, registry.clone(), Some(reannounce_tx.clone()))?;
+        let (sse_tx, sse_rx) = tokio::sync::mpsc::channel::<()>(4);
+        let servers = watcher::start(manifests_dir, registry.clone(), Some(reannounce_tx.clone()), Some(sse_tx))?;
         info!(tools = registry.tool_count(), "Broker ready");
 
         let broker_port = cli.port;
@@ -221,6 +222,7 @@ async fn main() -> Result<()> {
             registry,
             permissions,
             servers,
+            Some(sse_rx),
         ));
         info!("Broker HTTP server starting on :{broker_port}");
 

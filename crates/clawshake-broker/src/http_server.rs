@@ -72,6 +72,7 @@ pub async fn serve(
     registry: ManifestRegistry,
     permissions: PermissionStore,
     servers: McpServerMap,
+    notify_rx: Option<tokio::sync::mpsc::Receiver<()>>,
 ) -> Result<()> {
     let state = AppState {
         registry,
@@ -79,6 +80,29 @@ pub async fn serve(
         sessions: Arc::new(RwLock::new(HashMap::new())),
         servers,
     };
+
+    // When the manifest registry changes, broadcast notifications/tools/list_changed
+    // to every open SSE session so clients refresh their tool list immediately.
+    if let Some(mut rx) = notify_rx {
+        let sessions = state.sessions.clone();
+        tokio::spawn(async move {
+            let msg = serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "notifications/tools/list_changed"
+            })
+            .to_string();
+            while rx.recv().await.is_some() {
+                let sessions = sessions.read().await;
+                let count = sessions.len();
+                for tx in sessions.values() {
+                    let _ = tx.send(msg.clone());
+                }
+                if count > 0 {
+                    debug!("notifications/tools/list_changed → {count} session(s)");
+                }
+            }
+        });
+    }
 
     let app = Router::new()
         .route("/sse", get(sse_handler))

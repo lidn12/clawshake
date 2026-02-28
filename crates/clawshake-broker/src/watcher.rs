@@ -301,6 +301,7 @@ pub fn start(
     manifests_dir: PathBuf,
     registry: ManifestRegistry,
     change_tx: Option<tokio::sync::mpsc::Sender<()>>,
+    sse_notify_tx: Option<tokio::sync::mpsc::Sender<()>>,
 ) -> Result<McpServerMap> {
     let servers = McpServerMap::new();
     let rt = tokio::runtime::Handle::current();
@@ -340,6 +341,9 @@ pub fn start(
                     let changed = handle_event(event, &registry, &watch_servers, &rt);
                     if changed {
                         if let Some(ref tx) = change_tx {
+                            let _ = tx.try_send(());
+                        }
+                        if let Some(ref tx) = sse_notify_tx {
                             let _ = tx.try_send(());
                         }
                     }

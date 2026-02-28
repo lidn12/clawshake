@@ -49,13 +49,15 @@ async fn main() -> Result<()> {
 
     // Load manifests and start file watcher.
     let registry = watcher::ManifestRegistry::new();
-    let servers = watcher::start(manifests_dir, registry.clone(), None)?;
+    let (sse_tx, sse_rx) = tokio::sync::mpsc::channel::<()>(4);
+    let servers = watcher::start(manifests_dir, registry.clone(), None, Some(sse_tx))?;
     info!(tools = registry.tool_count(), "Broker ready");
 
     if let Some(port) = cli.port {
-        return http_server::serve(port, registry, permissions, servers).await;
+        return http_server::serve(port, registry, permissions, servers, Some(sse_rx)).await;
     }
 
-    // Default: MCP stdio loop.
+    // Default: MCP stdio loop (no SSE sessions — drop the receiver).
+    drop(sse_rx);
     mcp_server::serve_stdio(registry, permissions, servers).await
 }
