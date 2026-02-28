@@ -312,7 +312,9 @@ pub async fn run(
                         .cloned()
                         .collect()
                 };
-                match announce::build_record(peer_id_clone, &addrs, &backend_clone, &perms_clone).await {
+                match announce::build_record(peer_id_clone, &addrs, &backend_clone, &perms_clone)
+                    .await
+                {
                     Ok(record) => {
                         if dht_tx_clone.send(record).await.is_err() {
                             break; // main loop exited
@@ -359,7 +361,9 @@ pub async fn run(
                         .cloned()
                         .collect()
                 };
-                match announce::build_record(local_peer_id, &addrs, &backend_event, &perms_event).await {
+                match announce::build_record(local_peer_id, &addrs, &backend_event, &perms_event)
+                    .await
+                {
                     Ok(record) => {
                         let _ = dht_tx_event.send(record).await;
                     }

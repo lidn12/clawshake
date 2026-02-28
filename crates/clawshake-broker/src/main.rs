@@ -4,7 +4,6 @@ use clawshake_core::permissions::PermissionStore;
 use tracing::info;
 
 mod builtins;
-mod consent;
 mod http_server;
 mod invoke;
 mod mcp_server;
