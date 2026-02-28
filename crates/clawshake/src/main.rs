@@ -34,16 +34,21 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use clawshake_bridge::{p2p, watch};
+use clawshake_bridge::{
+    cli::{run_permissions_action, McpArgs, P2pArgs, PermissionsAction},
+    p2p, watch,
+};
 use clawshake_broker::{builtins, http_server, watcher};
-use clawshake_core::mcp_client::{HttpClient, McpClient, StdioClient};
 use clawshake_core::{
+    mcp_client::{HttpClient, McpClient},
     network_channel::{new_connected_peers, new_outbound_call_channel},
     peer_table::PeerTable,
-    permissions::{Decision, PermissionStore},
+    permissions::PermissionStore,
 };
-use clawshake_tools::{client, schema};
-use serde_json::json;
+use clawshake_tools::{
+    cli::{run_network_cmd, NetworkCmd},
+    client, schema,
+};
 use tracing::info;
 
 // ---------------------------------------------------------------------------
@@ -54,7 +59,6 @@ use tracing::info;
 #[derive(Parser, Debug)]
 #[command(name = "clawshake", version, about)]
 struct Cli {
-    /// Subcommand (permissions, network, schema, rpc). Omit to start the node.
     #[command(subcommand)]
     command: Option<Command>,
 
@@ -65,39 +69,13 @@ struct Cli {
     #[arg(long, default_value_t = 7475, value_name = "PORT")]
     port: u16,
 
-    // ---- Bridge / P2P options ---------------------------------------------
-    /// TCP port for inbound P2P connections (0 = random; default 7474 in
-    /// relay-server mode).
-    #[arg(long, default_value_t = 0)]
-    p2p_port: u16,
-
-    /// Bootstrap peer multiaddr(s) to dial on startup.
-    /// Can be specified multiple times.
-    #[arg(long = "boot", value_name = "MULTIADDR")]
-    boot_peers: Vec<String>,
-
-    /// Skip the hardcoded default bootstrap peers.
-    #[arg(long, default_value_t = false)]
-    no_default_boot: bool,
-
-    /// Enable relay-server mode (stable port, forwards NAT'd peers).
-    #[arg(long, default_value_t = false)]
-    relay_server: bool,
-
-    /// Path to the Ed25519 keypair file (default ~/.clawshake/identity.key).
-    #[arg(long, value_name = "PATH")]
-    identity: Option<std::path::PathBuf>,
+    // ---- Shared bridge / P2P options --------------------------------------
+    #[command(flatten)]
+    p2p: P2pArgs,
 
     // ---- Track-1 overrides ------------------------------------------------
-    /// [Track-1] Proxy an MCP server listening on this HTTP port.
-    /// Skips the local broker entirely.
-    #[arg(long, value_name = "PORT", conflicts_with = "mcp_cmd")]
-    mcp_port: Option<u16>,
-
-    /// [Track-1] Proxy an MCP server launched with this stdio command.
-    /// Skips the local broker entirely.
-    #[arg(long, value_name = "COMMAND", conflicts_with = "mcp_port")]
-    mcp_cmd: Option<String>,
+    #[command(flatten)]
+    mcp: McpArgs,
 }
 
 // ---------------------------------------------------------------------------
@@ -138,59 +116,6 @@ enum Command {
     ///   clawshake rpc network_peers '{}'
     ///   clawshake rpc network_search '{"query":"weather"}'
     Rpc { method: String, params: String },
-}
-
-// ---- permissions -----------------------------------------------------------
-
-#[derive(Subcommand, Debug)]
-enum PermissionsAction {
-    Allow { agent_id: String, tool_name: String },
-    Deny { agent_id: String, tool_name: String },
-    Remove { agent_id: String, tool_name: String },
-    List,
-}
-
-// ---- network ---------------------------------------------------------------
-
-#[derive(Subcommand, Debug)]
-enum NetworkCmd {
-    /// List all discovered bridge nodes on the network.
-    Peers,
-
-    /// Get the full tool listing (names, descriptions, inputSchemas) for a specific peer.
-    Tools {
-        #[arg(long, value_name = "PEER_ID")]
-        peer_id: String,
-    },
-
-    /// Search for tools across all known peers by name or description substring.
-    Search {
-        #[arg(long, value_name = "QUERY")]
-        query: String,
-    },
-
-    /// Check whether a peer is currently reachable from this node.
-    Ping {
-        #[arg(long, value_name = "PEER_ID")]
-        peer_id: String,
-    },
-
-    /// Fetch the raw DHT announcement record for a peer.
-    Record {
-        #[arg(long, value_name = "PEER_ID")]
-        peer_id: String,
-    },
-
-    /// Invoke a tool on a remote peer and print the result.
-    Call {
-        #[arg(long, value_name = "PEER_ID")]
-        peer_id: String,
-        #[arg(long, value_name = "TOOL")]
-        tool: String,
-        /// Arguments as a JSON object string. Pass "-" to read from stdin.
-        #[arg(long, value_name = "JSON|-")]
-        args: Option<String>,
-    },
 }
 
 // ---- schema ----------------------------------------------------------------
@@ -242,47 +167,20 @@ async fn main() -> Result<()> {
         // permissions — read/write the local DB, no node required.
         Some(Command::Permissions { action }) => {
             let store = PermissionStore::open(&db_path).await?;
-            match action {
-                PermissionsAction::Allow {
-                    agent_id,
-                    tool_name,
-                } => {
-                    store.set(agent_id, tool_name, Decision::Allow).await?;
-                    println!("✓ allow  {agent_id}  {tool_name}");
-                }
-                PermissionsAction::Deny {
-                    agent_id,
-                    tool_name,
-                } => {
-                    store.set(agent_id, tool_name, Decision::Deny).await?;
-                    println!("✓ deny   {agent_id}  {tool_name}");
-                }
-                PermissionsAction::Remove {
-                    agent_id,
-                    tool_name,
-                } => {
-                    store.remove(agent_id, tool_name).await?;
-                    println!("✓ removed  {agent_id}  {tool_name}");
-                }
-                PermissionsAction::List => {
-                    let records = store.list().await?;
-                    if records.is_empty() {
-                        println!("(no rules)");
-                    } else {
-                        println!("{:<12}  {:<40}  {}", "decision", "agent_id", "tool_name");
-                        println!("{}", "-".repeat(72));
-                        for r in records {
-                            println!("{:<12}  {:<40}  {}", r.decision, r.agent_id, r.tool_name);
-                        }
-                    }
-                }
-            }
+            run_permissions_action(action, &store).await?;
             return Ok(());
         }
 
         // Network / rpc — delegate to the IPC socket of a running node.
-        Some(Command::Network { .. } | Command::Rpc { .. }) => {
-            run_ipc_command(cli.command.as_ref().unwrap()).await?;
+        Some(Command::Network { cmd }) => {
+            run_network_cmd(cmd).await?;
+            return Ok(());
+        }
+        Some(Command::Rpc { method, params }) => {
+            let params_value: serde_json::Value = serde_json::from_str(params)
+                .map_err(|e| anyhow::anyhow!("params is not valid JSON: {e}"))?;
+            let result = client::send_request(method, params_value).await?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
             return Ok(());
         }
 
@@ -294,29 +192,19 @@ async fn main() -> Result<()> {
     // Node startup.
     // -----------------------------------------------------------------------
 
-    let p2p_port = if cli.relay_server && cli.p2p_port == 0 {
+    let p2p_port = if cli.p2p.relay_server && cli.p2p.p2p_port == 0 {
         p2p::RELAY_DEFAULT_PORT
     } else {
-        cli.p2p_port
+        cli.p2p.p2p_port
     };
 
     // Build the MCP backend.
     //
-    // The reannounce channel is shared: manifest changes (default mode) and
-    // permission-DB changes both send through it so the bridge re-publishes
-    // the DHT record immediately.
+    // Track-1 (--mcp-cmd / --mcp-port): proxy an existing server directly.
+    // Default mode: start the local broker and point the bridge at it.
     let (reannounce_tx, reannounce_rx) = tokio::sync::mpsc::channel::<()>(4);
-    let backend: Option<McpClient> = if let Some(cmd) = &cli.mcp_cmd {
-        // Track-1 mode: proxy a stdio MCP server.
-        info!("MCP backend: stdio — {cmd}");
-        let b = StdioClient::spawn(cmd, &[], "clawshake-bridge").await?;
-        Some(McpClient::Stdio(b))
-    } else if let Some(port) = cli.mcp_port {
-        // Track-1 mode: proxy an existing HTTP MCP server.
-        info!("MCP backend: HTTP — http://127.0.0.1:{port}");
-        Some(McpClient::Http(HttpClient::new(format!(
-            "http://127.0.0.1:{port}"
-        ))))
+    let backend: Option<McpClient> = if cli.mcp.is_track1() {
+        cli.mcp.build("clawshake-bridge").await?
     } else {
         // Default mode: start the local broker and point the bridge at it.
         let manifests_dir = clawshake_dir.join("manifests");
@@ -361,68 +249,16 @@ async fn main() -> Result<()> {
 
     p2p::run(
         p2p_port,
-        cli.boot_peers,
-        cli.identity,
+        cli.p2p.boot_peers,
+        cli.p2p.identity,
         backend,
         store,
         table,
         connected,
-        cli.no_default_boot,
-        cli.relay_server,
+        cli.p2p.no_default_boot,
+        cli.p2p.relay_server,
         call_rx,
         Some(reannounce_rx),
     )
     .await
-}
-
-// ---------------------------------------------------------------------------
-// IPC helper — used by `network` and `rpc` subcommands.
-// ---------------------------------------------------------------------------
-
-async fn run_ipc_command(cmd: &Command) -> Result<()> {
-    let (method, params): (&str, serde_json::Value) = match cmd {
-        Command::Rpc { method, params } => {
-            let params_value: serde_json::Value = serde_json::from_str(params)
-                .map_err(|e| anyhow::anyhow!("params is not valid JSON: {e}"))?;
-            let result = client::send_request(method, params_value).await?;
-            println!("{}", serde_json::to_string_pretty(&result)?);
-            return Ok(());
-        }
-
-        Command::Network { cmd } => match cmd {
-            NetworkCmd::Peers => ("network_peers", json!({})),
-            NetworkCmd::Tools { peer_id } => ("network_tools", json!({ "peer_id": peer_id })),
-            NetworkCmd::Search { query } => ("network_search", json!({ "query": query })),
-            NetworkCmd::Ping { peer_id } => ("network_ping", json!({ "peer_id": peer_id })),
-            NetworkCmd::Record { peer_id } => ("network_record", json!({ "peer_id": peer_id })),
-            NetworkCmd::Call {
-                peer_id,
-                tool,
-                args,
-            } => {
-                let arguments: serde_json::Value = match args.as_deref() {
-                    Some("-") => {
-                        let mut buf = String::new();
-                        std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf)
-                            .map_err(|e| anyhow::anyhow!("failed to read stdin: {e}"))?;
-                        serde_json::from_str(&buf)
-                            .map_err(|e| anyhow::anyhow!("stdin is not valid JSON: {e}"))?
-                    }
-                    Some(s) => serde_json::from_str(s)
-                        .map_err(|e| anyhow::anyhow!("--args is not valid JSON: {e}"))?,
-                    None => json!({}),
-                };
-                (
-                    "network_call",
-                    json!({ "peer_id": peer_id, "tool": tool, "arguments": arguments }),
-                )
-            }
-        },
-
-        _ => unreachable!("run_ipc_command called with non-IPC command"),
-    };
-
-    let result = client::send_request(method, params).await?;
-    println!("{}", serde_json::to_string_pretty(&result)?);
-    Ok(())
 }

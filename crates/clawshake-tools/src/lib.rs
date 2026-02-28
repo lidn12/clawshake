@@ -9,6 +9,7 @@
 //!   is a short-lived process) and by Rust MCP hosts that want in-process
 //!   request dispatch without spawning a subprocess.
 
+pub mod cli;
 pub mod client;
 pub mod ipc;
 pub mod network;
