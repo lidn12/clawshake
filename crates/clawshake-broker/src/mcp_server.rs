@@ -108,7 +108,7 @@ pub(crate) async fn handle(
             let result = ToolsListResult { tools: defs };
             Some(JsonRpcResponse::ok(
                 id,
-                serde_json::to_value(result).unwrap(),
+                serde_json::to_value(result).expect("MCP result serializes to JSON"),
             ))
         }
 
@@ -144,7 +144,7 @@ pub(crate) async fn handle(
                     };
                     return Some(JsonRpcResponse::ok(
                         id,
-                        serde_json::to_value(result).unwrap(),
+                        serde_json::to_value(result).expect("MCP result serializes to JSON"),
                     ));
                 }
                 Decision::Ask => {
@@ -170,7 +170,7 @@ pub(crate) async fn handle(
             let result = ToolsCallResult { content, is_error };
             Some(JsonRpcResponse::ok(
                 id,
-                serde_json::to_value(result).unwrap(),
+                serde_json::to_value(result).expect("MCP result serializes to JSON"),
             ))
         }
 

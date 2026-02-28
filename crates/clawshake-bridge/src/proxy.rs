@@ -212,7 +212,7 @@ fn error_response(id: Option<Value>, code: i64, message: &str) -> Vec<u8> {
         "id": id,
         "error": { "code": code, "message": message }
     });
-    serde_json::to_vec(&r).unwrap()
+    serde_json::to_vec(&r).expect("JSON-RPC error serializes")
 }
 
 /// Return a well-formed MCP `tools/call` result with `isError: true`.
@@ -228,5 +228,5 @@ fn permission_denied_response(id: Option<Value>, tool_name: &str) -> Vec<u8> {
             "isError": true
         }
     });
-    serde_json::to_vec(&r).unwrap()
+    serde_json::to_vec(&r).expect("JSON-RPC response serializes")
 }

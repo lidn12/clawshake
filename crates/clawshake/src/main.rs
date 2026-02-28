@@ -130,7 +130,7 @@ async fn main() -> Result<()> {
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
                 "clawshake=info,clawshake_bridge=info,clawshake_broker=info,libp2p=warn"
                     .parse()
-                    .unwrap()
+                    .expect("valid tracing filter")
             }),
         )
         .init();

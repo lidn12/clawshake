@@ -200,10 +200,10 @@ async fn messages_handler(
         let response = match serde_json::from_str::<JsonRpcRequest>(&body) {
             Err(e) => {
                 let r = JsonRpcResponse::err(None, -32700, format!("Parse error: {e}"));
-                serde_json::to_string(&r).unwrap()
+                serde_json::to_string(&r).expect("JSON-RPC response serializes to string")
             }
             Ok(req) => match mcp_server::handle(&req, &registry, &permissions, &servers).await {
-                Some(resp) => serde_json::to_string(&resp).unwrap(),
+                Some(resp) => serde_json::to_string(&resp).expect("JSON-RPC response serializes to string"),
                 None => return, // notification — no response needed
             },
         };
@@ -241,7 +241,7 @@ async fn direct_handler(State(state): State<AppState>, body: String) -> impl Int
         }
     };
     debug!(resp = ?response, "→ POST /");
-    Json(serde_json::to_value(response).unwrap()).into_response()
+    Json(serde_json::to_value(response).expect("response serializes to JSON")).into_response()
 }
 // ---------------------------------------------------------------------------
 

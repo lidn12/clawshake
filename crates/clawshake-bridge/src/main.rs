@@ -39,14 +39,15 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "clawshake_bridge=info,libp2p=warn".parse().unwrap()),
+                .unwrap_or_else(|_| "clawshake_bridge=info,libp2p=warn".parse().expect("valid tracing filter")),
+
         )
         .init();
 
     let cli = Cli::parse();
 
     let db_path = dirs::home_dir()
-        .expect("cannot determine home directory")
+        .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?
         .join(".clawshake")
         .join("permissions.db");
 
