@@ -126,7 +126,6 @@ async fn main() -> Result<()> {
 
     match cli.command {
         // ---- Offline subcommands ------------------------------------------
-
         Command::Permissions { action } => {
             let store = PermissionStore::open(&db_path).await?;
             run_permissions_action(&action, &store).await?;
@@ -142,7 +141,6 @@ async fn main() -> Result<()> {
         }
 
         // ---- Node startup -------------------------------------------------
-
         Command::Run { port, p2p, mcp } => {
             // Check that clawshake-tools is available on PATH.
             check_tools_binary();
@@ -234,17 +232,11 @@ async fn list_tools(
     } else {
         if tools.is_empty() {
             println!("No tools registered.");
-            println!(
-                "Add manifests to {}",
-                manifests_dir.display()
-            );
+            println!("Add manifests to {}", manifests_dir.display());
             return Ok(());
         }
 
-        println!(
-            "{:<30}  {:<5}  {}",
-            "Name", "Pub", "Description"
-        );
+        println!("{:<30}  {:<5}  {}", "Name", "Pub", "Description");
         println!("{}", "-".repeat(78));
         for t in &tools {
             let published = permissions.is_network_exposed(&t.tool.name).await;
