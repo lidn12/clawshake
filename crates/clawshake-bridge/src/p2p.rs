@@ -111,7 +111,7 @@ pub async fn run(
     no_default_boot: bool,
     relay_server: bool,
     mut call_rx: mpsc::Receiver<OutboundCall>,
-    tools_changed_rx: Option<mpsc::Receiver<()>>,
+    reannounce_rx: Option<mpsc::Receiver<()>>,
 ) -> Result<()> {
     let keypair = load_or_create_keypair(identity.as_deref())?;
     let local_peer_id = PeerId::from(&keypair.public());
@@ -293,6 +293,7 @@ pub async fn run(
         let dht_tx_clone = dht_tx.clone();
         let peer_id_clone = local_peer_id;
         let addrs_clone = listen_addrs.clone();
+        let perms_clone = Arc::clone(&store);
         tokio::spawn(async move {
             let mut tick = interval(Duration::from_secs(ANNOUNCE_INTERVAL));
             tick.tick().await; // burn the immediate first tick
@@ -311,7 +312,7 @@ pub async fn run(
                         .cloned()
                         .collect()
                 };
-                match announce::build_record(peer_id_clone, &addrs, &backend_clone).await {
+                match announce::build_record(peer_id_clone, &addrs, &backend_clone, &perms_clone).await {
                     Ok(record) => {
                         if dht_tx_clone.send(record).await.is_err() {
                             break; // main loop exited
@@ -324,18 +325,19 @@ pub async fn run(
 
         // Event-driven announce: re-publish immediately when:
         //  - ExternalAddrConfirmed fires (main loop sends through announce_tx)
-        //  - Manifest tools change (watcher sends through tools_changed_rx)
+        //  - External signal (manifest change, permission change, etc.)
         let backend_event = b.clone();
         let dht_tx_event = dht_tx.clone();
         let addrs_event = listen_addrs.clone();
-        let mut tools_changed_rx = tools_changed_rx;
+        let perms_event = Arc::clone(&store);
+        let mut reannounce_rx = reannounce_rx;
         tokio::spawn(async move {
             loop {
                 // Wait for either signal.
                 let got = tokio::select! {
                     v = announce_rx.recv() => v.is_some(),
                     v = async {
-                        match tools_changed_rx.as_mut() {
+                        match reannounce_rx.as_mut() {
                             Some(rx) => rx.recv().await,
                             None => std::future::pending().await,
                         }
@@ -357,7 +359,7 @@ pub async fn run(
                         .cloned()
                         .collect()
                 };
-                match announce::build_record(local_peer_id, &addrs, &backend_event).await {
+                match announce::build_record(local_peer_id, &addrs, &backend_event, &perms_event).await {
                     Ok(record) => {
                         let _ = dht_tx_event.send(record).await;
                     }

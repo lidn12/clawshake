@@ -7,7 +7,8 @@ use clawshake_core::{
     peer_table::PeerTable,
     permissions::{Decision, PermissionStore},
 };
-use tracing::info;
+use notify::{RecursiveMode, Watcher};
+use tracing::{info, warn};
 
 mod announce;
 mod p2p;
@@ -193,6 +194,10 @@ async fn main() -> Result<()> {
     store.seed_p2p_deny_default().await?;
     let store = Arc::new(store);
 
+    // Watch permissions.db so DHT re-announces when permissions change.
+    let (reannounce_tx, reannounce_rx) = tokio::sync::mpsc::channel::<()>(4);
+    watch_permissions_db(&db_path, reannounce_tx);
+
     // Peer table and connected-peer tracker for the network.* built-in tools.
     let table = Arc::new(PeerTable::new());
     let connected = new_connected_peers();
@@ -220,7 +225,59 @@ async fn main() -> Result<()> {
         cli.no_default_boot,
         cli.relay_server,
         call_rx,
-        None, // no manifest watcher in standalone bridge mode
+        Some(reannounce_rx),
     )
     .await
+}
+
+// ---------------------------------------------------------------------------
+// Permissions DB watcher
+// ---------------------------------------------------------------------------
+
+/// Watch the permissions database file for modifications from external CLI
+/// processes.  Sends a signal through `tx` so the bridge re-publishes the
+/// DHT announcement with updated tool exposure.
+fn watch_permissions_db(db_path: &std::path::Path, tx: tokio::sync::mpsc::Sender<()>) {
+    let watch_dir = db_path
+        .parent()
+        .expect("permissions.db parent dir")
+        .to_path_buf();
+    let db_name = db_path
+        .file_name()
+        .expect("permissions.db file name")
+        .to_os_string();
+
+    let (fs_tx, fs_rx) = std::sync::mpsc::channel::<notify::Result<notify::Event>>();
+    let mut watcher = match notify::recommended_watcher(fs_tx) {
+        Ok(w) => w,
+        Err(e) => {
+            warn!("Could not start permissions DB watcher: {e}");
+            return;
+        }
+    };
+    if let Err(e) = watcher.watch(&watch_dir, RecursiveMode::NonRecursive) {
+        warn!("Could not watch permissions DB directory: {e}");
+        return;
+    }
+
+    std::thread::spawn(move || {
+        let _watcher = watcher;
+        for res in fs_rx {
+            if let Ok(event) = res {
+                let dominated = event.paths.iter().any(|p| {
+                    p.file_name()
+                        .map(|n| n == db_name)
+                        .unwrap_or(false)
+                });
+                if dominated
+                    && matches!(
+                        event.kind,
+                        notify::EventKind::Modify(_) | notify::EventKind::Create(_)
+                    )
+                {
+                    let _ = tx.try_send(());
+                }
+            }
+        }
+    });
 }

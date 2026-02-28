@@ -188,7 +188,10 @@ fn load_file(
     if let Some(ref mcp) = manifest.mcp {
         // Skip if this server is already running (e.g. duplicate load).
         if servers.contains(&source) {
-            info!(source = source, "MCP server already running, skipping spawn");
+            info!(
+                source = source,
+                "MCP server already running, skipping spawn"
+            );
             return;
         }
 

@@ -43,8 +43,9 @@ use clawshake_core::{
     permissions::{Decision, PermissionStore},
 };
 use clawshake_tools::{client, schema};
+use notify::{RecursiveMode, Watcher};
 use serde_json::json;
-use tracing::info;
+use tracing::{info, warn};
 
 // ---------------------------------------------------------------------------
 // CLI definition
@@ -301,7 +302,11 @@ async fn main() -> Result<()> {
     };
 
     // Build the MCP backend.
-    let mut tools_changed_rx: Option<tokio::sync::mpsc::Receiver<()>> = None;
+    //
+    // The reannounce channel is shared: manifest changes (default mode) and
+    // permission-DB changes both send through it so the bridge re-publishes
+    // the DHT record immediately.
+    let (reannounce_tx, reannounce_rx) = tokio::sync::mpsc::channel::<()>(4);
     let backend: Option<McpClient> = if let Some(cmd) = &cli.mcp_cmd {
         // Track-1 mode: proxy a stdio MCP server.
         info!("MCP backend: stdio — {cmd}");
@@ -320,9 +325,7 @@ async fn main() -> Result<()> {
 
         builtins::seed(&manifests_dir)?;
         let registry = watcher::ManifestRegistry::new();
-        let (tools_changed_tx, rx) = tokio::sync::mpsc::channel::<()>(4);
-        let servers = watcher::start(manifests_dir, registry.clone(), Some(tools_changed_tx))?;
-        tools_changed_rx = Some(rx);
+        let servers = watcher::start(manifests_dir, registry.clone(), Some(reannounce_tx.clone()))?;
         info!(tools = registry.tool_count(), "Broker ready");
 
         let broker_port = cli.port;
@@ -343,6 +346,11 @@ async fn main() -> Result<()> {
     let store = PermissionStore::open(&db_path).await?;
     store.seed_p2p_deny_default().await?;
     let store = Arc::new(store);
+
+    // Watch permissions.db for changes from external CLI processes.
+    // When a user runs `clawshake permissions allow ...` in another terminal,
+    // the file change triggers a DHT re-announce so exposure stays in sync.
+    watch_permissions_db(&db_path, reannounce_tx);
 
     let table = Arc::new(PeerTable::new());
     let connected = new_connected_peers();
@@ -365,9 +373,65 @@ async fn main() -> Result<()> {
         cli.no_default_boot,
         cli.relay_server,
         call_rx,
-        tools_changed_rx,
+        Some(reannounce_rx),
     )
     .await
+}
+
+// ---------------------------------------------------------------------------
+// Permissions DB watcher
+// ---------------------------------------------------------------------------
+
+/// Watch the permissions database file for modifications from external CLI
+/// processes (e.g. `clawshake permissions allow ...`).  When a change is
+/// detected, send a signal through `tx` so the bridge re-publishes the DHT
+/// announcement with updated tool exposure.
+fn watch_permissions_db(db_path: &std::path::Path, tx: tokio::sync::mpsc::Sender<()>) {
+    // Watch the parent directory (the file itself may be recreated by SQLite).
+    let watch_dir = db_path
+        .parent()
+        .expect("permissions.db parent dir")
+        .to_path_buf();
+    let db_name = db_path
+        .file_name()
+        .expect("permissions.db file name")
+        .to_os_string();
+
+    let (fs_tx, fs_rx) = std::sync::mpsc::channel::<notify::Result<notify::Event>>();
+    let mut watcher = match notify::recommended_watcher(fs_tx) {
+        Ok(w) => w,
+        Err(e) => {
+            warn!("Could not start permissions DB watcher: {e}");
+            return;
+        }
+    };
+    if let Err(e) = watcher.watch(&watch_dir, RecursiveMode::NonRecursive) {
+        warn!("Could not watch permissions DB directory: {e}");
+        return;
+    }
+
+    std::thread::spawn(move || {
+        let _watcher = watcher; // prevent drop
+        for res in fs_rx {
+            if let Ok(event) = res {
+                // Only care about modifications to the permissions DB file
+                // (SQLite may also touch -wal and -shm files).
+                let dominated = event.paths.iter().any(|p| {
+                    p.file_name()
+                        .map(|n| n == db_name)
+                        .unwrap_or(false)
+                });
+                if dominated
+                    && matches!(
+                        event.kind,
+                        notify::EventKind::Modify(_) | notify::EventKind::Create(_)
+                    )
+                {
+                    let _ = tx.try_send(());
+                }
+            }
+        }
+    });
 }
 
 // ---------------------------------------------------------------------------

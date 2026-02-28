@@ -224,4 +224,31 @@ impl PermissionStore {
         .context("seeding p2p deny default")?;
         Ok(())
     }
+
+    /// Check whether a tool should be published to the DHT.
+    ///
+    /// A tool is "network-exposed" if **any** remote agent pattern has an
+    /// explicit `allow` for it.  Remote patterns are `p2p:*`, `p2p:{id}`,
+    /// `tailscale:*`, `tailscale:{id}` — anything that isn't `"local"`.
+    ///
+    /// This deliberately ignores wildcard tool names (`*`) to avoid accidental
+    /// mass-exposure.  A blanket `("p2p:*", "*", "allow")` makes **all** tools
+    /// network-exposed, which is correct: the user explicitly opted every tool
+    /// into remote access.
+    pub async fn is_network_exposed(&self, tool_name: &str) -> bool {
+        // A tool is exposed if any non-local agent_id has 'allow' for either
+        // the exact tool or the wildcard '*'.
+        let result = sqlx::query(
+            "SELECT 1 FROM permissions
+             WHERE agent_id != 'local'
+               AND (tool_name = ?1 OR tool_name = '*')
+               AND decision = 'allow'
+             LIMIT 1",
+        )
+        .bind(tool_name)
+        .fetch_optional(&self.db)
+        .await;
+
+        matches!(result, Ok(Some(_)))
+    }
 }

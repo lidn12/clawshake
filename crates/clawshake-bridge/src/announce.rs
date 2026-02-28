@@ -10,6 +10,7 @@
 
 use anyhow::Result;
 use clawshake_core::peer_table::{PeerInfo, PeerSource, ToolSummary};
+use clawshake_core::permissions::PermissionStore;
 use libp2p::{kad, Multiaddr, PeerId};
 use serde::{Deserialize, Serialize};
 use tracing::info;
@@ -83,27 +84,37 @@ impl AnnouncementRecord {
 
 /// Query the backend's `tools/list` and build a Kademlia record ready for
 /// `kad::Behaviour::put_record`.
+///
+/// Only tools that are "network-exposed" (at least one remote agent pattern
+/// has `allow`) are included in the announcement.  Tools with no remote allow
+/// are omitted from the DHT — they remain available locally but are not
+/// discoverable by other peers.
 pub async fn build_record(
     peer_id: PeerId,
     listen_addrs: &[Multiaddr],
     backend: &McpClient,
+    permissions: &PermissionStore,
 ) -> Result<kad::Record> {
     let raw_tools = backend.tools_list().await?;
 
-    let tools: Vec<ToolAnnounce> = raw_tools
-        .iter()
-        .filter_map(|t| {
-            let name = t["name"].as_str()?;
-            Some(ToolAnnounce {
-                name: name.to_string(),
-                description: t["description"].as_str().unwrap_or("").to_string(),
-                input_schema: t
-                    .get("inputSchema")
-                    .cloned()
-                    .unwrap_or_else(|| serde_json::json!({ "type": "object" })),
-            })
-        })
-        .collect();
+    let mut tools: Vec<ToolAnnounce> = Vec::new();
+    for t in &raw_tools {
+        let name = match t["name"].as_str() {
+            Some(n) => n,
+            None => continue,
+        };
+        if !permissions.is_network_exposed(name).await {
+            continue;
+        }
+        tools.push(ToolAnnounce {
+            name: name.to_string(),
+            description: t["description"].as_str().unwrap_or("").to_string(),
+            input_schema: t
+                .get("inputSchema")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({ "type": "object" })),
+        });
+    }
 
     let count = tools.len();
 

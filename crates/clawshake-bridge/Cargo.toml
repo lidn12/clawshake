@@ -27,3 +27,4 @@ reqwest = { workspace = true }
 libp2p = { workspace = true }
 dirs = { workspace = true }
 futures = { workspace = true }
+notify = { workspace = true }

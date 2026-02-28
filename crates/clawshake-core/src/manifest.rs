@@ -119,5 +119,3 @@ pub enum InvokeConfig {
         server_key: String,
     },
 }
-
-
