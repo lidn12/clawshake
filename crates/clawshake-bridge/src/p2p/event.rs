@@ -120,7 +120,13 @@ pub(super) fn handle_event(
             ..
         } => {
             on_connection_closed(
-                swarm, peer_id, connection_id, cause, num_established, ctx, state,
+                swarm,
+                peer_id,
+                connection_id,
+                cause,
+                num_established,
+                ctx,
+                state,
             );
         }
 
@@ -144,9 +150,11 @@ pub(super) fn handle_event(
         }
 
         // -- Identify ------------------------------------------------------
-        SwarmEvent::Behaviour(ClawshakeBehaviourEvent::Identify(
-            identify::Event::Received { peer_id, info, .. },
-        )) => {
+        SwarmEvent::Behaviour(ClawshakeBehaviourEvent::Identify(identify::Event::Received {
+            peer_id,
+            info,
+            ..
+        })) => {
             on_identify_received(swarm, peer_id, info, ctx, state);
         }
 
@@ -174,9 +182,7 @@ pub(super) fn handle_event(
 
         // -- Relay client --------------------------------------------------
         SwarmEvent::Behaviour(ClawshakeBehaviourEvent::RelayClient(event)) => match event {
-            relay::client::Event::ReservationReqAccepted {
-                relay_peer_id, ..
-            } => {
+            relay::client::Event::ReservationReqAccepted { relay_peer_id, .. } => {
                 info!("Relay slot reserved via {relay_peer_id}");
             }
             other => {
@@ -407,11 +413,7 @@ fn on_connection_closed(
     // Re-establish relay path: if a *direct* connection dropped and no
     // connections remain, try re-dialing the peer so the relay client can
     // re-establish the circuit.
-    if was_direct
-        && num_established == 0
-        && !ctx.relay_server
-        && peer_id != ctx.local_peer_id
-    {
+    if was_direct && num_established == 0 && !ctx.relay_server && peer_id != ctx.local_peer_id {
         info!("Direct connection to {peer_id} lost, re-dialing for relay fallback");
         let _ = swarm.dial(peer_id);
     }
@@ -476,10 +478,7 @@ fn on_identify_received(
     // WrongPeerId / MultiaddrNotSupported errors when dialed.
     for a in &info.listen_addrs {
         if !addr::has_transport(a) || addr::has_bad_ip(a) {
-            swarm
-                .behaviour_mut()
-                .kademlia
-                .remove_address(&peer_id, a);
+            swarm.behaviour_mut().kademlia.remove_address(&peer_id, a);
         }
     }
 
@@ -777,9 +776,7 @@ fn on_rendezvous_client(
                             .kademlia
                             .add_address(&peer_id, a.clone());
                     } else {
-                        tracing::debug!(
-                            "Rendezvous: skipped non-routable addr for {peer_id}: {a}"
-                        );
+                        tracing::debug!("Rendezvous: skipped non-routable addr for {peer_id}: {a}");
                     }
                 }
                 if let Err(e) = swarm.dial(peer_id) {
@@ -792,18 +789,14 @@ fn on_rendezvous_client(
             ttl,
             namespace,
         } => {
-            info!(
-                "Rendezvous: registered at {rendezvous_node} ns={namespace} ttl={ttl}s"
-            );
+            info!("Rendezvous: registered at {rendezvous_node} ns={namespace} ttl={ttl}s");
         }
         rendezvous::client::Event::RegisterFailed {
             rendezvous_node,
             namespace,
             error,
         } => {
-            warn!(
-                "Rendezvous: register failed at {rendezvous_node} ns={namespace}: {error:?}"
-            );
+            warn!("Rendezvous: register failed at {rendezvous_node} ns={namespace}: {error:?}");
             // Allow retry on next ExternalAddrConfirmed.
             state.rendezvous_registered.remove(&rendezvous_node);
         }
