@@ -179,11 +179,11 @@ pub async fn forward(
         Decision::Ask => {
             // `Ask` means "prompt locally" — no UI for remote callers, auto-deny.
             warn!(%caller, method, "Permission denied (ask → deny for P2P callers)");
-            return permission_denied_response(id, &method);
+            return permission_denied_response(id, &method, caller);
         }
         Decision::Deny => {
             warn!(%caller, method, "Permission denied");
-            return permission_denied_response(id, &method);
+            return permission_denied_response(id, &method, caller);
         }
     }
 
@@ -201,7 +201,15 @@ pub async fn forward(
         }
         Err(e) => {
             warn!(%caller, "Backend call failed: {e}");
-            error_response(id, -32603, format!("Backend error: {e}").as_str())
+            error_response(
+                id,
+                -32603,
+                &format!(
+                    "The local broker failed to process the request for method '{}': {}. \
+                     This may indicate the broker is misconfigured or the tool is unavailable.",
+                    method, e
+                ),
+            )
         }
     }
 }
@@ -219,12 +227,16 @@ fn error_response(id: Option<Value>, code: i64, message: &str) -> Vec<u8> {
 /// Per MCP spec, tool-level errors (including permission denied) should be
 /// reported as successful JSON-RPC responses with error content, not as
 /// JSON-RPC error objects.
-fn permission_denied_response(id: Option<Value>, tool_name: &str) -> Vec<u8> {
+fn permission_denied_response(id: Option<Value>, tool_name: &str, caller: &PeerId) -> Vec<u8> {
     let r = serde_json::json!({
         "jsonrpc": "2.0",
         "id": id,
         "result": {
-            "content": [{ "type": "text", "text": format!("Permission denied for tool '{}'", tool_name) }],
+            "content": [{ "type": "text", "text": format!(
+                "Permission denied: peer '{}' is not allowed to call '{}'. \
+                 The node operator can grant access with: clawshake permissions allow p2p:{} {}",
+                caller, tool_name, caller, tool_name
+            ) }],
             "isError": true
         }
     });

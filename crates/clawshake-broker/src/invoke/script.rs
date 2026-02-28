@@ -17,7 +17,12 @@ pub async fn invoke_powershell(script: &str, arguments: &Value) -> Result<String
             .to_string())
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("powershell exited {}: {}", output.status, stderr.trim())
+        anyhow::bail!(
+            "The PowerShell script exited with {}. stderr: {}. \
+             This may indicate a script error or missing prerequisites on the node.",
+            output.status,
+            stderr.trim()
+        )
     }
 }
 
@@ -41,12 +46,17 @@ pub async fn invoke_applescript(script: &str, arguments: &Value) -> Result<Strin
                 .to_string())
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("osascript exited {}: {}", output.status, stderr.trim())
+            anyhow::bail!(
+                "The AppleScript exited with {}. stderr: {}. \
+                 This may indicate a script error or the target application denied access.",
+                output.status,
+                stderr.trim()
+            )
         }
     }
     #[cfg(not(target_os = "macos"))]
     {
         let _ = (script, arguments);
-        anyhow::bail!("AppleScript is only supported on macOS")
+        anyhow::bail!("AppleScript tools are only supported on macOS. This tool cannot run on the current platform.")
     }
 }

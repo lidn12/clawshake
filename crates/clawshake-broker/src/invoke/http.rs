@@ -59,6 +59,9 @@ pub async fn invoke(
     if status.is_success() {
         Ok(body)
     } else {
-        anyhow::bail!("HTTP {status}: {body}")
+        anyhow::bail!(
+            "The HTTP backend at `{url}` returned {status}. Response: {body}. \
+             The target application may not be running or the endpoint may be incorrect."
+        )
     }
 }

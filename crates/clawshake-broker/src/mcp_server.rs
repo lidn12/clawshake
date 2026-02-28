@@ -137,8 +137,9 @@ pub(crate) async fn handle(
                 Decision::Deny => {
                     let result = ToolsCallResult {
                         content: vec![McpContent::text(format!(
-                            "Permission denied for tool '{}'",
-                            params.name
+                            "Permission denied: the local agent is not allowed to call '{}'. \
+                             Grant access with: clawshake permissions allow local {}",
+                            params.name, params.name
                         ))],
                         is_error: true,
                     };
@@ -165,7 +166,13 @@ pub(crate) async fn handle(
             let (content, is_error) =
                 match router::dispatch(&params.name, &arguments, registry, servers).await {
                     Ok(text) => (vec![McpContent::text(text)], false),
-                    Err(e) => (vec![McpContent::text(e.to_string())], true),
+                    Err(e) => (
+                        vec![McpContent::text(format!(
+                            "Tool '{}' failed: {}",
+                            params.name, e
+                        ))],
+                        true,
+                    ),
                 };
             let result = ToolsCallResult { content, is_error };
             Some(JsonRpcResponse::ok(

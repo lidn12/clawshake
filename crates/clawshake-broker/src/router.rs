@@ -16,7 +16,7 @@ pub async fn dispatch(
 ) -> Result<String> {
     let loaded = registry
         .get(tool_name)
-        .ok_or_else(|| anyhow::anyhow!("Unknown tool: {tool_name}"))?;
+        .ok_or_else(|| anyhow::anyhow!("Tool '{tool_name}' not found. Run `clawshake tools list` to see available tools."))?;
 
     match &loaded.tool.invoke {
         InvokeConfig::Cli {
@@ -39,7 +39,7 @@ pub async fn dispatch(
         InvokeConfig::Mcp { server_key } => {
             let server = servers
                 .get(server_key)
-                .ok_or_else(|| anyhow::anyhow!("MCP server '{server_key}' not running"))?;
+                .ok_or_else(|| anyhow::anyhow!("Tool '{tool_name}' is unavailable because its MCP server ('{server_key}') is not running. The node operator may need to restart the broker."))?;
             server.tools_call(tool_name, arguments).await
         }
     }

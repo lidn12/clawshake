@@ -87,6 +87,12 @@ pub async fn invoke(
             .to_string())
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("command exited {}: {}", output.status, stderr.trim())
+        anyhow::bail!(
+            "The underlying command (`{}`) exited with {}. stderr: {}. \
+             This may indicate a configuration issue on the node or missing dependencies.",
+            command_sub,
+            output.status,
+            stderr.trim()
+        )
     }
 }
