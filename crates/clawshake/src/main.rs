@@ -16,7 +16,10 @@
 //! clawshake status [--json]           # peer ID, running state, stats
 //! clawshake permissions allow|deny|remove|list ...
 //! clawshake network peers|tools|search|ping|call|record ...
-//! clawshake tools [--json]            # list locally registered tools
+//! clawshake tools list [--json]       # list locally registered tools
+//! clawshake tools add <file>          # install a manifest
+//! clawshake tools remove <name>       # remove a manifest
+//! clawshake tools validate <file>     # validate a manifest
 //! ```
 
 use anyhow::Result;
@@ -28,6 +31,7 @@ use clawshake_core::{
     permissions::PermissionStore,
 };
 use clawshake_tools::cli::{run_network_cmd, NetworkCmd};
+use std::path::PathBuf;
 use tracing::{info, warn};
 
 // ---------------------------------------------------------------------------
@@ -100,15 +104,41 @@ enum Command {
         json: bool,
     },
 
-    /// List all tools registered with the local broker.
+    /// Manage locally registered tools.
     ///
-    /// Shows tool name, published status (whether the tool is advertised on
-    /// the P2P network), and description.  Requires reading the manifests
-    /// directory and permissions database — no running node needed.
+    /// List, add, remove, or validate tool manifests.  Requires reading the
+    /// manifests directory and permissions database — no running node needed.
     Tools {
+        #[command(subcommand)]
+        action: ToolsAction,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum ToolsAction {
+    /// List all registered tools.
+    List {
         /// Output as JSON instead of a human-readable table.
         #[arg(long, default_value_t = false)]
         json: bool,
+    },
+
+    /// Validate a manifest file without installing it.
+    Validate {
+        /// Path to the manifest JSON file.
+        file: PathBuf,
+    },
+
+    /// Install a manifest file into the manifests directory.
+    Add {
+        /// Path to the manifest JSON file to install.
+        file: PathBuf,
+    },
+
+    /// Remove an installed manifest by name.
+    Remove {
+        /// Manifest name (e.g. "calendar", not "calendar.json").
+        name: String,
     },
 }
 
@@ -147,13 +177,28 @@ async fn main() -> Result<()> {
             run_network_cmd(&cmd).await?;
         }
 
-        Command::Tools { json } => {
+        Command::Tools { action } => {
             let manifests_dir = clawshake_dir.join("manifests");
-            clawshake_broker::cli::list_tools(&manifests_dir, &db_path, json).await?;
+            match action {
+                ToolsAction::List { json } => {
+                    builtins::seed(&manifests_dir)?;
+                    clawshake_broker::cli::list_tools(&manifests_dir, &db_path, json).await?;
+                }
+                ToolsAction::Validate { file } => {
+                    clawshake_broker::cli::validate_manifest(&file)?;
+                }
+                ToolsAction::Add { file } => {
+                    clawshake_broker::cli::add_manifest(&file, &manifests_dir)?;
+                }
+                ToolsAction::Remove { name } => {
+                    clawshake_broker::cli::remove_manifest(&name, &manifests_dir)?;
+                }
+            }
         }
 
         Command::Status { json } => {
             let manifests_dir = clawshake_dir.join("manifests");
+            builtins::seed(&manifests_dir)?;
             let (total, published) =
                 clawshake_broker::cli::tool_counts(&manifests_dir, &db_path).await;
             clawshake_bridge::cli::show_status(json, Some((total, published))).await?;

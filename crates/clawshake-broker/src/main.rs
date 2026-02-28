@@ -1,9 +1,9 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use clawshake_core::permissions::PermissionStore;
+use std::path::PathBuf;
 use tracing::info;
 
-mod builtins;
 mod cli;
 mod http_server;
 mod invoke;
@@ -42,9 +42,36 @@ enum Command {
     /// Shows tool name, published status, and description.
     /// Reads manifests and permissions — no running server needed.
     Tools {
+        #[command(subcommand)]
+        action: ToolsAction,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum ToolsAction {
+    /// List all registered tools.
+    List {
         /// Output as JSON instead of a human-readable table.
         #[arg(long, default_value_t = false)]
         json: bool,
+    },
+
+    /// Validate a manifest file without installing it.
+    Validate {
+        /// Path to the manifest JSON file.
+        file: PathBuf,
+    },
+
+    /// Install a manifest file into the manifests directory.
+    Add {
+        /// Path to the manifest JSON file to install.
+        file: PathBuf,
+    },
+
+    /// Remove an installed manifest by name.
+    Remove {
+        /// Manifest name (e.g. "calendar", not "calendar.json").
+        name: String,
     },
 }
 
@@ -72,16 +99,24 @@ async fn main() -> Result<()> {
     let db_path = clawshake_dir.join("permissions.db");
 
     match cli.command {
-        Command::Tools { json } => {
-            cli::list_tools(&manifests_dir, &db_path, json).await?;
-        }
+        Command::Tools { action } => match action {
+            ToolsAction::List { json } => {
+                cli::list_tools(&manifests_dir, &db_path, json).await?;
+            }
+            ToolsAction::Validate { file } => {
+                cli::validate_manifest(&file)?;
+            }
+            ToolsAction::Add { file } => {
+                cli::add_manifest(&file, &manifests_dir)?;
+            }
+            ToolsAction::Remove { name } => {
+                cli::remove_manifest(&name, &manifests_dir)?;
+            }
+        },
 
         Command::Run { port } => {
             // Open permission store.
             let permissions = PermissionStore::open(&db_path).await?;
-
-            // Seed built-in manifests (no-op if files already exist).
-            builtins::seed(&manifests_dir)?;
 
             // Load manifests and start file watcher.
             let registry = watcher::ManifestRegistry::new();
