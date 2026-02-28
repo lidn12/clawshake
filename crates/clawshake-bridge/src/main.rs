@@ -6,20 +6,30 @@ use clawshake_core::permissions::PermissionStore;
 /// Clawshake Bridge — expose an existing MCP server to the peer-to-peer network.
 #[derive(Parser, Debug)]
 #[command(name = "clawshake-bridge", version, about)]
+#[command(subcommand_required = true, arg_required_else_help = true)]
 struct Cli {
-    /// Manage the local permission store (no bridge connection required).
     #[command(subcommand)]
-    command: Option<Command>,
-
-    #[command(flatten)]
-    p2p: P2pArgs,
-
-    #[command(flatten)]
-    mcp: McpArgs,
+    command: Command,
 }
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    /// Start the bridge node.
+    ///
+    /// Connects to an existing MCP server (via --mcp-cmd or --mcp-port) and
+    /// exposes it on the P2P network.
+    ///
+    /// Examples:
+    ///   clawshake-bridge run --mcp-cmd "node server.js"
+    ///   clawshake-bridge run --mcp-port 3000
+    Run {
+        #[command(flatten)]
+        p2p: P2pArgs,
+
+        #[command(flatten)]
+        mcp: McpArgs,
+    },
+
     /// Manage the local permission store.
     ///
     /// Examples:
@@ -53,18 +63,25 @@ async fn main() -> Result<()> {
         .join(".clawshake")
         .join("permissions.db");
 
-    // Handle permissions subcommand — no bridge startup required.
-    if let Some(Command::Permissions { action }) = &cli.command {
-        let store = PermissionStore::open(&db_path).await?;
-        run_permissions_action(action, &store).await?;
-        return Ok(());
+    match cli.command {
+        Command::Permissions { action } => {
+            let store = PermissionStore::open(&db_path).await?;
+            run_permissions_action(&action, &store).await?;
+        }
+
+        Command::Run { p2p, mcp } => {
+            let backend = mcp.build("clawshake-bridge").await?;
+            let (reannounce_tx, reannounce_rx) = tokio::sync::mpsc::channel::<()>(4);
+            clawshake_bridge::cli::start_bridge(
+                p2p,
+                backend,
+                &db_path,
+                reannounce_tx,
+                reannounce_rx,
+            )
+            .await?;
+        }
     }
 
-    // Build the MCP backend (if any).
-    let backend = cli.mcp.build("clawshake-bridge").await?;
-
-    let (reannounce_tx, reannounce_rx) = tokio::sync::mpsc::channel::<()>(4);
-
-    clawshake_bridge::cli::start_bridge(cli.p2p, backend, &db_path, reannounce_tx, reannounce_rx)
-        .await
+    Ok(())
 }

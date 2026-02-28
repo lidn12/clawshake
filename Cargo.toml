@@ -68,6 +68,9 @@ open = "5"
 # Home directory resolution
 dirs = "5"
 
+# Binary lookup on PATH
+which = "7"
+
 # Stream utilities
 futures = "0.3"
 

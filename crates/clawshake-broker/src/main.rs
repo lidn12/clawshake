@@ -1,5 +1,5 @@
 use anyhow::Result;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use clawshake_core::permissions::PermissionStore;
 use tracing::info;
 
@@ -13,12 +13,38 @@ mod watcher;
 /// Clawshake Broker — manifest watcher and MCP server for local capabilities.
 #[derive(Parser, Debug)]
 #[command(name = "clawshake-broker", version, about)]
+#[command(subcommand_required = true, arg_required_else_help = true)]
 struct Cli {
-    /// Run as an HTTP SSE MCP server on this port (e.g. --port 7475).
-    /// VS Code config: { "type": "sse", "url": "http://127.0.0.1:<port>/sse" }
-    /// Omit to use stdio mode instead.
-    #[arg(long)]
-    port: Option<u16>,
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand, Debug)]
+enum Command {
+    /// Start the broker MCP server.
+    ///
+    /// Without --port, runs as an MCP stdio server (JSON-RPC over stdin/stdout).
+    /// With --port, runs as an HTTP SSE MCP server.
+    ///
+    /// Examples:
+    ///   clawshake-broker run                 # stdio mode
+    ///   clawshake-broker run --port 7475     # HTTP SSE mode
+    Run {
+        /// Run as an HTTP SSE MCP server on this port (e.g. --port 7475).
+        /// Omit to use stdio mode instead.
+        #[arg(long)]
+        port: Option<u16>,
+    },
+
+    /// List all tools registered with the broker.
+    ///
+    /// Shows tool name, published status, and description.
+    /// Reads manifests and permissions — no running server needed.
+    Tools {
+        /// Output as JSON instead of a human-readable table.
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
 }
 
 #[tokio::main]
@@ -41,23 +67,71 @@ async fn main() -> Result<()> {
     let manifests_dir = clawshake_dir.join("manifests");
     let db_path = clawshake_dir.join("permissions.db");
 
-    // Open permission store.
-    let permissions = PermissionStore::open(&db_path).await?;
+    match cli.command {
+        Command::Tools { json } => {
+            // Seed and load manifests, then display tool listing.
+            builtins::seed(&manifests_dir)?;
+            let registry = watcher::ManifestRegistry::new();
+            watcher::load_manifests_from_dir(&manifests_dir, &registry)?;
+            let permissions = PermissionStore::open(&db_path).await?;
+            let tools = registry.all();
 
-    // Seed built-in manifests (no-op if files already exist).
-    builtins::seed(&manifests_dir)?;
+            if json {
+                let mut entries = Vec::new();
+                for t in &tools {
+                    let published = permissions.is_network_exposed(&t.tool.name).await;
+                    entries.push(serde_json::json!({
+                        "name": t.tool.name,
+                        "description": t.tool.description,
+                        "source": t.source,
+                        "published": published,
+                    }));
+                }
+                println!("{}", serde_json::to_string_pretty(&entries)?);
+            } else {
+                if tools.is_empty() {
+                    println!("No tools registered.");
+                    println!("Add manifests to {}", manifests_dir.display());
+                    return Ok(());
+                }
+                println!("{:<30}  {:<5}  {}", "Name", "Pub", "Description");
+                println!("{}", "-".repeat(78));
+                for t in &tools {
+                    let published = permissions.is_network_exposed(&t.tool.name).await;
+                    let marker = if published { "  ✓" } else { "  ✗" };
+                    let desc = if t.tool.description.len() > 40 {
+                        format!("{}…", &t.tool.description[..39])
+                    } else {
+                        t.tool.description.clone()
+                    };
+                    println!("{:<30}  {:<5}  {}", t.tool.name, marker, desc);
+                }
+            }
+        }
 
-    // Load manifests and start file watcher.
-    let registry = watcher::ManifestRegistry::new();
-    let (sse_tx, sse_rx) = tokio::sync::mpsc::channel::<()>(4);
-    let servers = watcher::start(manifests_dir, registry.clone(), None, Some(sse_tx))?;
-    info!(tools = registry.tool_count(), "Broker ready");
+        Command::Run { port } => {
+            // Open permission store.
+            let permissions = PermissionStore::open(&db_path).await?;
 
-    if let Some(port) = cli.port {
-        return http_server::serve(port, registry, permissions, servers, Some(sse_rx)).await;
+            // Seed built-in manifests (no-op if files already exist).
+            builtins::seed(&manifests_dir)?;
+
+            // Load manifests and start file watcher.
+            let registry = watcher::ManifestRegistry::new();
+            let (sse_tx, sse_rx) = tokio::sync::mpsc::channel::<()>(4);
+            let servers = watcher::start(manifests_dir, registry.clone(), None, Some(sse_tx))?;
+            info!(tools = registry.tool_count(), "Broker ready");
+
+            if let Some(port) = port {
+                return http_server::serve(port, registry, permissions, servers, Some(sse_rx))
+                    .await;
+            }
+
+            // Default: MCP stdio loop (no SSE sessions — drop the receiver).
+            drop(sse_rx);
+            mcp_server::serve_stdio(registry, permissions, servers).await?;
+        }
     }
 
-    // Default: MCP stdio loop (no SSE sessions — drop the receiver).
-    drop(sse_rx);
-    mcp_server::serve_stdio(registry, permissions, servers).await
+    Ok(())
 }

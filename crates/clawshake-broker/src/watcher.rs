@@ -287,6 +287,50 @@ fn source_name_from_path(path: &Path) -> Option<String> {
 // Public API
 // ---------------------------------------------------------------------------
 
+/// Load every `*.json` manifest in `dir` into `registry` (static tools only).
+///
+/// This is a lightweight alternative to [`start`] intended for CLI commands
+/// that need to inspect the tool set without starting a file-watcher or
+/// connecting to MCP servers.
+pub fn load_manifests_from_dir(dir: &Path, registry: &ManifestRegistry) -> Result<()> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(e) => {
+            warn!("Cannot read manifests dir {:?}: {e}", dir);
+            return Ok(());
+        }
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(e) => {
+                warn!("Failed to read manifest {:?}: {e}", path);
+                continue;
+            }
+        };
+        let manifest = match serde_json::from_str::<Manifest>(&content) {
+            Ok(m) => m,
+            Err(e) => {
+                warn!("Failed to parse manifest {:?}: {e}", path);
+                continue;
+            }
+        };
+        let source = path
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        if !manifest.tools.is_empty() {
+            registry.load_manifest(&source, &manifest);
+        }
+    }
+    Ok(())
+}
+
 /// Load all `*.json` files in `manifests_dir` into `registry`, then spawn a
 /// background task that watches for file-system changes and keeps the registry
 /// live.  Returns immediately after the initial load.
