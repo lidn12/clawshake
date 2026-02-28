@@ -6,3 +6,4 @@
 pub mod announce;
 pub mod p2p;
 pub mod proxy;
+pub mod watch;

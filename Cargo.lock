@@ -495,7 +495,6 @@ dependencies = [
  "clawshake-core",
  "clawshake-tools",
  "dirs",
- "notify",
  "serde_json",
  "tokio",
  "tracing",

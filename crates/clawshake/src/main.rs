@@ -34,7 +34,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use clawshake_bridge::p2p;
+use clawshake_bridge::{p2p, watch};
 use clawshake_broker::{builtins, http_server, watcher};
 use clawshake_core::mcp_client::{HttpClient, McpClient, StdioClient};
 use clawshake_core::{
@@ -43,9 +43,8 @@ use clawshake_core::{
     permissions::{Decision, PermissionStore},
 };
 use clawshake_tools::{client, schema};
-use notify::{RecursiveMode, Watcher};
 use serde_json::json;
-use tracing::{info, warn};
+use tracing::info;
 
 // ---------------------------------------------------------------------------
 // CLI definition
@@ -347,10 +346,8 @@ async fn main() -> Result<()> {
     store.seed_p2p_deny_default().await?;
     let store = Arc::new(store);
 
-    // Watch permissions.db for changes from external CLI processes.
-    // When a user runs `clawshake permissions allow ...` in another terminal,
-    // the file change triggers a DHT re-announce so exposure stays in sync.
-    watch_permissions_db(&db_path, reannounce_tx);
+    // Watch permissions.db so DHT re-announces when permissions change.
+    watch::watch_permissions_db(&db_path, reannounce_tx);
 
     let table = Arc::new(PeerTable::new());
     let connected = new_connected_peers();
@@ -376,62 +373,6 @@ async fn main() -> Result<()> {
         Some(reannounce_rx),
     )
     .await
-}
-
-// ---------------------------------------------------------------------------
-// Permissions DB watcher
-// ---------------------------------------------------------------------------
-
-/// Watch the permissions database file for modifications from external CLI
-/// processes (e.g. `clawshake permissions allow ...`).  When a change is
-/// detected, send a signal through `tx` so the bridge re-publishes the DHT
-/// announcement with updated tool exposure.
-fn watch_permissions_db(db_path: &std::path::Path, tx: tokio::sync::mpsc::Sender<()>) {
-    // Watch the parent directory (the file itself may be recreated by SQLite).
-    let watch_dir = db_path
-        .parent()
-        .expect("permissions.db parent dir")
-        .to_path_buf();
-    let db_name = db_path
-        .file_name()
-        .expect("permissions.db file name")
-        .to_os_string();
-
-    let (fs_tx, fs_rx) = std::sync::mpsc::channel::<notify::Result<notify::Event>>();
-    let mut watcher = match notify::recommended_watcher(fs_tx) {
-        Ok(w) => w,
-        Err(e) => {
-            warn!("Could not start permissions DB watcher: {e}");
-            return;
-        }
-    };
-    if let Err(e) = watcher.watch(&watch_dir, RecursiveMode::NonRecursive) {
-        warn!("Could not watch permissions DB directory: {e}");
-        return;
-    }
-
-    std::thread::spawn(move || {
-        let _watcher = watcher; // prevent drop
-        for res in fs_rx {
-            if let Ok(event) = res {
-                // Only care about modifications to the permissions DB file
-                // (SQLite may also touch -wal and -shm files).
-                let dominated = event.paths.iter().any(|p| {
-                    p.file_name()
-                        .map(|n| n == db_name)
-                        .unwrap_or(false)
-                });
-                if dominated
-                    && matches!(
-                        event.kind,
-                        notify::EventKind::Modify(_) | notify::EventKind::Create(_)
-                    )
-                {
-                    let _ = tx.try_send(());
-                }
-            }
-        }
-    });
 }
 
 // ---------------------------------------------------------------------------
