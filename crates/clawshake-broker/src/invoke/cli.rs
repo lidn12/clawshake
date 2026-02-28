@@ -19,10 +19,13 @@ pub async fn invoke(
     shell: bool,
     arguments: &Value,
 ) -> Result<String> {
-    let command_sub = substitute(command, arguments);
+    let command_sub = super::substitute(command, arguments);
 
     // Substitute then filter: drop empty args and the flag preceding them.
-    let raw_args: Vec<String> = args.iter().map(|a| substitute(a, arguments)).collect();
+    let raw_args: Vec<String> = args
+        .iter()
+        .map(|a| super::substitute(a, arguments))
+        .collect();
     let mut args_sub: Vec<String> = Vec::new();
     let mut i = 0;
     while i < raw_args.len() {
@@ -85,40 +88,6 @@ pub async fn invoke(
         let stderr = String::from_utf8_lossy(&output.stderr);
         anyhow::bail!("command exited {}: {}", output.status, stderr.trim())
     }
-}
-
-/// Replace every `{{key}}` in `template` with the matching value from `args`.
-/// Any placeholders that remain unresolved are stripped, along with any
-/// immediately preceding separator character (`:` or `=`).
-/// e.g. `"path:{{line}}"` with no `line` arg → `"path"`
-fn substitute(template: &str, args: &Value) -> String {
-    let mut result = template.to_string();
-    if let Some(obj) = args.as_object() {
-        for (key, val) in obj {
-            let placeholder = format!("{{{{{key}}}}}");
-            let value = match val {
-                Value::String(s) => s.clone(),
-                other => other.to_string(),
-            };
-            result = result.replace(&placeholder, &value);
-        }
-    }
-    // Strip remaining unresolved placeholders (with optional preceding separator).
-    loop {
-        let Some(start) = result.find("{{") else {
-            break;
-        };
-        let prefix_start = if start > 0 && matches!(result.as_bytes()[start - 1], b':' | b'=') {
-            start - 1
-        } else {
-            start
-        };
-        let Some(rel_end) = result[start..].find("}}") else {
-            break;
-        };
-        result.drain(prefix_start..start + rel_end + 2);
-    }
-    result
 }
 
 /// Wrap a token in double-quotes for shell safety (used only in Unix shell mode).

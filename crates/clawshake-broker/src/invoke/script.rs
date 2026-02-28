@@ -6,7 +6,7 @@ use serde_json::Value;
 /// `{{param}}` placeholders in `script` are substituted from `arguments`.
 /// Stdout is returned as the result.
 pub async fn invoke_powershell(script: &str, arguments: &Value) -> Result<String> {
-    let script_sub = substitute(script, arguments);
+    let script_sub = super::substitute(script, arguments);
     let output = tokio::process::Command::new("powershell")
         .args(["-NoProfile", "-NonInteractive", "-Command", &script_sub])
         .output()
@@ -30,7 +30,7 @@ pub async fn invoke_powershell(script: &str, arguments: &Value) -> Result<String
 pub async fn invoke_applescript(script: &str, arguments: &Value) -> Result<String> {
     #[cfg(target_os = "macos")]
     {
-        let script_sub = substitute(script, arguments);
+        let script_sub = super::substitute(script, arguments);
         let output = tokio::process::Command::new("osascript")
             .args(["-e", &script_sub])
             .output()
@@ -49,19 +49,4 @@ pub async fn invoke_applescript(script: &str, arguments: &Value) -> Result<Strin
         let _ = (script, arguments);
         anyhow::bail!("AppleScript is only supported on macOS")
     }
-}
-
-fn substitute(template: &str, arguments: &Value) -> String {
-    let mut result = template.to_string();
-    if let Some(obj) = arguments.as_object() {
-        for (key, val) in obj {
-            let placeholder = format!("{{{{{key}}}}}");
-            let value = match val {
-                Value::String(s) => s.clone(),
-                other => other.to_string(),
-            };
-            result = result.replace(&placeholder, &value);
-        }
-    }
-    result
 }

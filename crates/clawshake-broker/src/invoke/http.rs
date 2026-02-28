@@ -14,7 +14,7 @@ pub async fn invoke(
     arguments: &Value,
 ) -> Result<String> {
     let method = method.unwrap_or("POST").to_uppercase();
-    let url = substitute(url, arguments);
+    let url = super::substitute(url, arguments);
 
     let client = reqwest::Client::new();
     let mut builder = match method.as_str() {
@@ -61,19 +61,4 @@ pub async fn invoke(
     } else {
         anyhow::bail!("HTTP {status}: {body}")
     }
-}
-
-fn substitute(template: &str, arguments: &Value) -> String {
-    let mut result = template.to_string();
-    if let Some(obj) = arguments.as_object() {
-        for (key, val) in obj {
-            let placeholder = format!("{{{{{key}}}}}");
-            let value = match val {
-                Value::String(s) => s.clone(),
-                other => other.to_string(),
-            };
-            result = result.replace(&placeholder, &value);
-        }
-    }
-    result
 }

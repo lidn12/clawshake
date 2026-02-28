@@ -551,6 +551,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "libp2p",
+ "reqwest",
  "serde",
  "serde_json",
  "sqlx",
