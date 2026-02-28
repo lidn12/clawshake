@@ -10,9 +10,9 @@
 //! clawshake-tools network peers
 //! clawshake-tools network tools  --peer-id <PEER_ID>
 //! clawshake-tools network search --query <QUERY>
-//! clawshake-tools network describe --peer-id <PEER_ID> --tool-name <TOOL>
-//! clawshake-tools network ping    --peer-id <PEER_ID>
-//! clawshake-tools network call    --peer-id <PEER_ID> --tool <TOOL> [--args <JSON>|-]
+//! clawshake-tools network ping   --peer-id <PEER_ID>
+//! clawshake-tools network record --peer-id <PEER_ID>
+//! clawshake-tools network call   --peer-id <PEER_ID> --tool <TOOL> [--args <JSON>|-]
 //!
 //! # Generic interface (language-agnostic integration)
 //!
