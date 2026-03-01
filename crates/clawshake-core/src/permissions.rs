@@ -227,28 +227,26 @@ impl PermissionStore {
 
     /// Check whether a tool should be published to the DHT.
     ///
-    /// A tool is "network-exposed" if **any** remote agent pattern has an
-    /// explicit `allow` for it.  Remote patterns are `p2p:*`, `p2p:{id}`,
-    /// `tailscale:*`, `tailscale:{id}` — anything that isn't `"local"`.
+    /// Runs the same specificity waterfall as `check()` for the representative
+    /// agent `p2p:*` (the wildcard that covers all remote P2P peers):
+    ///   1. `(p2p:*, exact tool)` — most specific
+    ///   2. `(p2p:*, *)` — wildcard tool
+    ///   3. No match → Deny (default for P2P)
     ///
-    /// This deliberately ignores wildcard tool names (`*`) to avoid accidental
-    /// mass-exposure.  A blanket `("p2p:*", "*", "allow")` makes **all** tools
-    /// network-exposed, which is correct: the user explicitly opted every tool
-    /// into remote access.
+    /// This means `deny p2p:* network_call` correctly overrides a blanket
+    /// `allow p2p:* *` and the tool is not published to the DHT.
     pub async fn is_network_exposed(&self, tool_name: &str) -> bool {
-        // A tool is exposed if any non-local agent_id has 'allow' for either
-        // the exact tool or the wildcard '*'.
         let result = sqlx::query(
-            "SELECT 1 FROM permissions
-             WHERE agent_id != 'local'
-               AND (tool_name = ?1 OR tool_name = '*')
-               AND decision = 'allow'
+            "SELECT decision FROM permissions
+             WHERE agent_id = 'p2p:*'
+               AND tool_name IN (?1, '*')
+             ORDER BY CASE tool_name WHEN ?1 THEN 0 ELSE 1 END
              LIMIT 1",
         )
         .bind(tool_name)
         .fetch_optional(&self.db)
         .await;
 
-        matches!(result, Ok(Some(_)))
+        matches!(result, Ok(Some(row)) if row.try_get::<&str, _>("decision").unwrap_or("deny") == "allow")
     }
 }

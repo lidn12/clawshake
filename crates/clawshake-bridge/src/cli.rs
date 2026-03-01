@@ -199,6 +199,7 @@ pub async fn run_permissions_action(
     store: &PermissionStore,
     clawshake_dir: &Path,
 ) -> Result<()> {
+    let mut mutated = false;
     match action {
         PermissionsAction::Allow {
             agent_id,
@@ -216,6 +217,7 @@ pub async fn run_permissions_action(
                     println!("    {name}");
                 }
             }
+            mutated = !names.is_empty();
         }
         PermissionsAction::Deny {
             agent_id,
@@ -233,6 +235,7 @@ pub async fn run_permissions_action(
                     println!("    {name}");
                 }
             }
+            mutated = !names.is_empty();
         }
         PermissionsAction::Remove {
             agent_id,
@@ -250,6 +253,7 @@ pub async fn run_permissions_action(
                     println!("    {name}");
                 }
             }
+            mutated = !names.is_empty();
         }
         PermissionsAction::List => {
             let records = store.list().await?;
@@ -263,6 +267,9 @@ pub async fn run_permissions_action(
                 }
             }
         }
+    }
+    if mutated {
+        println!("(tools list reflects this immediately; DHT record updates on next re-announce or node restart)");
     }
     Ok(())
 }
