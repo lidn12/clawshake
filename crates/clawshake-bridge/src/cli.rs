@@ -107,14 +107,14 @@ pub enum PermissionsAction {
     Allow {
         /// Agent ID: "p2p:*", "p2p:<peer-id>", "tailscale:*", "local"
         agent_id: String,
-        /// Tool name: "*", "filesystem.*", "read_file"
+        /// Tool name: "*" for all tools, or an exact name like "read_file"
         tool_name: String,
     },
     /// Deny an agent from calling a tool (or wildcard).
     Deny {
         /// Agent ID: "p2p:*", "p2p:<peer-id>", "tailscale:*", "local"
         agent_id: String,
-        /// Tool name: "*", "filesystem.*", "read_file"
+        /// Tool name: "*" for all tools, or an exact name like "read_file"
         tool_name: String,
     },
     /// Remove a permission rule entirely (falls back to default behaviour).
@@ -248,10 +248,9 @@ pub struct LiveStats {
 ///
 /// Returns `None` if the socket is unreachable (node not running).
 pub async fn probe_node() -> Option<LiveStats> {
-    let resp =
-        clawshake_tools::client::send_request("network_peers", serde_json::json!({}))
-            .await
-            .ok()?;
+    let resp = clawshake_tools::client::send_request("network_peers", serde_json::json!({}))
+        .await
+        .ok()?;
     let peers = resp.as_array().map(|a| a.len()).unwrap_or(0);
     Some(LiveStats { peer_count: peers })
 }
@@ -261,10 +260,7 @@ pub async fn probe_node() -> Option<LiveStats> {
 /// `tool_info` is an optional `(total, published)` pair — the unified binary
 /// passes manifest/permission counts here; the bridge-only binary passes
 /// `None`.
-pub async fn show_status(
-    json: bool,
-    tool_info: Option<(usize, usize)>,
-) -> Result<()> {
+pub async fn show_status(json: bool, tool_info: Option<(usize, usize)>) -> Result<()> {
     // ---- Peer ID (always available from disk) -----
     let peer_id = match crate::p2p::peer_id_from_disk(None) {
         Ok(id) => Some(id.to_string()),
@@ -288,9 +284,9 @@ pub async fn show_status(
     } else {
         println!(
             "Peer ID:    {}",
-            peer_id.as_deref().unwrap_or(
-                "(no identity key yet — run the node once to generate)"
-            )
+            peer_id
+                .as_deref()
+                .unwrap_or("(no identity key yet — run the node once to generate)")
         );
         if let Some(stats) = &live {
             println!("Node:       running");

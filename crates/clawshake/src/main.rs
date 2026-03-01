@@ -77,7 +77,7 @@ enum Command {
     ///
     /// Examples:
     ///   clawshake permissions allow p2p:* *
-    ///   clawshake permissions deny  p2p:* mail.*
+    ///   clawshake permissions deny  p2p:* network_call
     ///   clawshake permissions remove p2p:* *
     ///   clawshake permissions list
     Permissions {

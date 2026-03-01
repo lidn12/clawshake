@@ -43,8 +43,8 @@ enum Command {
     ///
     /// Examples:
     ///   clawshake-bridge permissions allow p2p:* *
-    ///   clawshake-bridge permissions allow p2p:12D3KooW... filesystem.*
-    ///   clawshake-bridge permissions deny  p2p:* mail.*
+    ///   clawshake-bridge permissions allow p2p:12D3KooW... read_file
+    ///   clawshake-bridge permissions deny  p2p:* network_call
     ///   clawshake-bridge permissions remove p2p:* *
     ///   clawshake-bridge permissions list
     Permissions {
