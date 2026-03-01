@@ -11,24 +11,26 @@ Drop a 10-line JSON manifest, and the tool is live on the network. Any MCP-compa
 ## How it works
 
 ```
-  Machine A                          Machine B
-┌─────────────────────┐            ┌─────────────────────┐
-│  VS Code / Agent    │            │  clawshake           │
-│       │              │            │       │              │
-│       ▼              │            │       ▼              │
-│  clawshake (broker)  │◄──────────►│  manifests/          │
-│       │              │   libp2p   │   filesystem.json    │
-│  MCP over SSE        │   (QUIC,   │   calendar.json      │
-│  localhost:7475      │    TCP,     │   spotify.json       │
-│                      │    relay)   │                      │
-└─────────────────────┘            └─────────────────────┘
+  Your machine                                 Remote machine
+┌────────────────────────┐                   ┌────────────────────────┐
+│                        │                   │  ~/.clawshake/         │
+│  Agent (VS Code, etc.) │                   │  manifests/            │
+│       │                │                   │       │                │
+│       │ MCP            │                   │       ▼                │
+│       ▼                │                   │    Broker              │
+│    Broker              │      libp2p       │       ▲                │
+│       ▲                │   QUIC · TCP      │       │                │
+│       │                │   relay · mDNS    │   Permissions          │
+│    Bridge ◄────────────────────────────►   │       ▲                │
+│                        │                   │    Bridge              │
+└────────────────────────┘                   └────────────────────────┘
 ```
 
 1. Each machine runs `clawshake run` — a single binary that starts an MCP broker and a P2P bridge.
 2. The broker reads manifest files from `~/.clawshake/manifests/` and exposes them as MCP tools.
 3. The bridge announces tools to a Kademlia DHT and discovers other nodes via mDNS + relay.
-4. Agents connect via MCP (SSE on `localhost:7475`) and get local + remote tools in one list.
-5. Remote tool calls are routed peer-to-peer. Permissions are checked on the receiving end.
+4. Agents connect via MCP (SSE on `localhost:7475` or stdio) and get local + remote tools in one list.
+5. Remote tool calls are routed bridge-to-bridge. The receiving bridge checks **permissions** before forwarding to the local broker.
 
 ## Quick start
 
