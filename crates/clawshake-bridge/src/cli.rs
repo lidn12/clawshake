@@ -251,7 +251,7 @@ pub async fn run_permissions_action(
             if records.is_empty() {
                 println!("(no rules)");
             } else {
-                println!("{:<12}  {:<40}  {}", "decision", "agent_id", "tool_name");
+                println!("{:<12}  {:<40}  tool_name", "decision", "agent_id");
                 println!("{}", "-".repeat(72));
                 for r in records {
                     println!("{:<12}  {:<40}  {}", r.decision, r.agent_id, r.tool_name);

@@ -85,7 +85,7 @@ pub async fn list_tools(manifests_dir: &Path, db_path: &Path, json: bool) -> Res
                 return Ok(());
             }
             println!("(registry snapshot — updated {age})");
-            println!("{:<30}  {:<5}  {}", "Name", "Pub", "Description");
+            println!("{:<30}  {:<5}  Description", "Name", "Pub");
             println!("{}", "-".repeat(78));
             for t in &snapshot_tools {
                 let name = t["name"].as_str().unwrap_or("");
@@ -122,7 +122,7 @@ pub async fn list_tools(manifests_dir: &Path, db_path: &Path, json: bool) -> Res
             return Ok(());
         }
         println!("(offline — no registry snapshot found, showing manifest scan)");
-        println!("{:<30}  {:<5}  {}", "Name", "Pub", "Description");
+        println!("{:<30}  {:<5}  Description", "Name", "Pub");
         println!("{}", "-".repeat(78));
         for t in &tools {
             let published = permissions.is_network_exposed(&t.tool.name).await;

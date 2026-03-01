@@ -239,7 +239,7 @@ fn load_file(
         );
         registry.load_manifest(&source, &manifest);
         if let Some(ref sp) = snapshot_path {
-            write_registry_snapshot(sp, &registry);
+            write_registry_snapshot(sp, registry);
         }
         has_static = true;
     }

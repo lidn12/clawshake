@@ -203,7 +203,9 @@ async fn messages_handler(
                 serde_json::to_string(&r).expect("JSON-RPC response serializes to string")
             }
             Ok(req) => match mcp_server::handle(&req, &registry, &permissions, &servers).await {
-                Some(resp) => serde_json::to_string(&resp).expect("JSON-RPC response serializes to string"),
+                Some(resp) => {
+                    serde_json::to_string(&resp).expect("JSON-RPC response serializes to string")
+                }
                 None => return, // notification — no response needed
             },
         };

@@ -180,12 +180,11 @@ pub(super) fn handle_event(
 
         // -- Proxy residual (InboundFailure only — request/response/outbound
         //    are handled inline in the main event loop) --------------------
-        SwarmEvent::Behaviour(ClawshakeBehaviourEvent::Proxy(event)) => match event {
-            request_response::Event::InboundFailure { peer, error, .. } => {
-                warn!("MCP inbound failure from {peer}: {error}");
-            }
-            _ => {}
-        },
+        SwarmEvent::Behaviour(ClawshakeBehaviourEvent::Proxy(
+            request_response::Event::InboundFailure { peer, error, .. },
+        )) => {
+            warn!("MCP inbound failure from {peer}: {error}");
+        }
 
         // -- Relay client --------------------------------------------------
         SwarmEvent::Behaviour(ClawshakeBehaviourEvent::RelayClient(event)) => match event {

@@ -54,21 +54,19 @@ pub fn watch_permissions_db(db_path: &Path, tx: tokio::sync::mpsc::Sender<()>) {
 
     std::thread::spawn(move || {
         let _watcher = watcher; // prevent drop
-        for res in fs_rx {
-            if let Ok(event) = res {
-                let dominated = event.paths.iter().any(|p| {
-                    p.file_name()
-                        .map(|n| n == db_name || n == wal_name)
-                        .unwrap_or(false)
-                });
-                if dominated
-                    && matches!(
-                        event.kind,
-                        notify::EventKind::Modify(_) | notify::EventKind::Create(_)
-                    )
-                {
-                    let _ = tx.try_send(());
-                }
+        for event in fs_rx.into_iter().flatten() {
+            let dominated = event.paths.iter().any(|p| {
+                p.file_name()
+                    .map(|n| n == db_name || n == wal_name)
+                    .unwrap_or(false)
+            });
+            if dominated
+                && matches!(
+                    event.kind,
+                    notify::EventKind::Modify(_) | notify::EventKind::Create(_)
+                )
+            {
+                let _ = tx.try_send(());
             }
         }
     });

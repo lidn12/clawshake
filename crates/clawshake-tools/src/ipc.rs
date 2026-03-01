@@ -215,5 +215,13 @@ async fn dispatch(
     let empty = Value::Object(Default::default());
     let params = req.get("params").unwrap_or(&empty);
 
-    crate::network::handle(method, Some(params), table, connected, Some(call_tx), Some(dht_tx)).await
+    crate::network::handle(
+        method,
+        Some(params),
+        table,
+        connected,
+        Some(call_tx),
+        Some(dht_tx),
+    )
+    .await
 }

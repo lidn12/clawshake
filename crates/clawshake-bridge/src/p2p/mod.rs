@@ -79,6 +79,7 @@ pub const RELAY_DEFAULT_PORT: u16 = 7474;
 // Node entry point
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     p2p_port: u16,
     boot_peers: Vec<String>,
