@@ -32,7 +32,7 @@ The value is a **UTF-8 encoded JSON object** with the following fields:
     ...
   ],
   "addrs": [
-    "/ip4/43.143.33.106/tcp/7474/p2p/12D3.../p2p-circuit/p2p/12D3KooW..."
+    "/ip4/<relay-ip>/tcp/<port>/p2p/<relay-peer-id>/p2p-circuit/p2p/12D3KooW..."
   ],
   "ts": 1740000000
 }
@@ -45,7 +45,7 @@ The value is a **UTF-8 encoded JSON object** with the following fields:
 | `v` | integer | yes | Schema version. Always `1` for records conforming to this spec. |
 | `peer_id` | string | yes | Base58btc-encoded `PeerId` of the publishing node (libp2p multibase string form). Redundant with the DHT key but included for self-contained parsing. |
 | `tools` | object array | yes | Tool entries with `name`, `description`, and `inputSchema`, matching the MCP `tools/list` tool definition shape. May be empty `[]` on nodes with no backend. |
-| `addrs` | string array | yes | Multiaddr strings for reaching this node. In practice, relay circuit addresses: `/ip4/<relay>/tcp|udp/<port>/p2p/<relay_id>/p2p-circuit/p2p/<peer_id>`. One entry per relay. May be empty if no relay reservation is active yet. |
+| `addrs` | string array | yes | Multiaddr strings for reaching this node. In practice, relay circuit addresses: `/ip4/<relay-ip>/tcp\|udp/<port>/p2p/<relay-peer-id>/p2p-circuit/p2p/<peer-id>`. One entry per relay. May be empty if no relay reservation is active yet. |
 | `ts` | integer | yes | Unix timestamp (seconds) when the record was built. Use to detect stale records — records older than 10 minutes should be treated as potentially stale. |
 
 ### `tools` entry

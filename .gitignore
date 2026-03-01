@@ -2,3 +2,7 @@
 **/*.rs.bk
 .env
 /.vscode
+
+# Internal development docs
+docs/clawshake.md
+docs/agent-feedback.md
