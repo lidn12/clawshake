@@ -192,6 +192,10 @@ fn write_registry_snapshot(snapshot_path: &Path, registry: &ManifestRegistry) {
 /// discovers tools, and registers them.  After the async load completes,
 /// `change_tx` and `sse_notify_tx` are fired so the bridge re-announces to
 /// the DHT and SSE clients receive an updated tool list.
+///
+/// Returns `true` if static tools were loaded synchronously (caller may
+/// announce immediately), or `false` if only async MCP work was spawned
+/// (the spawned task will announce when tools are actually ready).
 fn load_file(
     path: &Path,
     registry: &ManifestRegistry,
@@ -200,19 +204,19 @@ fn load_file(
     snapshot_path: Option<PathBuf>,
     change_tx: Option<tokio::sync::mpsc::Sender<()>>,
     sse_notify_tx: Option<tokio::sync::mpsc::Sender<()>>,
-) {
+) -> bool {
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
         Err(e) => {
             warn!("Failed to read manifest {:?}: {e}", path);
-            return;
+            return false;
         }
     };
     let manifest = match serde_json::from_str::<Manifest>(&content) {
         Ok(m) => m,
         Err(e) => {
             warn!("Failed to parse manifest {:?}: {e}", path);
-            return;
+            return false;
         }
     };
 
@@ -221,6 +225,9 @@ fn load_file(
         .unwrap_or_default()
         .to_string_lossy()
         .to_string();
+
+    // Track whether static tools were synchronously loaded.
+    let mut has_static = false;
 
     // Load static tools (if any).
     if !manifest.tools.is_empty() {
@@ -234,6 +241,7 @@ fn load_file(
         if let Some(ref sp) = snapshot_path {
             write_registry_snapshot(sp, &registry);
         }
+        has_static = true;
     }
 
     // If this manifest has an MCP source, spawn a task to connect and discover.
@@ -244,7 +252,7 @@ fn load_file(
                 source = source,
                 "MCP server already running, skipping spawn"
             );
-            return;
+            return has_static;
         }
 
         let mcp = mcp.clone();
@@ -296,6 +304,10 @@ fn load_file(
             path.file_name().unwrap_or_default()
         );
     }
+
+    // Static tools were loaded synchronously; MCP-only manifests will
+    // announce themselves from the async task when ready.
+    has_static
 }
 
 /// Connect to an MCP server based on the source config.
@@ -517,9 +529,10 @@ fn handle_event(
                     registry.unload_source(&source);
                     servers.remove(&source);
                 }
-                // Pass change_tx/sse_notify_tx so the async MCP task can
-                // re-announce after tools are actually loaded.
-                load_file(
+                // Returns true only when static tools were synchronously loaded.
+                // MCP-only manifests return false — the async task announces
+                // when tools are actually ready, with no premature re-announce.
+                let static_loaded = load_file(
                     path,
                     registry,
                     servers,
@@ -528,7 +541,7 @@ fn handle_event(
                     change_tx.cloned(),
                     sse_notify_tx.cloned(),
                 );
-                changed = true;
+                changed |= static_loaded;
             }
         }
         Remove(_) => {
