@@ -150,7 +150,8 @@ pub async fn tool_counts(manifests_dir: &Path, db_path: &Path) -> (usize, usize)
         .unwrap_or(manifests_dir)
         .join("registry.json");
 
-    let tool_names: Vec<String> = if let Some((_ts, tools)) = read_registry_snapshot(&snapshot_path) {
+    let tool_names: Vec<String> = if let Some((_ts, tools)) = read_registry_snapshot(&snapshot_path)
+    {
         tools
             .iter()
             .filter_map(|t| t["name"].as_str().map(|s| s.to_string()))

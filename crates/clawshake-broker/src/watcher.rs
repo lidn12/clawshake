@@ -189,13 +189,17 @@ fn write_registry_snapshot(snapshot_path: &Path, registry: &ManifestRegistry) {
 /// Parse and load a single manifest file into the registry.
 /// Static-tool manifests are loaded synchronously.
 /// MCP-source manifests spawn a background task that connects to the server,
-/// discovers tools, and registers them.
+/// discovers tools, and registers them.  After the async load completes,
+/// `change_tx` and `sse_notify_tx` are fired so the bridge re-announces to
+/// the DHT and SSE clients receive an updated tool list.
 fn load_file(
     path: &Path,
     registry: &ManifestRegistry,
     servers: &McpServerMap,
     rt: &tokio::runtime::Handle,
     snapshot_path: Option<PathBuf>,
+    change_tx: Option<tokio::sync::mpsc::Sender<()>>,
+    sse_notify_tx: Option<tokio::sync::mpsc::Sender<()>>,
 ) {
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
@@ -252,6 +256,8 @@ fn load_file(
             .to_string_lossy()
             .to_string();
         let snap = snapshot_path.clone();
+        let mcp_change_tx = change_tx.clone();
+        let mcp_sse_tx = sse_notify_tx.clone();
         rt.spawn(async move {
             match connect_mcp_source(&source, &mcp).await {
                 Ok(server) => match server.tools_list().await {
@@ -266,6 +272,14 @@ fn load_file(
                         servers.insert(&source, server);
                         if let Some(ref sp) = snap {
                             write_registry_snapshot(sp, &registry);
+                        }
+                        // Signal the bridge to re-announce to the DHT now that
+                        // MCP tools are loaded (they weren't available at startup).
+                        if let Some(ref tx) = mcp_change_tx {
+                            let _ = tx.try_send(());
+                        }
+                        if let Some(ref tx) = mcp_sse_tx {
+                            let _ = tx.try_send(());
                         }
                     }
                     Err(e) => warn!("Failed to list tools from MCP server '{source}': {e}"),
@@ -411,7 +425,15 @@ pub fn start(
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.extension().and_then(|e| e.to_str()) == Some("json") {
-                    load_file(&path, &registry, &servers, &rt, snapshot_path.clone());
+                    load_file(
+                        &path,
+                        &registry,
+                        &servers,
+                        &rt,
+                        snapshot_path.clone(),
+                        change_tx.clone(),
+                        sse_notify_tx.clone(),
+                    );
                 }
             }
         }
@@ -488,12 +510,17 @@ fn handle_event(
                     registry.unload_source(&source);
                     servers.remove(&source);
                 }
+                // Note: change_tx / sse_notify_tx are not threaded into
+                // handle_event, so the MCP async task won't double-fire them
+                // here — the watcher thread sends them after this returns.
                 load_file(
                     path,
                     registry,
                     servers,
                     rt,
                     snapshot_path.map(|p| p.to_path_buf()),
+                    None,
+                    None,
                 );
                 changed = true;
             }
