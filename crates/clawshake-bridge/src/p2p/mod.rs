@@ -72,17 +72,6 @@ struct ClawshakeBehaviour {
     upnp: Toggle<upnp::tokio::Behaviour>,
 }
 
-// ---------------------------------------------------------------------------
-// Well-known bootstrap peers
-// ---------------------------------------------------------------------------
-
-/// Hardcoded bootstrap peers dialed on startup when `--no-default-boot` is
-/// not set.  Format: `/ip4/<ip>/tcp/7474/p2p/<peer-id>`
-const BOOTSTRAP_PEERS: &[&str] = &[
-    "/ip4/43.143.33.106/tcp/7474/p2p/12D3KooWDi1ntKAkUYpHfijLNExUTsirFyofnkEB3yjC8P3EGcY5",
-    "/ip4/43.143.33.106/udp/7474/quic-v1/p2p/12D3KooWDi1ntKAkUYpHfijLNExUTsirFyofnkEB3yjC8P3EGcY5",
-];
-
 /// Default port used by relay/bootstrap nodes (stable so the address is predictable).
 pub const RELAY_DEFAULT_PORT: u16 = 7474;
 
@@ -98,7 +87,6 @@ pub async fn run(
     store: Arc<PermissionStore>,
     table: Arc<PeerTable>,
     connected: ConnectedPeers,
-    no_default_boot: bool,
     relay_server: bool,
     mut call_rx: mpsc::Receiver<OutboundCall>,
     reannounce_rx: Option<mpsc::Receiver<()>>,
@@ -220,16 +208,20 @@ pub async fn run(
             .set_mode(Some(kad::Mode::Server));
     }
 
-    // Build the complete list of bootstrap peers to dial on startup.
-    // User-supplied --boot peers always take effect.
-    // Hardcoded default peers are added unless --no-default-boot is set.
+    // Bootstrap peers come from two sources (both explicit, user-controlled):
+    //   1. `~/.clawshake/config.toml` → [network] bootstrap = [...]
+    //   2. CLI `--boot <MULTIADDR>` flags
+    // When neither is set the node operates in local-only mode (mDNS only).
     let all_boot_peers: Vec<String> = {
-        let mut peers = boot_peers;
-        if !no_default_boot {
-            peers.extend(BOOTSTRAP_PEERS.iter().map(|s| s.to_string()));
-        }
+        let cfg = clawshake_core::config::load(None).unwrap_or_default();
+        let mut peers = cfg.network.bootstrap;
+        peers.extend(boot_peers);
         peers
     };
+
+    if all_boot_peers.is_empty() {
+        info!("No bootstrap peers configured — running in local-only mode (mDNS)");
+    }
 
     // Dial bootstrap peers.
     for addr_str in &all_boot_peers {

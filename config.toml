@@ -1,0 +1,30 @@
+# Clawshake node configuration
+#
+# Copy this file to ~/.clawshake/config.toml and uncomment the sections
+# you want to configure. All settings are optional — an unconfigured node
+# discovers peers only on the local network via mDNS.
+
+[network]
+
+# Bootstrap peers to dial on startup. These are typically relay/bootstrap
+# nodes that help your node join the wider network.
+#
+# Without bootstrap peers the node operates in local-only mode — it will
+# still discover peers on the same LAN via mDNS, but won't reach peers
+# across the internet.
+#
+# Format: libp2p multiaddr with an embedded /p2p/<peer-id> component.
+# You can specify both TCP and QUIC addresses for the same peer.
+#
+# To use the public clawshake relay, uncomment these lines:
+#
+# bootstrap = [
+#   "/ip4/43.143.33.106/tcp/7474/p2p/12D3KooWDi1ntKAkUYpHfijLNExUTsirFyofnkEB3yjC8P3EGcY5",
+#   "/ip4/43.143.33.106/udp/7474/quic-v1/p2p/12D3KooWDi1ntKAkUYpHfijLNExUTsirFyofnkEB3yjC8P3EGcY5",
+# ]
+#
+# To run a private network, point to your own relay node instead:
+#
+# bootstrap = [
+#   "/ip4/<your-relay-ip>/tcp/7474/p2p/<your-relay-peer-id>",
+# ]

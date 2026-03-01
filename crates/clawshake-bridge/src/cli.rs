@@ -36,11 +36,6 @@ pub struct P2pArgs {
     #[arg(long = "boot", value_name = "MULTIADDR")]
     pub boot_peers: Vec<String>,
 
-    /// Skip the hardcoded default bootstrap peers.
-    /// Useful for running isolated test networks on a LAN.
-    #[arg(long, default_value_t = false)]
-    pub no_default_boot: bool,
-
     /// Enable relay-server mode: this node will forward traffic between peers
     /// behind NAT, use a stable port (default 7474), and print a copy-ready
     /// multiaddr banner on startup.
@@ -328,7 +323,6 @@ pub async fn start_bridge(
         store,
         table,
         connected,
-        p2p_args.no_default_boot,
         p2p_args.relay_server,
         call_rx,
         Some(reannounce_rx),

@@ -45,6 +45,15 @@ Start the node:
 ./target/release/clawshake run
 ```
 
+By default the node discovers peers only on the local network (mDNS). To join the wider network, copy the reference config and uncomment the bootstrap peers:
+
+```bash
+cp config.toml ~/.clawshake/config.toml
+# Edit ~/.clawshake/config.toml — uncomment the bootstrap lines
+```
+
+Or run your own private network by pointing `bootstrap` to your own relay node.
+
 Point your MCP client at it. For VS Code, add to `.vscode/mcp.json`:
 
 ```json
@@ -162,6 +171,20 @@ crates/
 **P2P stack:** libp2p with Kademlia DHT, mDNS, relay + DCUtR (hole punching), QUIC and TCP transports, Noise encryption.
 
 **Identity:** Ed25519 keypair generated on first run, stored at `~/.clawshake/identity.key`. Peer identity is verified cryptographically via the Noise handshake — it cannot be spoofed.
+
+## Configuration
+
+Node configuration lives at `~/.clawshake/config.toml`. The file is optional — when absent, the node runs in local-only mode (mDNS discovery on your LAN).
+
+```toml
+[network]
+bootstrap = [
+  "/ip4/43.143.33.106/tcp/7474/p2p/12D3KooWDi1ntKAkUYpHfijLNExUTsirFyofnkEB3yjC8P3EGcY5",
+  "/ip4/43.143.33.106/udp/7474/quic-v1/p2p/12D3KooWDi1ntKAkUYpHfijLNExUTsirFyofnkEB3yjC8P3EGcY5",
+]
+```
+
+A reference config with the public relay address is included at [config.toml](config.toml). Additional `--boot` flags on the CLI are merged with the config file entries.
 
 ## CLI reference
 
