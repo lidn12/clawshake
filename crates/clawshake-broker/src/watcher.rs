@@ -465,8 +465,13 @@ pub fn start(
                         &watch_servers,
                         &rt,
                         snapshot_path.as_deref(),
+                        change_tx.as_ref(),
+                        sse_notify_tx.as_ref(),
                     );
                     if changed {
+                        // Note: static-tool manifests re-announce here.
+                        // MCP-sourced manifests re-announce from inside the
+                        // async task once tools are actually loaded.
                         if let Some(ref tx) = change_tx {
                             let _ = tx.try_send(());
                         }
@@ -491,6 +496,8 @@ fn handle_event(
     servers: &McpServerMap,
     rt: &tokio::runtime::Handle,
     snapshot_path: Option<&Path>,
+    change_tx: Option<&tokio::sync::mpsc::Sender<()>>,
+    sse_notify_tx: Option<&tokio::sync::mpsc::Sender<()>>,
 ) -> bool {
     use notify::EventKind::*;
     let paths: Vec<&PathBuf> = event
@@ -510,17 +517,16 @@ fn handle_event(
                     registry.unload_source(&source);
                     servers.remove(&source);
                 }
-                // Note: change_tx / sse_notify_tx are not threaded into
-                // handle_event, so the MCP async task won't double-fire them
-                // here — the watcher thread sends them after this returns.
+                // Pass change_tx/sse_notify_tx so the async MCP task can
+                // re-announce after tools are actually loaded.
                 load_file(
                     path,
                     registry,
                     servers,
                     rt,
                     snapshot_path.map(|p| p.to_path_buf()),
-                    None,
-                    None,
+                    change_tx.cloned(),
+                    sse_notify_tx.cloned(),
                 );
                 changed = true;
             }
