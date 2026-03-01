@@ -106,8 +106,9 @@ enum Command {
 
     /// Manage locally registered tools.
     ///
-    /// List, add, remove, or validate tool manifests.  Requires reading the
-    /// manifests directory and permissions database — no running node needed.
+    /// List, add, remove, or validate tool manifests.  `tools list` queries
+    /// the running broker for live tools (including MCP-server-sourced tools)
+    /// and falls back to a manifest scan when the broker is not running.
     Tools {
         #[command(subcommand)]
         action: ToolsAction,
@@ -121,6 +122,11 @@ enum ToolsAction {
         /// Output as JSON instead of a human-readable table.
         #[arg(long, default_value_t = false)]
         json: bool,
+
+        /// Broker HTTP port to query for live tools (default 7475).
+        /// Falls back to manifest scan if the broker is not running.
+        #[arg(long, default_value_t = 7475, value_name = "PORT")]
+        port: u16,
     },
 
     /// Validate a manifest file without installing it.
@@ -180,9 +186,9 @@ async fn main() -> Result<()> {
         Command::Tools { action } => {
             let manifests_dir = clawshake_dir.join("manifests");
             match action {
-                ToolsAction::List { json } => {
+                ToolsAction::List { json, port } => {
                     builtins::seed(&manifests_dir)?;
-                    clawshake_broker::cli::list_tools(&manifests_dir, &db_path, json).await?;
+                    clawshake_broker::cli::list_tools(&manifests_dir, &db_path, json, port).await?;
                 }
                 ToolsAction::Validate { file } => {
                     clawshake_broker::cli::validate_manifest(&file)?;

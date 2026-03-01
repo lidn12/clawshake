@@ -14,16 +14,84 @@ use crate::watcher;
 // tools list
 // ---------------------------------------------------------------------------
 
+/// Try to fetch the live tool list from the running broker at
+/// `http://127.0.0.1:{port}/` using the stateless JSON-RPC POST endpoint.
+/// Returns `None` if the broker is not reachable.
+async fn try_live_tools(port: u16) -> Option<Vec<serde_json::Value>> {
+    let url = format!("http://127.0.0.1:{port}/");
+    let body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/list",
+        "params": {}
+    });
+    let resp = reqwest::Client::new()
+        .post(&url)
+        .json(&body)
+        .timeout(std::time::Duration::from_secs(2))
+        .send()
+        .await
+        .ok()?;
+    let val: serde_json::Value = resp.json().await.ok()?;
+    val.pointer("/result/tools")
+        .and_then(|t| t.as_array())
+        .cloned()
+}
+
 /// Print the tool listing table (or JSON) to stdout.
+///
+/// Queries the running broker at `http://127.0.0.1:{broker_port}/` first so
+/// that MCP-server-sourced tools (e.g. filesystem) appear in the list.
+/// Falls back to a static manifest scan when the broker is not running.
 ///
 /// The caller is responsible for seeding any built-in manifests before
 /// calling this function (e.g. the unified binary seeds `network.json`).
-pub async fn list_tools(manifests_dir: &Path, db_path: &Path, json: bool) -> Result<()> {
-    // Load all manifests from disk.
+pub async fn list_tools(
+    manifests_dir: &Path,
+    db_path: &Path,
+    json: bool,
+    broker_port: u16,
+) -> Result<()> {
+    let permissions = PermissionStore::open(db_path).await?;
+
+    // Try to get live tools from the running broker.
+    if let Some(live_tools) = try_live_tools(broker_port).await {
+        if json {
+            let mut entries = Vec::new();
+            for t in &live_tools {
+                let name = t["name"].as_str().unwrap_or("");
+                let published = permissions.is_network_exposed(name).await;
+                entries.push(serde_json::json!({
+                    "name": name,
+                    "description": t["description"].as_str().unwrap_or(""),
+                    "published": published,
+                    "source": "live",
+                }));
+            }
+            println!("{}", serde_json::to_string_pretty(&entries)?);
+        } else {
+            if live_tools.is_empty() {
+                println!("No tools registered.");
+                println!("Add manifests to {}", manifests_dir.display());
+                return Ok(());
+            }
+            println!("(live — queried from running broker on :{broker_port})");
+            println!("{:<30}  {:<5}  {}", "Name", "Pub", "Description");
+            println!("{}", "-".repeat(78));
+            for t in &live_tools {
+                let name = t["name"].as_str().unwrap_or("");
+                let published = permissions.is_network_exposed(name).await;
+                let marker = if published { "  ✓" } else { "  ✗" };
+                let desc = truncate(t["description"].as_str().unwrap_or(""), 40);
+                println!("{:<30}  {:<5}  {}", name, marker, desc);
+            }
+        }
+        return Ok(());
+    }
+
+    // Broker not running — fall back to static manifest scan.
     let registry = watcher::ManifestRegistry::new();
     watcher::load_manifests_from_dir(manifests_dir, &registry)?;
-
-    let permissions = PermissionStore::open(db_path).await?;
     let tools = registry.all();
 
     if json {
@@ -44,7 +112,7 @@ pub async fn list_tools(manifests_dir: &Path, db_path: &Path, json: bool) -> Res
             println!("Add manifests to {}", manifests_dir.display());
             return Ok(());
         }
-
+        println!("(offline — broker not running on :{broker_port}, showing manifest scan)");
         println!("{:<30}  {:<5}  {}", "Name", "Pub", "Description");
         println!("{}", "-".repeat(78));
         for t in &tools {
