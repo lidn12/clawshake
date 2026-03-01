@@ -353,7 +353,7 @@ pub async fn probe_node() -> Option<LiveStats> {
     let resp = clawshake_tools::client::send_request("network_peers", serde_json::json!({}))
         .await
         .ok()?;
-    let peers = resp.as_array().map(|a| a.len()).unwrap_or(0);
+    let peers = resp["peers"].as_array().map(|a| a.len()).unwrap_or(0);
     Some(LiveStats { peer_count: peers })
 }
 
