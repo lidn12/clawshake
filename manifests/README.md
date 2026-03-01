@@ -24,6 +24,7 @@ The broker watches `~/.clawshake/manifests/` and automatically loads any `.json`
 | `safari.json` | AppleScript | Web browsing automation (macOS) |
 | `vscode.json` | CLI | Editing files, opening workspaces (any platform) |
 | `filesystem.json` | MCP (stdio) | Bind [Anthropic's filesystem MCP](https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem) to the broker |
+| `playwright.json` | MCP (stdio) | Browser automation via [Microsoft's Playwright MCP](https://github.com/microsoft/playwright-mcp) — ARIA snapshots, click, type, screenshot |
 | `homeassistant.json` | MCP (stdio) | Control smart home devices, automations, and sensors via [ha-mcp](https://github.com/homeassistant-ai/ha-mcp) (requires Home Assistant) |
 
 ## Creating Your Own
@@ -69,6 +70,27 @@ See the [README](../README.md) for more details.
 - **CLI manifests** (VS Code) work anywhere the command is installed
 - **MCP manifests** (filesystem, homeassistant) work anywhere the MCP server is installed
 - **DeepLink manifests** (Spotify) require the app to support deep links
+
+### Playwright setup
+
+`playwright.json` uses [Microsoft's official Playwright MCP](https://github.com/microsoft/playwright-mcp), which exposes browser automation via ARIA snapshots and numeric refs — no brittle CSS selectors.
+
+**Prerequisites:** Node.js installed. On first run, install the Playwright browsers:
+
+```bash
+npx playwright install chromium
+```
+
+By default the browser runs headed (visible). For headless mode, pass `--headless` in the manifest args.
+
+Copy the manifest and start the broker:
+
+```bash
+cp manifests/playwright.json ~/.clawshake/manifests/
+clawshake run
+```
+
+Remote agents on any machine connected to the Clawshake network can now drive a browser on your machine — screenshots, navigation, form fills, and content extraction.
 
 ### Home Assistant setup
 

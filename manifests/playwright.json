@@ -1,0 +1,12 @@
+{
+    "version": "1.0",
+    "description": "Microsoft's official Playwright MCP server — control a browser via ARIA snapshots and numeric refs. Lets agents navigate pages, click, type, take screenshots, and extract content without brittle CSS selectors. Requires Node.js and Playwright browsers installed.",
+    "mcp": {
+        "transport": "stdio",
+        "command": "npx",
+        "args": [
+            "-y",
+            "@playwright/mcp"
+        ]
+    }
+}
