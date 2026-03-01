@@ -58,10 +58,9 @@ fn peers(table: &PeerTable) -> Value {
         .into_iter()
         .map(|p| {
             json!({
-                "peer_id":    p.peer_id,
-                "addrs":      p.addrs,
-                "tool_count": p.tools.len(),
-                "last_seen":  p.last_seen,
+                "peer_id":   p.peer_id,
+                "addrs":     p.addrs,
+                "last_seen": p.last_seen,
             })
         })
         .collect();

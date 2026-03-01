@@ -13,7 +13,7 @@ pub fn tool_definitions() -> Vec<Value> {
     vec![
         json!({
             "name": "network_peers",
-            "description": "List all discovered bridge nodes on the network with their peer IDs, addresses, tool counts, and last-seen timestamps.",
+            "description": "List all discovered bridge nodes on the network with their peer IDs, addresses, and last-seen timestamps.",
             "inputSchema": {
                 "type": "object",
                 "properties": {},
