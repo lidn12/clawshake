@@ -9,7 +9,7 @@
 //!   permission store; `network_*` is blocked for remote callers by default)
 
 use clawshake_core::{
-    network_channel::{ConnectedPeers, OutboundCall, OutboundCallTx},
+    network_channel::{ConnectedPeers, DhtLookupTx, OutboundCall, OutboundCallTx},
     peer_table::PeerTable,
 };
 use serde_json::{json, Value};
@@ -24,24 +24,26 @@ use tokio::sync::oneshot;
 /// Returns the result value to embed in the MCP `tools/call` response content.
 /// Never panics — all errors are returned as `{ "error": "..." }`.
 ///
-/// `call_tx` must be `Some` for `network_call`; the other five handlers ignore it.
+/// `call_tx` must be `Some` for `network_call`; `dht_tx` must be `Some` for
+/// `network_tools` and `network_record` (live DHT queries).
 pub async fn handle(
     method: &str,
     params: Option<&Value>,
     table: &PeerTable,
     connected: &ConnectedPeers,
     call_tx: Option<&OutboundCallTx>,
+    dht_tx: Option<&DhtLookupTx>,
 ) -> Value {
     let empty = Value::Object(Default::default());
     let params = params.unwrap_or(&empty);
 
     match method {
         "network_peers" => peers(table),
-        "network_tools" => tools(params, table),
+        "network_tools" => tools(params, table, dht_tx).await,
         "network_search" => search(params, table),
         "network_ping" => ping(params, connected),
         "network_call" => call(params, call_tx).await,
-        "network_record" => record(params, table),
+        "network_record" => record(params, table, dht_tx).await,
         _ => err(&format!("unknown network method: {}", method)),
     }
 }
@@ -66,32 +68,45 @@ fn peers(table: &PeerTable) -> Value {
     json!({ "peers": list })
 }
 
-fn tools(params: &Value, table: &PeerTable) -> Value {
-    let peer_id = match params["peer_id"].as_str() {
-        Some(s) => s,
-        None => return err("missing required parameter: peer_id"),
-    };
-    match table.get(peer_id) {
-        Some(peer) => {
-            let tools: Vec<Value> = peer
-                .tools
-                .iter()
-                .map(|t| {
-                    let mut entry = json!({
-                        "name":        t.name,
-                        "description": t.description,
-                    });
-                    if let Some(schema) = &t.input_schema {
-                        entry["inputSchema"] = schema.clone();
-                    } else {
-                        entry["inputSchema"] = json!({ "type": "object" });
-                    }
-                    entry
-                })
-                .collect();
-            json!({ "tools": tools })
-        }
-        None => err(&format!("peer {} not found in table", peer_id)),
+fn tools<'a>(
+    params: &'a Value,
+    table: &'a PeerTable,
+    dht_tx: Option<&'a DhtLookupTx>,
+) -> impl std::future::Future<Output = Value> + 'a {
+    // Capture params synchronously before the async block.
+    let peer_id = params["peer_id"].as_str().map(|s| s.to_string());
+    async move {
+        let peer_id = match peer_id {
+            Some(s) => s,
+            None => return err("missing required parameter: peer_id"),
+        };
+
+        // Try a live DHT lookup first; fall back to the cached peer table.
+        let peer = match dht_lookup_peer(&peer_id, dht_tx).await {
+            Some(p) => p,
+            None => match table.get(&peer_id) {
+                Some(p) => p,
+                None => return err(&format!("peer {} not found in table or DHT", peer_id)),
+            },
+        };
+
+        let tools: Vec<Value> = peer
+            .tools
+            .iter()
+            .map(|t| {
+                let mut entry = json!({
+                    "name":        t.name,
+                    "description": t.description,
+                });
+                if let Some(schema) = &t.input_schema {
+                    entry["inputSchema"] = schema.clone();
+                } else {
+                    entry["inputSchema"] = json!({ "type": "object" });
+                }
+                entry
+            })
+            .collect();
+        json!({ "tools": tools })
     }
 }
 
@@ -118,17 +133,31 @@ fn search(params: &Value, table: &PeerTable) -> Value {
     json!({ "query": query, "results": results })
 }
 
-fn record(params: &Value, table: &PeerTable) -> Value {
-    let peer_id = match params["peer_id"].as_str() {
-        Some(s) => s,
-        None => return err("missing required parameter: peer_id"),
-    };
-    match table.get(peer_id) {
-        Some(peer) => match peer.raw_record {
+fn record<'a>(
+    params: &'a Value,
+    table: &'a PeerTable,
+    dht_tx: Option<&'a DhtLookupTx>,
+) -> impl std::future::Future<Output = Value> + 'a {
+    let peer_id = params["peer_id"].as_str().map(|s| s.to_string());
+    async move {
+        let peer_id = match peer_id {
+            Some(s) => s,
+            None => return err("missing required parameter: peer_id"),
+        };
+
+        // Try a live DHT lookup first; fall back to the cached peer table.
+        let peer = match dht_lookup_peer(&peer_id, dht_tx).await {
+            Some(p) => p,
+            None => match table.get(&peer_id) {
+                Some(p) => p,
+                None => return err(&format!("peer {} not found in table or DHT", peer_id)),
+            },
+        };
+
+        match peer.raw_record {
             Some(raw) => raw,
             None => err(&format!("no raw DHT record stored for peer {} (discovered via mDNS or not yet seen via DHT)", peer_id)),
-        },
-        None => err(&format!("peer {} not found in table", peer_id)),
+        }
     }
 }
 
@@ -235,4 +264,31 @@ async fn call(params: &Value, call_tx: Option<&OutboundCallTx>) -> Value {
 
 fn err(msg: &str) -> Value {
     json!({ "error": msg })
+}
+
+// ---------------------------------------------------------------------------
+// DHT lookup helper
+// ---------------------------------------------------------------------------
+
+use clawshake_core::{network_channel::DhtLookup, peer_table::PeerInfo};
+
+/// Send a live DHT GET for `peer_id` through the swarm event loop and wait
+/// for the result.  Returns `None` if no `dht_tx` is available (e.g. when
+/// called in-process without the P2P stack) or if the lookup fails/times out.
+///
+/// On success the swarm event loop also upserts the result into the peer
+/// table, so subsequent `network_peers` / `network_search` calls see
+/// fresh data.
+async fn dht_lookup_peer(peer_id: &str, dht_tx: Option<&DhtLookupTx>) -> Option<PeerInfo> {
+    let tx = dht_tx?;
+    let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+    let lookup = DhtLookup {
+        peer_id: peer_id.to_string(),
+        response_tx,
+    };
+    tx.send(lookup).await.ok()?;
+    match tokio::time::timeout(std::time::Duration::from_secs(10), response_rx).await {
+        Ok(Ok(Ok(info))) => Some(info),
+        _ => None,
+    }
 }

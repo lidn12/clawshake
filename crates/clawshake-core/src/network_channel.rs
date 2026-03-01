@@ -49,3 +49,26 @@ pub type OutboundCallTx = mpsc::Sender<OutboundCall>;
 pub fn new_outbound_call_channel() -> (OutboundCallTx, mpsc::Receiver<OutboundCall>) {
     mpsc::channel(16)
 }
+
+// ---------------------------------------------------------------------------
+// DHT lookup channel
+// ---------------------------------------------------------------------------
+
+/// A request to fetch a peer's DHT announcement record on-demand.
+/// The swarm event loop owns the receiver; `network_tools` / `network_record`
+/// send through the sender, then await the oneshot for the result.
+pub struct DhtLookup {
+    /// Target peer ID string.
+    pub peer_id: String,
+    /// Oneshot channel to deliver the parsed `PeerInfo` (or an error string).
+    pub response_tx: oneshot::Sender<Result<crate::peer_table::PeerInfo, String>>,
+}
+
+/// Sender half of the DHT lookup channel.
+pub type DhtLookupTx = mpsc::Sender<DhtLookup>;
+
+/// Create a new DHT lookup channel.
+/// Pass the receiver to `p2p::run()`; keep the sender for IPC / network handlers.
+pub fn new_dht_lookup_channel() -> (DhtLookupTx, mpsc::Receiver<DhtLookup>) {
+    mpsc::channel(16)
+}

@@ -11,7 +11,7 @@ use anyhow::Result;
 use clap::{Args, Subcommand};
 use clawshake_core::{
     mcp_client::{HttpClient, McpClient, StdioClient},
-    network_channel::{new_connected_peers, new_outbound_call_channel},
+    network_channel::{new_connected_peers, new_dht_lookup_channel, new_outbound_call_channel},
     peer_table::PeerTable,
     permissions::{Decision, PermissionStore},
 };
@@ -307,12 +307,17 @@ pub async fn start_bridge(
     // local process; the p2p event loop owns the receiver.
     let (call_tx, call_rx) = new_outbound_call_channel();
 
+    // DHT lookup channel: network_tools / network_record send a peer ID,
+    // the p2p event loop does a live get_record and sends back the result.
+    let (dht_lookup_tx, dht_lookup_rx) = new_dht_lookup_channel();
+
     // Spawn the IPC socket listener so clawshake-tools CLI (and any other
     // local process) can reach network_* handlers.
     tokio::spawn(clawshake_tools::ipc::run(
         Arc::clone(&table),
         connected.clone(),
         call_tx,
+        dht_lookup_tx,
     ));
 
     crate::p2p::run(
@@ -327,6 +332,7 @@ pub async fn start_bridge(
         p2p_args.relay_server,
         call_rx,
         Some(reannounce_rx),
+        dht_lookup_rx,
     )
     .await
 }

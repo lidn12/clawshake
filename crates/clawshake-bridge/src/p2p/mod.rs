@@ -23,16 +23,20 @@ pub fn peer_id_from_disk(override_path: Option<&std::path::Path>) -> Result<Peer
             home.join(".clawshake").join("identity.key")
         }
     };
-    anyhow::ensure!(path.exists(), "Identity key not found at {}", path.display());
-    let bytes = std::fs::read(&path)
-        .with_context(|| format!("reading keypair from {}", path.display()));
+    anyhow::ensure!(
+        path.exists(),
+        "Identity key not found at {}",
+        path.display()
+    );
+    let bytes =
+        std::fs::read(&path).with_context(|| format!("reading keypair from {}", path.display()));
     let kp = libp2p::identity::Keypair::from_protobuf_encoding(&bytes?)
         .map_err(|e| anyhow::anyhow!("decoding keypair: {e}"))?;
     Ok(PeerId::from(&kp.public()))
 }
 use clawshake_core::{
     mcp_client::McpClient,
-    network_channel::{ConnectedPeers, OutboundCall},
+    network_channel::{ConnectedPeers, DhtLookup, OutboundCall},
     peer_table::PeerTable,
     permissions::PermissionStore,
 };
@@ -98,6 +102,7 @@ pub async fn run(
     relay_server: bool,
     mut call_rx: mpsc::Receiver<OutboundCall>,
     reannounce_rx: Option<mpsc::Receiver<()>>,
+    mut dht_lookup_rx: mpsc::Receiver<DhtLookup>,
 ) -> Result<()> {
     let keypair = keypair::load_or_create_keypair(identity.as_deref())?;
     let local_peer_id = PeerId::from(&keypair.public());
@@ -351,6 +356,7 @@ pub async fn run(
         rendezvous_registered: std::collections::HashSet::new(),
         rendezvous_servers: std::collections::HashSet::new(),
         peer_connections: std::collections::HashMap::new(),
+        pending_dht_queries: std::collections::HashMap::new(),
     };
     let mut rendezvous_tick = interval(Duration::from_secs(10));
     let ctx = event::EventContext {
@@ -442,6 +448,20 @@ pub async fn run(
                     Ok(pid) => {
                         let req_id = swarm.behaviour_mut().proxy.send_request(&pid, request);
                         pending_outbound.insert(req_id, response_tx);
+                    }
+                    Err(e) => {
+                        let _ = response_tx.send(Err(format!("invalid peer_id '{peer_id}': {e}")));
+                    }
+                }
+            }
+
+            // DHT lookup: network_tools / network_record request a live GET.
+            Some(DhtLookup { peer_id, response_tx }) = dht_lookup_rx.recv() => {
+                match peer_id.parse::<PeerId>() {
+                    Ok(pid) => {
+                        let key = kad::RecordKey::new(&pid.to_bytes());
+                        let query_id = swarm.behaviour_mut().kademlia.get_record(key);
+                        state.pending_dht_queries.insert(query_id, response_tx);
                     }
                     Err(e) => {
                         let _ = response_tx.send(Err(format!("invalid peer_id '{peer_id}': {e}")));

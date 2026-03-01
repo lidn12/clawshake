@@ -16,7 +16,7 @@ use libp2p::{
     upnp, Multiaddr, PeerId,
 };
 use std::sync::RwLock;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tracing::{info, warn};
 
 // ---------------------------------------------------------------------------
@@ -52,6 +52,13 @@ pub(super) struct NodeState {
     /// Used to prefer direct connections over relay and to re-establish
     /// relay paths when direct connections drop.
     pub peer_connections: HashMap<PeerId, Vec<(ConnectionId, bool)>>,
+    /// Pending on-demand DHT lookups: query_id → oneshot sender for PeerInfo.
+    /// Populated by the main event loop when a DhtLookup arrives from IPC;
+    /// resolved here when the GetRecord result comes back.
+    pub pending_dht_queries: HashMap<
+        kad::QueryId,
+        oneshot::Sender<Result<clawshake_core::peer_table::PeerInfo, String>>,
+    >,
 }
 
 /// Immutable context shared across event handling — avoids passing many
@@ -168,7 +175,7 @@ pub(super) fn handle_event(
 
         // -- Kademlia ------------------------------------------------------
         SwarmEvent::Behaviour(ClawshakeBehaviourEvent::Kademlia(event)) => {
-            on_kademlia(event, ctx);
+            on_kademlia(event, ctx, state);
         }
 
         // -- Proxy residual (InboundFailure only — request/response/outbound
@@ -605,7 +612,7 @@ fn on_identify_received(
 
 /// Kademlia query results — routing updates, record publish confirmations,
 /// and fetched peer announcement records.
-fn on_kademlia(event: kad::Event, ctx: &EventContext<'_>) {
+fn on_kademlia(event: kad::Event, ctx: &EventContext<'_>, state: &mut NodeState) {
     match event {
         kad::Event::RoutingUpdated { peer, .. } => {
             tracing::debug!("Kademlia routing table updated: peer={peer}");
@@ -626,6 +633,7 @@ fn on_kademlia(event: kad::Event, ctx: &EventContext<'_>) {
             warn!("DHT announce: put_record error: {e:?}");
         }
         kad::Event::OutboundQueryProgressed {
+            id,
             result:
                 kad::QueryResult::GetRecord(Ok(kad::GetRecordOk::FoundRecord(kad::PeerRecord {
                     record,
@@ -636,12 +644,43 @@ fn on_kademlia(event: kad::Event, ctx: &EventContext<'_>) {
             Ok(ann) => {
                 let info = ann.to_peer_info();
                 info!(peer = %info.peer_id, tools = info.tools.len(), "Peer table updated from DHT");
-                ctx.table.upsert(info);
+                ctx.table.upsert(info.clone());
+                // If an IPC caller is waiting for this lookup, deliver the result.
+                if let Some(tx) = state.pending_dht_queries.remove(&id) {
+                    let _ = tx.send(Ok(info));
+                }
             }
             Err(e) => {
                 tracing::debug!("GetRecord: not a clawshake announcement: {e}");
+                if let Some(tx) = state.pending_dht_queries.remove(&id) {
+                    let _ = tx.send(Err(format!("DHT record is not a valid announcement: {e}")));
+                }
             }
         },
+        kad::Event::OutboundQueryProgressed {
+            id,
+            result: kad::QueryResult::GetRecord(Err(e)),
+            ..
+        } => {
+            tracing::debug!("GetRecord error: {e:?}");
+            if let Some(tx) = state.pending_dht_queries.remove(&id) {
+                let _ = tx.send(Err(format!("DHT lookup failed: {e:?}")));
+            }
+        }
+        kad::Event::OutboundQueryProgressed {
+            id,
+            result:
+                kad::QueryResult::GetRecord(Ok(kad::GetRecordOk::FinishedWithNoAdditionalRecord {
+                    ..
+                })),
+            ..
+        } => {
+            // Query finished — if a pending IPC caller is still waiting (no
+            // FoundRecord matched), inform them.
+            if let Some(tx) = state.pending_dht_queries.remove(&id) {
+                let _ = tx.send(Err("DHT lookup: no record found".to_string()));
+            }
+        }
         other => {
             tracing::debug!("Kademlia event: {other:?}");
         }

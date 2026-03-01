@@ -30,7 +30,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tracing::{debug, error, warn};
 
 use clawshake_core::{
-    network_channel::{ConnectedPeers, OutboundCallTx},
+    network_channel::{ConnectedPeers, DhtLookupTx, OutboundCallTx},
     peer_table::PeerTable,
 };
 
@@ -57,12 +57,13 @@ pub async fn run(
     table: Arc<PeerTable>,
     connected: ConnectedPeers,
     call_tx: OutboundCallTx,
+    dht_tx: DhtLookupTx,
 ) -> Result<()> {
     #[cfg(windows)]
-    run_windows(table, connected, call_tx).await?;
+    run_windows(table, connected, call_tx, dht_tx).await?;
 
     #[cfg(not(windows))]
-    run_unix(table, connected, call_tx).await?;
+    run_unix(table, connected, call_tx, dht_tx).await?;
 
     Ok(())
 }
@@ -76,6 +77,7 @@ async fn run_windows(
     table: Arc<PeerTable>,
     connected: ConnectedPeers,
     call_tx: OutboundCallTx,
+    dht_tx: DhtLookupTx,
 ) -> Result<()> {
     use tokio::net::windows::named_pipe::ServerOptions;
 
@@ -104,8 +106,9 @@ async fn run_windows(
         let table2 = Arc::clone(&table);
         let connected2 = connected.clone();
         let call_tx2 = call_tx.clone();
+        let dht_tx2 = dht_tx.clone();
         tokio::spawn(async move {
-            handle_connection(client, table2, connected2, call_tx2).await;
+            handle_connection(client, table2, connected2, call_tx2, dht_tx2).await;
         });
     }
     Ok(())
@@ -120,6 +123,7 @@ async fn run_unix(
     table: Arc<PeerTable>,
     connected: ConnectedPeers,
     call_tx: OutboundCallTx,
+    dht_tx: DhtLookupTx,
 ) -> Result<()> {
     use tokio::net::UnixListener;
 
@@ -138,8 +142,9 @@ async fn run_unix(
         let table2 = Arc::clone(&table);
         let connected2 = connected.clone();
         let call_tx2 = call_tx.clone();
+        let dht_tx2 = dht_tx.clone();
         tokio::spawn(async move {
-            handle_connection(stream, table2, connected2, call_tx2).await;
+            handle_connection(stream, table2, connected2, call_tx2, dht_tx2).await;
         });
     }
 }
@@ -153,6 +158,7 @@ async fn handle_connection<S>(
     table: Arc<PeerTable>,
     connected: ConnectedPeers,
     call_tx: OutboundCallTx,
+    dht_tx: DhtLookupTx,
 ) where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
@@ -169,7 +175,7 @@ async fn handle_connection<S>(
         }
     }
 
-    let response = dispatch(line.trim(), &table, &connected, &call_tx).await;
+    let response = dispatch(line.trim(), &table, &connected, &call_tx, &dht_tx).await;
 
     let mut out = match serde_json::to_string(&response) {
         Ok(s) => s,
@@ -194,6 +200,7 @@ async fn dispatch(
     table: &Arc<PeerTable>,
     connected: &ConnectedPeers,
     call_tx: &OutboundCallTx,
+    dht_tx: &DhtLookupTx,
 ) -> Value {
     let req: Value = match serde_json::from_str(line) {
         Ok(v) => v,
@@ -208,5 +215,5 @@ async fn dispatch(
     let empty = Value::Object(Default::default());
     let params = req.get("params").unwrap_or(&empty);
 
-    crate::network::handle(method, Some(params), table, connected, Some(call_tx)).await
+    crate::network::handle(method, Some(params), table, connected, Some(call_tx), Some(dht_tx)).await
 }
