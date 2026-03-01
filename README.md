@@ -1,5 +1,7 @@
 # Clawshake
 
+[![CI](https://github.com/lidn12/clawshake/actions/workflows/ci.yml/badge.svg)](https://github.com/lidn12/clawshake/actions/workflows/ci.yml)
+
 **Give your AI agent tools that work across machines.**
 
 Clawshake is a lightweight daemon that turns any machine into a node on a peer-to-peer tool network. Agents discover and call tools on remote machines — opening files, searching directories, controlling apps — without cloud servers, port forwarding, or API keys.
