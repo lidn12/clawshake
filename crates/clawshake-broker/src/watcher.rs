@@ -139,6 +139,50 @@ impl McpServerMap {
 }
 
 // ---------------------------------------------------------------------------
+// Registry snapshot
+// ---------------------------------------------------------------------------
+
+/// Write the full contents of `registry` to `snapshot_path` atomically.
+///
+/// Uses a write-then-rename pattern so the file is never partially written.
+/// Called after every registry mutation so that `clawshake tools list` can
+/// read up-to-date tool data without connecting to the broker.
+fn write_registry_snapshot(snapshot_path: &Path, registry: &ManifestRegistry) {
+    let tools: Vec<serde_json::Value> = registry
+        .all()
+        .into_iter()
+        .map(|lt| {
+            serde_json::json!({
+                "name": lt.tool.name,
+                "description": lt.tool.description,
+                "source": lt.source,
+            })
+        })
+        .collect();
+    let updated_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let snapshot = serde_json::json!({
+        "updated_at": updated_at,
+        "tools": tools,
+    });
+    let tmp = snapshot_path.with_extension("json.tmp");
+    match serde_json::to_string_pretty(&snapshot) {
+        Ok(content) => {
+            if let Err(e) = std::fs::write(&tmp, &content) {
+                warn!("Failed to write registry snapshot tmp file: {e}");
+                return;
+            }
+            if let Err(e) = std::fs::rename(&tmp, snapshot_path) {
+                warn!("Failed to rename registry snapshot into place: {e}");
+            }
+        }
+        Err(e) => warn!("Failed to serialise registry snapshot: {e}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Loader helpers
 // ---------------------------------------------------------------------------
 
@@ -151,6 +195,7 @@ fn load_file(
     registry: &ManifestRegistry,
     servers: &McpServerMap,
     rt: &tokio::runtime::Handle,
+    snapshot_path: Option<PathBuf>,
 ) {
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
@@ -182,6 +227,9 @@ fn load_file(
             path.file_name().unwrap_or_default()
         );
         registry.load_manifest(&source, &manifest);
+        if let Some(ref sp) = snapshot_path {
+            write_registry_snapshot(sp, &registry);
+        }
     }
 
     // If this manifest has an MCP source, spawn a task to connect and discover.
@@ -203,6 +251,7 @@ fn load_file(
             .unwrap_or_default()
             .to_string_lossy()
             .to_string();
+        let snap = snapshot_path.clone();
         rt.spawn(async move {
             match connect_mcp_source(&source, &mcp).await {
                 Ok(server) => match server.tools_list().await {
@@ -215,6 +264,9 @@ fn load_file(
                         );
                         registry.load_mcp_tools(&source, &source, tools);
                         servers.insert(&source, server);
+                        if let Some(ref sp) = snap {
+                            write_registry_snapshot(sp, &registry);
+                        }
                     }
                     Err(e) => warn!("Failed to list tools from MCP server '{source}': {e}"),
                 },
@@ -350,13 +402,16 @@ pub fn start(
     let servers = McpServerMap::new();
     let rt = tokio::runtime::Handle::current();
 
+    // Compute the registry snapshot path: ~/.clawshake/registry.json
+    let snapshot_path: Option<PathBuf> = manifests_dir.parent().map(|p| p.join("registry.json"));
+
     // Initial load.
     match std::fs::read_dir(&manifests_dir) {
         Ok(entries) => {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.extension().and_then(|e| e.to_str()) == Some("json") {
-                    load_file(&path, &registry, &servers, &rt);
+                    load_file(&path, &registry, &servers, &rt, snapshot_path.clone());
                 }
             }
         }
@@ -382,7 +437,13 @@ pub fn start(
         for res in rx {
             match res {
                 Ok(event) => {
-                    let changed = handle_event(event, &registry, &watch_servers, &rt);
+                    let changed = handle_event(
+                        event,
+                        &registry,
+                        &watch_servers,
+                        &rt,
+                        snapshot_path.as_deref(),
+                    );
                     if changed {
                         if let Some(ref tx) = change_tx {
                             let _ = tx.try_send(());
@@ -407,6 +468,7 @@ fn handle_event(
     registry: &ManifestRegistry,
     servers: &McpServerMap,
     rt: &tokio::runtime::Handle,
+    snapshot_path: Option<&Path>,
 ) -> bool {
     use notify::EventKind::*;
     let paths: Vec<&PathBuf> = event
@@ -426,7 +488,13 @@ fn handle_event(
                     registry.unload_source(&source);
                     servers.remove(&source);
                 }
-                load_file(path, registry, servers, rt);
+                load_file(
+                    path,
+                    registry,
+                    servers,
+                    rt,
+                    snapshot_path.map(|p| p.to_path_buf()),
+                );
                 changed = true;
             }
         }
@@ -436,6 +504,9 @@ fn handle_event(
                     registry.unload_source(&source);
                     servers.remove(&source);
                     info!(source, "Unloaded manifest (file removed)");
+                    if let Some(sp) = snapshot_path {
+                        write_registry_snapshot(sp, registry);
+                    }
                     changed = true;
                 }
             }

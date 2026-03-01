@@ -14,71 +14,80 @@ use crate::watcher;
 // tools list
 // ---------------------------------------------------------------------------
 
-/// Try to fetch the live tool list from the running broker at
-/// `http://127.0.0.1:{port}/` using the stateless JSON-RPC POST endpoint.
-/// Returns `None` if the broker is not reachable.
-async fn try_live_tools(port: u16) -> Option<Vec<serde_json::Value>> {
-    let url = format!("http://127.0.0.1:{port}/");
-    let body = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "tools/list",
-        "params": {}
-    });
-    let resp = reqwest::Client::new()
-        .post(&url)
-        .json(&body)
-        .timeout(std::time::Duration::from_secs(2))
-        .send()
-        .await
-        .ok()?;
-    let val: serde_json::Value = resp.json().await.ok()?;
-    val.pointer("/result/tools")
-        .and_then(|t| t.as_array())
-        .cloned()
+/// Read the registry snapshot written by the running broker.
+///
+/// Returns `(updated_at_unix_secs, tools_array)` when the file exists and
+/// is valid, or `None` otherwise.  The broker writes this file atomically
+/// (temp-rename) every time the registry changes, so the contents are always
+/// consistent.
+fn read_registry_snapshot(snapshot_path: &Path) -> Option<(u64, Vec<serde_json::Value>)> {
+    let content = std::fs::read_to_string(snapshot_path).ok()?;
+    let val: serde_json::Value = serde_json::from_str(&content).ok()?;
+    let updated_at = val.get("updated_at")?.as_u64().unwrap_or(0);
+    let tools = val.get("tools")?.as_array()?.clone();
+    Some((updated_at, tools))
+}
+
+/// Format a Unix-epoch `updated_at` as a human-readable age string.
+fn format_age(updated_at: u64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let secs = now.saturating_sub(updated_at);
+    if secs < 60 {
+        format!("{secs}s ago")
+    } else if secs < 3600 {
+        format!("{}m ago", secs / 60)
+    } else {
+        format!("{}h ago", secs / 3600)
+    }
 }
 
 /// Print the tool listing table (or JSON) to stdout.
 ///
-/// Queries the running broker at `http://127.0.0.1:{broker_port}/` first so
-/// that MCP-server-sourced tools (e.g. filesystem) appear in the list.
-/// Falls back to a static manifest scan when the broker is not running.
+/// Reads `~/.clawshake/registry.json` (written by the broker on every
+/// registry change) so that MCP-server-sourced tools (e.g. filesystem)
+/// appear in the listing.  Falls back to a static manifest scan when the
+/// snapshot file doesn't exist (broker has never run).
 ///
 /// The caller is responsible for seeding any built-in manifests before
 /// calling this function (e.g. the unified binary seeds `network.json`).
-pub async fn list_tools(
-    manifests_dir: &Path,
-    db_path: &Path,
-    json: bool,
-    broker_port: u16,
-) -> Result<()> {
+pub async fn list_tools(manifests_dir: &Path, db_path: &Path, json: bool) -> Result<()> {
     let permissions = PermissionStore::open(db_path).await?;
 
-    // Try to get live tools from the running broker.
-    if let Some(live_tools) = try_live_tools(broker_port).await {
+    // ~/.clawshake/registry.json lives one level above the manifests dir.
+    let snapshot_path = manifests_dir
+        .parent()
+        .unwrap_or(manifests_dir)
+        .join("registry.json");
+
+    // Use the registry snapshot when available (broker has run at least once).
+    if let Some((updated_at, snapshot_tools)) = read_registry_snapshot(&snapshot_path) {
+        let age = format_age(updated_at);
         if json {
             let mut entries = Vec::new();
-            for t in &live_tools {
+            for t in &snapshot_tools {
                 let name = t["name"].as_str().unwrap_or("");
                 let published = permissions.is_network_exposed(name).await;
                 entries.push(serde_json::json!({
                     "name": name,
                     "description": t["description"].as_str().unwrap_or(""),
+                    "source": t["source"].as_str().unwrap_or(""),
                     "published": published,
-                    "source": "live",
                 }));
             }
             println!("{}", serde_json::to_string_pretty(&entries)?);
         } else {
-            if live_tools.is_empty() {
+            if snapshot_tools.is_empty() {
                 println!("No tools registered.");
                 println!("Add manifests to {}", manifests_dir.display());
                 return Ok(());
             }
-            println!("(live — queried from running broker on :{broker_port})");
+            println!("(registry snapshot — updated {age})");
             println!("{:<30}  {:<5}  {}", "Name", "Pub", "Description");
             println!("{}", "-".repeat(78));
-            for t in &live_tools {
+            for t in &snapshot_tools {
                 let name = t["name"].as_str().unwrap_or("");
                 let published = permissions.is_network_exposed(name).await;
                 let marker = if published { "  ✓" } else { "  ✗" };
@@ -89,7 +98,7 @@ pub async fn list_tools(
         return Ok(());
     }
 
-    // Broker not running — fall back to static manifest scan.
+    // No snapshot — broker has never run.  Fall back to static manifest scan.
     let registry = watcher::ManifestRegistry::new();
     watcher::load_manifests_from_dir(manifests_dir, &registry)?;
     let tools = registry.all();
@@ -112,7 +121,7 @@ pub async fn list_tools(
             println!("Add manifests to {}", manifests_dir.display());
             return Ok(());
         }
-        println!("(offline — broker not running on :{broker_port}, showing manifest scan)");
+        println!("(offline — no registry snapshot found, showing manifest scan)");
         println!("{:<30}  {:<5}  {}", "Name", "Pub", "Description");
         println!("{}", "-".repeat(78));
         for t in &tools {

@@ -54,11 +54,6 @@ enum ToolsAction {
         /// Output as JSON instead of a human-readable table.
         #[arg(long, default_value_t = false)]
         json: bool,
-
-        /// Broker HTTP port to query for live tools (default 7475).
-        /// Falls back to manifest scan if the broker is not running.
-        #[arg(long, default_value_t = 7475, value_name = "PORT")]
-        port: u16,
     },
 
     /// Validate a manifest file without installing it.
@@ -105,8 +100,8 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Command::Tools { action } => match action {
-            ToolsAction::List { json, port } => {
-                cli::list_tools(&manifests_dir, &db_path, json, port).await?;
+            ToolsAction::List { json } => {
+                cli::list_tools(&manifests_dir, &db_path, json).await?;
             }
             ToolsAction::Validate { file } => {
                 cli::validate_manifest(&file)?;
