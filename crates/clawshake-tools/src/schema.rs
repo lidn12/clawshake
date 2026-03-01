@@ -13,7 +13,7 @@ pub fn tool_definitions() -> Vec<Value> {
     vec![
         json!({
             "name": "network_peers",
-            "description": "List all discovered bridge nodes on the network with their peer IDs, addresses, and last-seen timestamps.",
+            "description": "List all discovered bridge nodes on the network with their peer IDs, addresses, and last-seen timestamps. Data comes from the local cache; use network_tools with a specific peer_id for authoritative live info.",
             "inputSchema": {
                 "type": "object",
                 "properties": {},
@@ -22,7 +22,7 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "network_tools",
-            "description": "Get all tools for a specific peer with their names, descriptions, and inputSchema. Use this before network_call to inspect parameter requirements.",
+            "description": "Fetch all tools for a specific peer directly from the DHT (live, not cached). Returns each tool's name, description, and inputSchema. Use this before network_call to inspect parameter requirements.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -36,7 +36,7 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "network_search",
-            "description": "Search for tools across all known peers by tool name or description substring.",
+            "description": "Search for tools across all known peers by tool name or description substring. Searches the local cache; results may be stale. Use network_tools on a specific peer for authoritative data.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -86,7 +86,7 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "network_record",
-            "description": "Return the raw DHT announcement record for a peer exactly as stored in the Kademlia DHT — schema version, peer_id, tools, addrs, and timestamp. Useful for verifying the live record matches the published spec or debugging schema mismatches.",
+            "description": "Fetch the raw DHT announcement record for a peer directly from the Kademlia DHT (live, not cached) — schema version, peer_id, tools, addrs, and timestamp. Useful for verifying what a peer is currently announcing or debugging schema mismatches.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
