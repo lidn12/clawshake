@@ -5,3 +5,22 @@
 
 # Internal development docs
 docs/internal/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor/IDE
+.idea/
+*.swp
+*.swo
+
+# Logs and databases
+*.log
+*.db
+*.db-wal
+*.db-shm
+
+# Cryptographic material
+*.pem
+*.key

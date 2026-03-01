@@ -3,6 +3,8 @@ name = "clawshake-tools"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+description = "Built-in network discovery and remote invocation tools for clawshake"
 
 [[bin]]
 name = "clawshake-tools"

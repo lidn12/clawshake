@@ -59,7 +59,7 @@ Use the examples as templates. A basic manifest looks like:
 - `applescript` — AppleScript on macOS
 - `powershell` — PowerShell on Windows
 
-See [../docs/clawshake.md](../docs/clawshake.md#manifest-format) for full format details.
+See the [README](../README.md) for more details.
 
 ## Platform Notes
 

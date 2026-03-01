@@ -3,6 +3,8 @@ name = "clawshake-bridge"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+description = "P2P bridge that connects local MCP backends to the clawshake network"
 
 [lib]
 name = "clawshake_bridge"

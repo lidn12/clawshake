@@ -107,12 +107,12 @@ Once a peer's record is retrieved from the DHT, tool invocation uses the Clawsha
 
 **Request** — standard MCP `tools/call` JSON-RPC:
 ```json
-{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"write_file","arguments":{"path":"C:/Users/li/Desktop/hello.txt","content":"Hello from clawshake!"}}}
+{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"write_file","arguments":{"path":"/home/alice/hello.txt","content":"Hello from clawshake!"}}}
 ```
 
 **Response** — standard MCP `tools/call` result:
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"Successfully wrote to C:/Users/li/Desktop/hello.txt"}]}}
+{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"Successfully wrote to /home/alice/hello.txt"}]}}
 ```
 
 The bridge on the receiving end stamps caller identity from the Noise-verified peer ID, checks the permission store, and either proxies the call to its local MCP backend or returns a permission error.
@@ -161,5 +161,5 @@ From the live test network (February 2026):
 }
 ```
 
-Backend: `npx @modelcontextprotocol/server-filesystem C:\Users\li\Desktop`  
+Backend: `npx @modelcontextprotocol/server-filesystem ~/shared`
 Relay: `12D3KooWDi1ntKAkUYpHfijLNExUTsirFyofnkEB3yjC8P3EGcY5` at `43.143.33.106:7474`

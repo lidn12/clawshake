@@ -3,6 +3,8 @@ name = "clawshake"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+description = "CLI for running clawshake broker, bridge, and network tools"
 
 [[bin]]
 name = "clawshake"

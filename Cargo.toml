@@ -13,6 +13,7 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/lidn12/clawshake"
+description = "Give your AI agent tools that work across machines"
 
 [workspace.dependencies]
 # Async runtime

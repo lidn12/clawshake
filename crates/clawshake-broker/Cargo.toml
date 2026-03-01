@@ -3,6 +3,8 @@ name = "clawshake-broker"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+description = "Local MCP server that loads tool manifests and serves them to AI agents"
 
 [lib]
 name = "clawshake_broker"
