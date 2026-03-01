@@ -6,7 +6,7 @@
 
 Clawshake is a lightweight daemon that turns any machine into a node on a peer-to-peer tool network. Agents discover and call tools on remote machines — opening files, searching directories, controlling apps — without cloud servers, port forwarding, or API keys.
 
-Drop a 10-line JSON manifest, and the tool is live on the network. Any MCP-compatible agent can call it.
+Drop a 10-line JSON manifest, and the tool is live on the network. Or wrap any existing MCP server — Clawshake proxies it over P2P so remote agents can call it without any changes. Any MCP-compatible agent can use both.
 
 ## How it works
 
@@ -140,9 +140,11 @@ Manifests can also define tools directly with different invoke types:
 }
 ```
 
-**Invoke types:** `cli`, `http`, `applescript`, `powershell`, `deeplink`.
+**Invoke types:** `cli`, `http`, `applescript`, `powershell`, `deeplink`, `mcp`.
 
-See [manifests/](manifests/) for ready-made examples (filesystem, calendar, mail, VS Code, Spotify, and more).
+The `mcp` type is special: instead of defining tools inline, you point it at any existing MCP server process (stdio or SSE). Clawshake spawns it, discovers its tools, and re-exposes them over the P2P network — so a remote agent can call tools from the [Playwright MCP](https://github.com/microsoft/playwright-mcp), the [filesystem server](https://github.com/modelcontextprotocol/servers), or any of the 18,000+ servers in the MCP ecosystem, without those servers knowing anything about P2P.
+
+See [manifests/](manifests/) for ready-made examples (Spotify, Calendar, Mail, Safari, Finder, Messages, Notes, Reminders, Contacts, Apple Music, system controls, and more).
 
 ## Permissions
 
