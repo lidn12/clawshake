@@ -7,4 +7,4 @@ pub mod announce;
 pub mod cli;
 pub mod p2p;
 pub mod proxy;
-pub mod watch;
+pub mod watcher;

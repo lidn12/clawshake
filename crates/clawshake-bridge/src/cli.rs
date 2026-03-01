@@ -297,7 +297,7 @@ pub async fn start_bridge(
     let store = Arc::new(store);
 
     // Watch permissions.db so DHT re-announces when permissions change.
-    crate::watch::watch_permissions_db(db_path, reannounce_tx);
+    crate::watcher::watch_permissions_db(db_path, reannounce_tx);
 
     // Peer table and connected-peer tracker for network_* built-in tools.
     let table = Arc::new(PeerTable::new());
