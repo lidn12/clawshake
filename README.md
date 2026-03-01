@@ -40,6 +40,15 @@ cd clawshake
 cargo build --release
 ```
 
+The build produces several binaries. Add them to your PATH:
+
+```bash
+# Copy all binaries to a directory on your PATH, e.g.
+cp target/release/clawshake target/release/clawshake-tools ~/.local/bin/
+```
+
+`clawshake-tools` **must be on PATH** — the broker shells out to it for the six `network_*` tools. Without it, network discovery and remote invocation won't work.
+
 Start the node:
 
 ```bash
@@ -64,6 +73,19 @@ Point your MCP client at it. For VS Code, add to `.vscode/mcp.json`:
     "clawshake": {
       "type": "sse",
       "url": "http://127.0.0.1:7475/sse"
+    }
+  }
+}
+```
+
+For clients that prefer **stdio** (Claude Desktop, etc.), run the broker directly:
+
+```json
+{
+  "servers": {
+    "clawshake": {
+      "type": "stdio",
+      "command": "clawshake-broker"
     }
   }
 }
@@ -173,6 +195,16 @@ crates/
 **P2P stack:** libp2p with Kademlia DHT, mDNS, relay + DCUtR (hole punching), QUIC and TCP transports, Noise encryption.
 
 **Identity:** Ed25519 keypair generated on first run, stored at `~/.clawshake/identity.key`. Peer identity is verified cryptographically via the Noise handshake — it cannot be spoofed.
+
+## Running a relay node
+
+To let peers behind NAT reach each other, run a relay on a machine with a public IP:
+
+```bash
+clawshake run --relay-server
+```
+
+This binds to port 7474 (configurable via `--p2p-port`) and prints a copy-ready multiaddr on startup. Share that address with other users — they add it to their `config.toml` under `bootstrap` to join your network.
 
 ## Configuration
 
