@@ -215,8 +215,12 @@ Node configuration lives at `~/.clawshake/config.toml`. The file is optional —
 ```toml
 [network]
 bootstrap = [
-  "/ip4/43.143.33.106/tcp/7474/p2p/12D3KooWDi1ntKAkUYpHfijLNExUTsirFyofnkEB3yjC8P3EGcY5",
-  "/ip4/43.143.33.106/udp/7474/quic-v1/p2p/12D3KooWDi1ntKAkUYpHfijLNExUTsirFyofnkEB3yjC8P3EGcY5",
+  # Virginia (US East)
+  "/ip4/43.166.241.142/tcp/7474/p2p/12D3KooWPfjVhJYqj2V1cJqNTzzFnG19LN1ggKpTX6fdw2SKV3vP",
+  "/ip4/43.166.241.142/udp/7474/quic-v1/p2p/12D3KooWPfjVhJYqj2V1cJqNTzzFnG19LN1ggKpTX6fdw2SKV3vP",
+  # Tokyo (Asia)
+  "/ip4/43.167.199.188/tcp/7474/p2p/12D3KooWDRtC9K43jkTpgc6urj9Y85fy8oKe1ijNE7YGuuTbMe1m",
+  "/ip4/43.167.199.188/udp/7474/quic-v1/p2p/12D3KooWDRtC9K43jkTpgc6urj9Y85fy8oKe1ijNE7YGuuTbMe1m",
 ]
 ```
 
