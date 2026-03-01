@@ -1,0 +1,11 @@
+{
+    "version": "1.0",
+    "description": "Home Assistant MCP server (ha-mcp) — control smart home devices, automations, scripts, dashboards, and sensors via natural language. Wraps github.com/homeassistant-ai/ha-mcp running locally via uvx. Requires HA_URL and HA_TOKEN set in the environment before starting Clawshake.",
+    "mcp": {
+        "transport": "stdio",
+        "command": "uvx",
+        "args": [
+            "ha-mcp"
+        ]
+    }
+}

@@ -24,6 +24,7 @@ The broker watches `~/.clawshake/manifests/` and automatically loads any `.json`
 | `safari.json` | AppleScript | Web browsing automation (macOS) |
 | `vscode.json` | CLI | Editing files, opening workspaces (any platform) |
 | `filesystem.json` | MCP (stdio) | Bind [Anthropic's filesystem MCP](https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem) to the broker |
+| `homeassistant.json` | MCP (stdio) | Control smart home devices, automations, and sensors via [ha-mcp](https://github.com/homeassistant-ai/ha-mcp) (requires Home Assistant) |
 
 ## Creating Your Own
 
@@ -66,7 +67,29 @@ See the [README](../README.md) for more details.
 
 - **AppleScript manifests** (Mail, Calendar, Safari, Finder) require macOS
 - **CLI manifests** (VS Code) work anywhere the command is installed
-- **MCP manifests** (filesystem) work anywhere the MCP server is installed
+- **MCP manifests** (filesystem, homeassistant) work anywhere the MCP server is installed
 - **DeepLink manifests** (Spotify) require the app to support deep links
+
+### Home Assistant setup
+
+`homeassistant.json` uses [ha-mcp](https://github.com/homeassistant-ai/ha-mcp), which discovers all 97 HA tools dynamically at startup (lights, climate, locks, automations, cameras, dashboards, etc.).
+
+**Prerequisites:** [uv](https://docs.astral.sh/uv/getting-started/installation/) installed (`brew install uv` on macOS, `pip install uv` elsewhere).
+
+Set two environment variables before starting Clawshake:
+
+```bash
+export HA_URL=http://homeassistant.local:8123   # or your HA IP
+export HA_TOKEN=<long-lived-access-token>        # from HA → Profile → Security
+```
+
+Then copy the manifest and start the broker:
+
+```bash
+cp manifests/homeassistant.json ~/.clawshake/manifests/
+clawshake run
+```
+
+Remote agents on any machine connected to the Clawshake network can now call all Home Assistant tools — no Nabu Casa subscription, no port forwarding required.
 
 Missing an app? Please create a manifest and [open a PR](https://github.com/lidn12/clawshake/pulls).
