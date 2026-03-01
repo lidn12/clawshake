@@ -1,0 +1,105 @@
+{
+    "version": "1.0",
+    "tools": [
+        {
+            "name": "music_play",
+            "description": "Resume or start playback in Apple Music.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {}
+            },
+            "invoke": {
+                "type": "applescript",
+                "script": "tell application \"Music\" to play\nreturn \"Playback started\""
+            }
+        },
+        {
+            "name": "music_pause",
+            "description": "Pause playback in Apple Music.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {}
+            },
+            "invoke": {
+                "type": "applescript",
+                "script": "tell application \"Music\" to pause\nreturn \"Playback paused\""
+            }
+        },
+        {
+            "name": "music_next",
+            "description": "Skip to the next track in Apple Music.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {}
+            },
+            "invoke": {
+                "type": "applescript",
+                "script": "tell application \"Music\" to next track\nreturn \"Skipped to next track\""
+            }
+        },
+        {
+            "name": "music_previous",
+            "description": "Go back to the previous track in Apple Music.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {}
+            },
+            "invoke": {
+                "type": "applescript",
+                "script": "tell application \"Music\" to previous track\nreturn \"Went to previous track\""
+            }
+        },
+        {
+            "name": "music_now_playing",
+            "description": "Get the currently playing track name and artist in Apple Music.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {}
+            },
+            "invoke": {
+                "type": "applescript",
+                "script": "tell application \"Music\"\n  if player state is playing then\n    return name of current track & \" — \" & artist of current track\n  else if player state is paused then\n    return \"Paused: \" & name of current track & \" — \" & artist of current track\n  else\n    return \"Nothing is playing\"\n  end if\nend tell"
+            }
+        },
+        {
+            "name": "music_set_volume",
+            "description": "Set the Apple Music playback volume.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "volume": {
+                        "type": "number",
+                        "description": "Volume level from 0 to 100"
+                    }
+                },
+                "required": [
+                    "volume"
+                ]
+            },
+            "invoke": {
+                "type": "applescript",
+                "script": "tell application \"Music\" to set sound volume to {{volume}}\nreturn \"Volume set to {{volume}}\""
+            }
+        },
+        {
+            "name": "music_search_and_play",
+            "description": "Search the Apple Music library and play the first matching track.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Song name, artist, or album to search for"
+                    }
+                },
+                "required": [
+                    "query"
+                ]
+            },
+            "invoke": {
+                "type": "applescript",
+                "script": "tell application \"Music\"\n  set results to search playlist \"Library\" for \"{{query}}\"\n  if results is {} then return \"No results found for: {{query}}\"\n  set theTrack to first item of results\n  play theTrack\n  return \"Now playing: \" & name of theTrack & \" — \" & artist of theTrack\nend tell"
+            }
+        }
+    ]
+}

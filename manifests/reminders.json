@@ -1,0 +1,77 @@
+{
+    "version": "1.0",
+    "tools": [
+        {
+            "name": "reminders_create",
+            "description": "Create a new reminder in the Reminders app.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "Reminder title"
+                    },
+                    "due_date": {
+                        "type": "string",
+                        "description": "Optional due date (e.g. 'March 10, 2026 at 9:00 AM'). Omit for no due date."
+                    },
+                    "notes": {
+                        "type": "string",
+                        "description": "Optional additional notes for the reminder"
+                    }
+                },
+                "required": [
+                    "title"
+                ]
+            },
+            "invoke": {
+                "type": "applescript",
+                "script": "tell application \"Reminders\"\n  set newReminder to make new reminder at end of reminders of default list with properties {name:\"{{title}}\"}\n  if \"{{due_date}}\" is not \"\" then\n    set due date of newReminder to date \"{{due_date}}\"\n  end if\n  if \"{{notes}}\" is not \"\" then\n    set body of newReminder to \"{{notes}}\"\n  end if\n  return \"Reminder created: {{title}}\"\nend tell"
+            }
+        },
+        {
+            "name": "reminders_list_incomplete",
+            "description": "List all incomplete reminders from the default list.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {}
+            },
+            "invoke": {
+                "type": "applescript",
+                "script": "tell application \"Reminders\"\n  set incompleteList to {}\n  set pending to reminders of default list whose completed is false\n  if pending is {} then return \"No incomplete reminders.\"\n  repeat with r in pending\n    copy name of r to end of incompleteList\n  end repeat\n  return incompleteList as string\nend tell"
+            }
+        },
+        {
+            "name": "reminders_complete",
+            "description": "Mark a reminder as completed by name.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "Title of the reminder to mark complete"
+                    }
+                },
+                "required": [
+                    "title"
+                ]
+            },
+            "invoke": {
+                "type": "applescript",
+                "script": "tell application \"Reminders\"\n  set matches to reminders of default list whose name contains \"{{title}}\" and completed is false\n  if matches is {} then return \"No incomplete reminder found matching: {{title}}\"\n  set completed of first item of matches to true\n  return \"Marked complete: \" & name of first item of matches\nend tell"
+            }
+        },
+        {
+            "name": "reminders_list_all_lists",
+            "description": "List all reminder lists (groups) available.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {}
+            },
+            "invoke": {
+                "type": "applescript",
+                "script": "tell application \"Reminders\"\n  set listNames to {}\n  repeat with l in lists\n    copy name of l to end of listNames\n  end repeat\n  return listNames as string\nend tell"
+            }
+        }
+    ]
+}

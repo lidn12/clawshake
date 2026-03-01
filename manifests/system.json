@@ -1,0 +1,222 @@
+{
+    "version": "1.0",
+    "tools": [
+        {
+            "name": "system_get_volume",
+            "description": "Get the current system output volume level (0–100).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {}
+            },
+            "invoke": {
+                "type": "applescript",
+                "script": "set volInfo to get volume settings\nreturn \"Volume: \" & (output volume of volInfo) as string"
+            }
+        },
+        {
+            "name": "system_set_volume",
+            "description": "Set the system output volume.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "volume": {
+                        "type": "number",
+                        "description": "Volume level from 0 (silent) to 100 (max)"
+                    }
+                },
+                "required": [
+                    "volume"
+                ]
+            },
+            "invoke": {
+                "type": "applescript",
+                "script": "set volume output volume {{volume}}\nreturn \"Volume set to {{volume}}\""
+            }
+        },
+        {
+            "name": "system_mute",
+            "description": "Mute the system audio output.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {}
+            },
+            "invoke": {
+                "type": "applescript",
+                "script": "set volume with output muted\nreturn \"Audio muted\""
+            }
+        },
+        {
+            "name": "system_unmute",
+            "description": "Unmute the system audio output.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {}
+            },
+            "invoke": {
+                "type": "applescript",
+                "script": "set volume without output muted\nreturn \"Audio unmuted\""
+            }
+        },
+        {
+            "name": "system_toggle_dark_mode",
+            "description": "Toggle macOS dark mode on or off.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {}
+            },
+            "invoke": {
+                "type": "applescript",
+                "script": "tell application \"System Events\"\n  tell appearance preferences\n    set dark mode to not dark mode\n    if dark mode then\n      return \"Dark mode enabled\"\n    else\n      return \"Dark mode disabled\"\n    end if\n  end tell\nend tell"
+            }
+        },
+        {
+            "name": "system_get_dark_mode",
+            "description": "Check whether macOS dark mode is currently enabled.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {}
+            },
+            "invoke": {
+                "type": "applescript",
+                "script": "tell application \"System Events\"\n  tell appearance preferences\n    if dark mode then\n      return \"Dark mode is ON\"\n    else\n      return \"Dark mode is OFF\"\n    end if\n  end tell\nend tell"
+            }
+        },
+        {
+            "name": "system_notify",
+            "description": "Display a macOS notification banner.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "Notification title"
+                    },
+                    "body": {
+                        "type": "string",
+                        "description": "Notification body text"
+                    },
+                    "subtitle": {
+                        "type": "string",
+                        "description": "Optional subtitle text"
+                    }
+                },
+                "required": [
+                    "title",
+                    "body"
+                ]
+            },
+            "invoke": {
+                "type": "applescript",
+                "script": "display notification \"{{body}}\" with title \"{{title}}\" subtitle \"{{subtitle}}\"\nreturn \"Notification sent\""
+            }
+        },
+        {
+            "name": "system_get_clipboard",
+            "description": "Get the current contents of the system clipboard.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {}
+            },
+            "invoke": {
+                "type": "applescript",
+                "script": "return (the clipboard) as string"
+            }
+        },
+        {
+            "name": "system_set_clipboard",
+            "description": "Set the system clipboard to a given text value.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "text": {
+                        "type": "string",
+                        "description": "Text to copy to the clipboard"
+                    }
+                },
+                "required": [
+                    "text"
+                ]
+            },
+            "invoke": {
+                "type": "applescript",
+                "script": "set the clipboard to \"{{text}}\"\nreturn \"Copied to clipboard\""
+            }
+        },
+        {
+            "name": "system_screenshot",
+            "description": "Take a screenshot and save it to the Desktop.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "filename": {
+                        "type": "string",
+                        "description": "Filename for the screenshot (e.g. screenshot.png). Saved to ~/Desktop."
+                    }
+                },
+                "required": [
+                    "filename"
+                ]
+            },
+            "invoke": {
+                "type": "applescript",
+                "script": "do shell script \"screencapture -x ~/Desktop/{{filename}}\"\nreturn \"Screenshot saved to ~/Desktop/{{filename}}\""
+            }
+        },
+        {
+            "name": "system_sleep",
+            "description": "Put the Mac to sleep.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {}
+            },
+            "invoke": {
+                "type": "applescript",
+                "script": "tell application \"System Events\" to sleep\nreturn \"Sleeping\""
+            }
+        },
+        {
+            "name": "system_lock_screen",
+            "description": "Lock the Mac screen (requires password to unlock).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {}
+            },
+            "invoke": {
+                "type": "applescript",
+                "script": "tell application \"System Events\"\n  keystroke \"q\" using {command down, control down}\nend tell\nreturn \"Screen locked\""
+            }
+        },
+        {
+            "name": "system_get_frontmost_app",
+            "description": "Get the name of the application currently in the foreground.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {}
+            },
+            "invoke": {
+                "type": "applescript",
+                "script": "tell application \"System Events\"\n  return name of first application process whose frontmost is true\nend tell"
+            }
+        },
+        {
+            "name": "system_run_shortcut",
+            "description": "Run a macOS Shortcut by name.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "shortcut_name": {
+                        "type": "string",
+                        "description": "Exact name of the Shortcut in the Shortcuts app"
+                    }
+                },
+                "required": [
+                    "shortcut_name"
+                ]
+            },
+            "invoke": {
+                "type": "applescript",
+                "script": "do shell script \"shortcuts run \" & quoted form of \"{{shortcut_name}}\"\nreturn \"Shortcut executed: {{shortcut_name}}\""
+            }
+        }
+    ]
+}

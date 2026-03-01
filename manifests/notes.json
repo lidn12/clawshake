@@ -1,0 +1,88 @@
+{
+    "version": "1.0",
+    "tools": [
+        {
+            "name": "notes_create",
+            "description": "Create a new note in the Notes app.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "Title of the note"
+                    },
+                    "body": {
+                        "type": "string",
+                        "description": "Body content of the note (plain text)"
+                    }
+                },
+                "required": [
+                    "title",
+                    "body"
+                ]
+            },
+            "invoke": {
+                "type": "applescript",
+                "script": "tell application \"Notes\"\n  set newNote to make new note with properties {name:\"{{title}}\", body:\"{{body}}\"}\n  return \"Note created: {{title}}\"\nend tell"
+            }
+        },
+        {
+            "name": "notes_list_recent",
+            "description": "List the titles of the most recent notes.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "count": {
+                        "type": "number",
+                        "description": "Number of notes to return (default 10)"
+                    }
+                },
+                "required": []
+            },
+            "invoke": {
+                "type": "applescript",
+                "script": "tell application \"Notes\"\n  set noteNames to {}\n  set allNotes to notes\n  set total to count of allNotes\n  set maxCount to 10\n  if total < maxCount then set maxCount to total\n  repeat with i from 1 to maxCount\n    copy name of item i of allNotes to end of noteNames\n  end repeat\n  return noteNames as string\nend tell"
+            }
+        },
+        {
+            "name": "notes_search",
+            "description": "Search for notes whose title or body contains a keyword.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search keyword"
+                    }
+                },
+                "required": [
+                    "query"
+                ]
+            },
+            "invoke": {
+                "type": "applescript",
+                "script": "tell application \"Notes\"\n  set results to notes whose name contains \"{{query}}\"\n  if results is {} then return \"No notes found matching: {{query}}\"\n  set resultNames to {}\n  repeat with n in results\n    copy name of n to end of resultNames\n  end repeat\n  return resultNames as string\nend tell"
+            }
+        },
+        {
+            "name": "notes_get_body",
+            "description": "Get the text content of a note by its title.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "Exact or partial title of the note"
+                    }
+                },
+                "required": [
+                    "title"
+                ]
+            },
+            "invoke": {
+                "type": "applescript",
+                "script": "tell application \"Notes\"\n  set matches to notes whose name contains \"{{title}}\"\n  if matches is {} then return \"No note found with title: {{title}}\"\n  set theNote to first item of matches\n  return body of theNote\nend tell"
+            }
+        }
+    ]
+}

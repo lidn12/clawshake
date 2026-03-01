@@ -1,0 +1,85 @@
+{
+    "version": "1.0",
+    "tools": [
+        {
+            "name": "contacts_search",
+            "description": "Search contacts by name. Returns matching names.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Part or all of the contact's name to search for"
+                    }
+                },
+                "required": [
+                    "query"
+                ]
+            },
+            "invoke": {
+                "type": "applescript",
+                "script": "tell application \"Contacts\"\n  set matches to every person whose name contains \"{{query}}\"\n  if matches is {} then return \"No contacts found for: {{query}}\"\n  set resultList to {}\n  repeat with p in matches\n    copy name of p to end of resultList\n  end repeat\n  return resultList as string\nend tell"
+            }
+        },
+        {
+            "name": "contacts_get_phone",
+            "description": "Get the phone number(s) for a contact by name.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Part or all of the contact's name"
+                    }
+                },
+                "required": [
+                    "name"
+                ]
+            },
+            "invoke": {
+                "type": "applescript",
+                "script": "tell application \"Contacts\"\n  set matches to every person whose name contains \"{{name}}\"\n  if matches is {} then return \"No contact found for: {{name}}\"\n  set p to first item of matches\n  if (count of phones of p) is 0 then return name of p & \" has no phone number\"\n  set phoneList to {}\n  repeat with ph in phones of p\n    copy (label of ph & \": \" & value of ph) to end of phoneList\n  end repeat\n  return name of p & \" — \" & phoneList as string\nend tell"
+            }
+        },
+        {
+            "name": "contacts_get_email",
+            "description": "Get the email address(es) for a contact by name.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Part or all of the contact's name"
+                    }
+                },
+                "required": [
+                    "name"
+                ]
+            },
+            "invoke": {
+                "type": "applescript",
+                "script": "tell application \"Contacts\"\n  set matches to every person whose name contains \"{{name}}\"\n  if matches is {} then return \"No contact found for: {{name}}\"\n  set p to first item of matches\n  if (count of emails of p) is 0 then return name of p & \" has no email address\"\n  set emailList to {}\n  repeat with e in emails of p\n    copy (label of e & \": \" & value of e) to end of emailList\n  end repeat\n  return name of p & \" — \" & emailList as string\nend tell"
+            }
+        },
+        {
+            "name": "contacts_get_birthday",
+            "description": "Get the birthday of a contact by name.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Part or all of the contact's name"
+                    }
+                },
+                "required": [
+                    "name"
+                ]
+            },
+            "invoke": {
+                "type": "applescript",
+                "script": "tell application \"Contacts\"\n  set matches to every person whose name contains \"{{name}}\"\n  if matches is {} then return \"No contact found for: {{name}}\"\n  set p to first item of matches\n  if birth date of p is missing value then return name of p & \" has no birthday set\"\n  return name of p & \" — Birthday: \" & (birth date of p) as string\nend tell"
+            }
+        }
+    ]
+}

@@ -1,0 +1,48 @@
+{
+    "version": "1.0",
+    "tools": [
+        {
+            "name": "messages_send",
+            "description": "Send an iMessage or SMS to a phone number or email address.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "recipient": {
+                        "type": "string",
+                        "description": "Phone number (e.g. +1 555-555-5555) or Apple ID email of the recipient"
+                    },
+                    "body": {
+                        "type": "string",
+                        "description": "Text content of the message"
+                    }
+                },
+                "required": [
+                    "recipient",
+                    "body"
+                ]
+            },
+            "invoke": {
+                "type": "applescript",
+                "script": "tell application \"Messages\"\n  set targetService to 1st service whose service type = iMessage\n  set targetBuddy to buddy \"{{recipient}}\" of targetService\n  send \"{{body}}\" to targetBuddy\nend tell\nreturn \"Message sent to {{recipient}}\""
+            }
+        },
+        {
+            "name": "messages_list_recent_chats",
+            "description": "List the names of the most recent message conversations.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "count": {
+                        "type": "number",
+                        "description": "Number of recent chats to return (default 10)"
+                    }
+                },
+                "required": []
+            },
+            "invoke": {
+                "type": "applescript",
+                "script": "tell application \"Messages\"\n  set chatNames to {}\n  set maxCount to 10\n  set allChats to chats\n  set total to count of allChats\n  if total < maxCount then set maxCount to total\n  repeat with i from 1 to maxCount\n    set thisChat to item i of allChats\n    set participants to name of thisChat\n    copy participants to end of chatNames\n  end repeat\n  return chatNames as string\nend tell"
+            }
+        }
+    ]
+}
