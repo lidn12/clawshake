@@ -135,20 +135,37 @@ pub async fn list_tools(manifests_dir: &Path, db_path: &Path, json: bool) -> Res
     Ok(())
 }
 
-/// Count total tools and published tools from the manifests/permissions on disk.
+/// Count total tools and published tools.
+///
+/// Reads `~/.clawshake/registry.json` (the broker's state file) so that
+/// MCP-server-sourced tools are counted correctly.  Falls back to a static
+/// manifest scan when the snapshot doesn't exist.
 ///
 /// The caller is responsible for seeding any built-in manifests first.
 /// Used by the unified `clawshake` binary via `clawshake_broker::cli::tool_counts`.
 #[allow(dead_code)]
 pub async fn tool_counts(manifests_dir: &Path, db_path: &Path) -> (usize, usize) {
-    let registry = watcher::ManifestRegistry::new();
-    let _ = watcher::load_manifests_from_dir(manifests_dir, &registry);
-    let tools = registry.all();
-    let total = tools.len();
+    let snapshot_path = manifests_dir
+        .parent()
+        .unwrap_or(manifests_dir)
+        .join("registry.json");
+
+    let tool_names: Vec<String> = if let Some((_ts, tools)) = read_registry_snapshot(&snapshot_path) {
+        tools
+            .iter()
+            .filter_map(|t| t["name"].as_str().map(|s| s.to_string()))
+            .collect()
+    } else {
+        let registry = watcher::ManifestRegistry::new();
+        let _ = watcher::load_manifests_from_dir(manifests_dir, &registry);
+        registry.all().into_iter().map(|lt| lt.tool.name).collect()
+    };
+
+    let total = tool_names.len();
     let published = if let Ok(perms) = PermissionStore::open(db_path).await {
         let mut count = 0;
-        for t in &tools {
-            if perms.is_network_exposed(&t.tool.name).await {
+        for name in &tool_names {
+            if perms.is_network_exposed(name).await {
                 count += 1;
             }
         }
