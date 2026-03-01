@@ -23,6 +23,7 @@ The broker watches `~/.clawshake/manifests/` and automatically loads any `.json`
 | `finder.json` | AppleScript | File system operations on macOS |
 | `safari.json` | AppleScript | Web browsing automation (macOS) |
 | `vscode.json` | CLI | Editing files, opening workspaces (any platform) |
+| `filesystem.json` | MCP (stdio) | Bind [Anthropic's filesystem MCP](https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem) to the broker |
 
 ## Creating Your Own
 
@@ -64,8 +65,8 @@ See the [README](../README.md) for more details.
 ## Platform Notes
 
 - **AppleScript manifests** (Mail, Calendar, Safari, Finder) require macOS
-- **HTTP manifests** (VS Code) work on any platform
-- **CLI manifests** work anywhere the command is installed
+- **CLI manifests** (VS Code) work anywhere the command is installed
+- **MCP manifests** (filesystem) work anywhere the MCP server is installed
 - **DeepLink manifests** (Spotify) require the app to support deep links
 
 Missing an app? Please create a manifest and [open a PR](https://github.com/lidn12/clawshake/pulls).

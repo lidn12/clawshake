@@ -32,17 +32,13 @@
         },
         {
             "name": "vscode_open_workspace",
-            "description": "Open a workspace or folder in VS Code.",
+            "description": "Open a workspace or folder in a new VS Code window.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "folder": {
                         "type": "string",
                         "description": "Absolute path to folder or workspace file"
-                    },
-                    "new_window": {
-                        "type": "boolean",
-                        "description": "Open in a new window instead of the current one (default false)"
                     }
                 },
                 "required": [
@@ -53,6 +49,7 @@
                 "type": "cli",
                 "command": "code",
                 "args": [
+                    "--new-window",
                     "{{folder}}"
                 ],
                 "shell": true

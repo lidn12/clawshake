@@ -21,17 +21,18 @@
                     },
                     "duration_minutes": {
                         "type": "number",
-                        "description": "Duration in minutes (default 60)"
+                        "description": "Duration in minutes"
                     }
                 },
                 "required": [
                     "title",
-                    "start_date"
+                    "start_date",
+                    "duration_minutes"
                 ]
             },
             "invoke": {
                 "type": "applescript",
-                "script": "tell application \"Calendar\"\n  set newEvent to make new event at end of events of (first calendar) with properties {summary:\"{{title}}\", description:\"{{description}}\", start date:(date \"{{start_date}}\")}\n  return \"Event created: {{title}}\"\nend tell"
+                "script": "tell application \"Calendar\"\n  set startDate to date \"{{start_date}}\"\n  set endDate to startDate + ({{duration_minutes}} * 60)\n  set newEvent to make new event at end of events of (first calendar) with properties {summary:\"{{title}}\", description:\"{{description}}\", start date:startDate, end date:endDate}\n  return \"Event created: {{title}}\"\nend tell"
             }
         },
         {

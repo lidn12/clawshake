@@ -1,6 +1,6 @@
 {
     "version": "1.0",
-    "description": "MCP filesystem server – read, write, search, and manage files",
+    "description": "Anthropic's MCP filesystem server — read, write, search, and manage files in a specified directory.",
     "mcp": {
         "transport": "stdio",
         "command": "npx",

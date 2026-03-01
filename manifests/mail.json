@@ -3,7 +3,7 @@
     "tools": [
         {
             "name": "mail_compose",
-            "description": "Compose and send an email. Opens Mail with the draft pre-filled.",
+            "description": "Compose an email draft in Mail. The message opens for review before sending.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -18,10 +18,6 @@
                     "body": {
                         "type": "string",
                         "description": "Email body (plain text)"
-                    },
-                    "send": {
-                        "type": "boolean",
-                        "description": "Send immediately (true) or leave as draft (false, default)"
                     }
                 },
                 "required": [
@@ -32,7 +28,7 @@
             },
             "invoke": {
                 "type": "applescript",
-                "script": "tell application \"Mail\"\n  set newMessage to make new outgoing message with properties {subject:\"{{subject}}\", content:\"{{body}}\", visible:true}\n  tell newMessage\n    make new to recipient at end of to recipients with properties {address:\"{{to}}\"}\n    {{#send}}send{{/send}}\n  end tell\nend tell\nreturn \"Email drafted to {{to}}\""
+                "script": "tell application \"Mail\"\n  set newMessage to make new outgoing message with properties {subject:\"{{subject}}\", content:\"{{body}}\", visible:true}\n  tell newMessage\n    make new to recipient at end of to recipients with properties {address:\"{{to}}\"}\n  end tell\nend tell\nreturn \"Email drafted to {{to}}\""
             }
         },
         {
