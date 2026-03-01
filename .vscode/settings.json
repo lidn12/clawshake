@@ -1,5 +1,0 @@
-{
-    "terminal.integrated.env.windows": {
-        "PATH": "${workspaceFolder}\\target\\release;${env:PATH}"
-    }
-}
