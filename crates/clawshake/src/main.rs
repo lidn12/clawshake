@@ -171,7 +171,7 @@ async fn main() -> Result<()> {
         // ---- Offline subcommands ------------------------------------------
         Command::Permissions { action } => {
             let store = PermissionStore::open(&db_path).await?;
-            run_permissions_action(&action, &store).await?;
+            run_permissions_action(&action, &store, &clawshake_dir).await?;
         }
 
         Command::Network { cmd } => {

@@ -107,53 +107,149 @@ pub enum PermissionsAction {
     Allow {
         /// Agent ID: "p2p:*", "p2p:<peer-id>", "tailscale:*", "local"
         agent_id: String,
-        /// Tool name: "*" for all tools, or an exact name like "read_file"
+        /// Tool name: "*" for all tools, a substring to match (e.g. "network"
+        /// expands to every tool whose name contains "network"), or an exact
+        /// name like "read_file".  The expansion is read from the local
+        /// registry snapshot; individual rules are written to the DB.
         tool_name: String,
     },
     /// Deny an agent from calling a tool (or wildcard).
     Deny {
         /// Agent ID: "p2p:*", "p2p:<peer-id>", "tailscale:*", "local"
         agent_id: String,
-        /// Tool name: "*" for all tools, or an exact name like "read_file"
+        /// Tool name: "*" for all tools, a substring to match (e.g. "network"
+        /// expands to every tool whose name contains "network"), or an exact
+        /// name like "read_file".  The expansion is read from the local
+        /// registry snapshot; individual rules are written to the DB.
         tool_name: String,
     },
     /// Remove a permission rule entirely (falls back to default behaviour).
     Remove {
         /// Agent ID to remove the rule for.
         agent_id: String,
-        /// Tool name to remove the rule for.
+        /// Tool name to remove. Supports the same substring expansion as
+        /// allow/deny, or "*" to remove all rules for this agent.
         tool_name: String,
     },
     /// List all permission rules.
     List,
 }
 
+/// Resolve `pattern` to a list of tool names to act on.
+///
+/// - `"*"` → `["*"]` (global wildcard, passed through to the DB as-is)
+/// - anything else → case-insensitive substring match against the local
+///   registry snapshot (`~/.clawshake/registry.json`).
+///
+/// If the registry snapshot doesn't exist yet (broker never ran), falls back
+/// to `[pattern]` so the rule isn't silently dropped, and prints a notice.
+fn resolve_tool_names(pattern: &str, clawshake_dir: &Path) -> Vec<String> {
+    if pattern == "*" {
+        return vec!["*".to_string()];
+    }
+
+    let snapshot_path = clawshake_dir.join("registry.json");
+    let content = match std::fs::read_to_string(&snapshot_path) {
+        Ok(c) => c,
+        Err(_) => {
+            println!(
+                "notice: registry snapshot not found — broker has not run yet. \
+                 Writing literal rule '{}' which will only match that exact name.",
+                pattern
+            );
+            return vec![pattern.to_string()];
+        }
+    };
+
+    let val: serde_json::Value = match serde_json::from_str(&content) {
+        Ok(v) => v,
+        Err(_) => return vec![pattern.to_string()],
+    };
+
+    let pattern_lower = pattern.to_lowercase();
+    let matched: Vec<String> = val
+        .get("tools")
+        .and_then(|t| t.as_array())
+        .map(|tools| {
+            tools
+                .iter()
+                .filter_map(|t| t["name"].as_str())
+                .filter(|name| name.to_lowercase().contains(&pattern_lower))
+                .map(|s| s.to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    if matched.is_empty() {
+        println!(
+            "notice: no registered tools match '{}' — no rules written.",
+            pattern
+        );
+    }
+
+    matched
+}
+
 /// Execute a permissions subcommand against the given store and print the result.
+///
+/// `clawshake_dir` is `~/.clawshake` — used to locate the registry snapshot
+/// for substring pattern expansion.
 pub async fn run_permissions_action(
     action: &PermissionsAction,
     store: &PermissionStore,
+    clawshake_dir: &Path,
 ) -> Result<()> {
     match action {
         PermissionsAction::Allow {
             agent_id,
             tool_name,
         } => {
-            store.set(agent_id, tool_name, Decision::Allow).await?;
-            println!("✓ allow  {agent_id}  {tool_name}");
+            let names = resolve_tool_names(tool_name, clawshake_dir);
+            for name in &names {
+                store.set(agent_id, name, Decision::Allow).await?;
+            }
+            if names.len() == 1 {
+                println!("✓ allow  {agent_id}  {}", names[0]);
+            } else {
+                println!("✓ allow  {agent_id}  {} rules:", names.len());
+                for name in &names {
+                    println!("    {name}");
+                }
+            }
         }
         PermissionsAction::Deny {
             agent_id,
             tool_name,
         } => {
-            store.set(agent_id, tool_name, Decision::Deny).await?;
-            println!("✓ deny   {agent_id}  {tool_name}");
+            let names = resolve_tool_names(tool_name, clawshake_dir);
+            for name in &names {
+                store.set(agent_id, name, Decision::Deny).await?;
+            }
+            if names.len() == 1 {
+                println!("✓ deny   {agent_id}  {}", names[0]);
+            } else {
+                println!("✓ deny   {agent_id}  {} rules:", names.len());
+                for name in &names {
+                    println!("    {name}");
+                }
+            }
         }
         PermissionsAction::Remove {
             agent_id,
             tool_name,
         } => {
-            store.remove(agent_id, tool_name).await?;
-            println!("✓ removed  {agent_id}  {tool_name}");
+            let names = resolve_tool_names(tool_name, clawshake_dir);
+            for name in &names {
+                store.remove(agent_id, name).await?;
+            }
+            if names.len() == 1 {
+                println!("✓ removed  {agent_id}  {}", names[0]);
+            } else {
+                println!("✓ removed  {agent_id}  {} rules:", names.len());
+                for name in &names {
+                    println!("    {name}");
+                }
+            }
         }
         PermissionsAction::List => {
             let records = store.list().await?;

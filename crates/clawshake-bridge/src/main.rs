@@ -71,11 +71,12 @@ async fn main() -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?
         .join(".clawshake")
         .join("permissions.db");
+    let clawshake_dir = db_path.parent().unwrap().to_path_buf();
 
     match cli.command {
         Command::Permissions { action } => {
             let store = PermissionStore::open(&db_path).await?;
-            run_permissions_action(&action, &store).await?;
+            run_permissions_action(&action, &store, &clawshake_dir).await?;
         }
 
         Command::Status { json } => {
