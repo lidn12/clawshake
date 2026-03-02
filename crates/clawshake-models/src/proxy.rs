@@ -220,30 +220,28 @@ async fn chat_completions_buffered(
     }
 
     match response_rx.await {
-        Ok(Ok(response_bytes)) => {
-            match serde_json::from_slice::<Value>(&response_bytes) {
-                Ok(response_json) => {
-                    if response_json.get("error").is_some() {
-                        return (StatusCode::BAD_GATEWAY, Json(response_json)).into_response();
-                    }
-                    info!(model = %model_name, peer = %peer_id, "Model completion received from peer");
-                    (StatusCode::OK, Json(response_json)).into_response()
+        Ok(Ok(response_bytes)) => match serde_json::from_slice::<Value>(&response_bytes) {
+            Ok(response_json) => {
+                if response_json.get("error").is_some() {
+                    return (StatusCode::BAD_GATEWAY, Json(response_json)).into_response();
                 }
-                Err(e) => {
-                    warn!("Failed to parse peer response as JSON: {e}");
-                    (
-                        StatusCode::BAD_GATEWAY,
-                        Json(json!({
-                            "error": {
-                                "message": format!("Invalid response from peer: {e}"),
-                                "type": "server_error",
-                            }
-                        })),
-                    )
-                        .into_response()
-                }
+                info!(model = %model_name, peer = %peer_id, "Model completion received from peer");
+                (StatusCode::OK, Json(response_json)).into_response()
             }
-        }
+            Err(e) => {
+                warn!("Failed to parse peer response as JSON: {e}");
+                (
+                    StatusCode::BAD_GATEWAY,
+                    Json(json!({
+                        "error": {
+                            "message": format!("Invalid response from peer: {e}"),
+                            "type": "server_error",
+                        }
+                    })),
+                )
+                    .into_response()
+            }
+        },
         Ok(Err(err)) => {
             warn!(peer = %peer_id, "P2P stream call failed: {err}");
             (
@@ -317,7 +315,7 @@ async fn chat_completions_streaming(
                             );
                         }
                         Ok(clawshake_core::stream::StreamFrame::Done { .. }) => {
-                            yield Ok(format!("data: [DONE]\n\n"));
+                            yield Ok("data: [DONE]\n\n".to_owned());
                             break;
                         }
                         Ok(clawshake_core::stream::StreamFrame::Error { message, .. }) => {
@@ -325,7 +323,7 @@ async fn chat_completions_streaming(
                                 "error": { "message": message, "type": "server_error" }
                             });
                             yield Ok(format!("data: {}\n\n", serde_json::to_string(&err).unwrap_or_default()));
-                            yield Ok(format!("data: [DONE]\n\n"));
+                            yield Ok("data: [DONE]\n\n".to_owned());
                             break;
                         }
                         Err(e) => {
@@ -338,7 +336,7 @@ async fn chat_completions_streaming(
                         "error": { "message": err, "type": "server_error" }
                     });
                     yield Ok(format!("data: {}\n\n", serde_json::to_string(&err_json).unwrap_or_default()));
-                    yield Ok(format!("data: [DONE]\n\n"));
+                    yield Ok("data: [DONE]\n\n".to_owned());
                     break;
                 }
             }

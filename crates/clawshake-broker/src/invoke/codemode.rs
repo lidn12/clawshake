@@ -105,10 +105,18 @@ fn generate_shim(port: u16, tools: &[LoadedTool]) -> CachedShim {
     )
     .unwrap();
     writeln!(js, "  }});").unwrap();
-    writeln!(js, "  if (!r.ok) throw new Error(`invoke failed: ${{r.status}}`);").unwrap();
+    writeln!(
+        js,
+        "  if (!r.ok) throw new Error(`invoke failed: ${{r.status}}`);"
+    )
+    .unwrap();
     writeln!(js, "  const j = await r.json();").unwrap();
     writeln!(js, "  if (j.is_error) throw new Error(j.result);").unwrap();
-    writeln!(js, "  try {{ return JSON.parse(j.result); }} catch {{ return j.result; }}").unwrap();
+    writeln!(
+        js,
+        "  try {{ return JSON.parse(j.result); }} catch {{ return j.result; }}"
+    )
+    .unwrap();
     writeln!(js, "}}").unwrap();
     writeln!(js).unwrap();
 
@@ -189,7 +197,9 @@ fn generate_filtered_shim(_port: u16, tools: &[LoadedTool], query: &str) -> Stri
         .collect();
 
     if filtered.is_empty() {
-        return format!("No tools matching '{query}'. Call describe_tools with no query to see all categories.");
+        return format!(
+            "No tools matching '{query}'. Call describe_tools with no query to see all categories."
+        );
     }
 
     // Group by source.
@@ -203,7 +213,11 @@ fn generate_filtered_shim(_port: u16, tools: &[LoadedTool], query: &str) -> Stri
     let mut js = String::with_capacity(2048);
 
     // Include _call helper in filtered output too so agents can copy-paste
-    writeln!(js, "// Use these functions inside run_code's script parameter:").unwrap();
+    writeln!(
+        js,
+        "// Use these functions inside run_code's script parameter:"
+    )
+    .unwrap();
     writeln!(js).unwrap();
 
     for source in &sources {
@@ -248,10 +262,7 @@ fn param_hint_from_schema(schema: &clawshake_core::manifest::InputSchema) -> Str
     }
     let mut parts = Vec::new();
     for (key, val) in &schema.properties {
-        let typ = val
-            .get("type")
-            .and_then(|t| t.as_str())
-            .unwrap_or("any");
+        let typ = val.get("type").and_then(|t| t.as_str()).unwrap_or("any");
         let required = schema.required.contains(key);
         if required {
             parts.push(format!("{key}: {typ}"));
@@ -265,11 +276,9 @@ fn param_hint_from_schema(schema: &clawshake_core::manifest::InputSchema) -> Str
 /// Make a string safe as a JS identifier (replace non-alphanumeric with _).
 fn safe_js_ident(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
-    for (i, c) in s.chars().enumerate() {
+    for c in s.chars() {
         if c.is_ascii_alphanumeric() || c == '_' || c == '$' {
             out.push(c);
-        } else if i == 0 {
-            out.push('_');
         } else {
             out.push('_');
         }
@@ -308,12 +317,9 @@ pub async fn invoke_run_code(
 ) -> Result<String> {
     // If we're in stdio mode (no HTTP server), spin up an ephemeral one.
     let (effective_port, _ephemeral_guard) = if port == 0 {
-        let (p, guard) = start_ephemeral_invoke_server(
-            registry.clone(),
-            permissions.clone(),
-            servers.clone(),
-        )
-        .await?;
+        let (p, guard) =
+            start_ephemeral_invoke_server(registry.clone(), permissions.clone(), servers.clone())
+                .await?;
         (p, Some(guard))
     } else {
         (port, None)
@@ -468,7 +474,12 @@ async fn start_ephemeral_invoke_server(
         debug!("Ephemeral invoke server stopped");
     });
 
-    Ok((port, EphemeralServerGuard { shutdown_tx: Some(shutdown_tx) }))
+    Ok((
+        port,
+        EphemeralServerGuard {
+            shutdown_tx: Some(shutdown_tx),
+        },
+    ))
 }
 
 /// Invoke handler for the ephemeral server — same logic as `http_server::invoke_handler`.
@@ -488,8 +499,7 @@ async fn ephemeral_invoke_handler(
     let req: InvokeRequest = match serde_json::from_str(&body) {
         Ok(r) => r,
         Err(e) => {
-            let resp =
-                serde_json::json!({"result": format!("Bad request: {e}"), "is_error": true});
+            let resp = serde_json::json!({"result": format!("Bad request: {e}"), "is_error": true});
             return (StatusCode::BAD_REQUEST, Json(resp)).into_response();
         }
     };
@@ -526,8 +536,7 @@ async fn ephemeral_invoke_handler(
 
     // Dispatch.
     let (result, is_error) =
-        match crate::router::dispatch(&req.tool, &arguments, &state.registry, &state.servers)
-            .await
+        match crate::router::dispatch(&req.tool, &arguments, &state.registry, &state.servers).await
         {
             Ok(text) => (text, false),
             Err(e) => (format!("{e}"), true),

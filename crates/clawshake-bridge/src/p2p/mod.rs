@@ -1020,12 +1020,11 @@ async fn drive_outbound_model_stream(
         match proxy::read_framed(&mut stream).await {
             Ok(frame_bytes) => {
                 // Check if this is a terminal frame (Done or Error)
-                let is_terminal =
-                    match clawshake_core::stream::StreamFrame::from_bytes(&frame_bytes) {
-                        Ok(clawshake_core::stream::StreamFrame::Done { .. }) => true,
-                        Ok(clawshake_core::stream::StreamFrame::Error { .. }) => true,
-                        _ => false,
-                    };
+                let is_terminal = matches!(
+                    clawshake_core::stream::StreamFrame::from_bytes(&frame_bytes),
+                    Ok(clawshake_core::stream::StreamFrame::Done { .. })
+                        | Ok(clawshake_core::stream::StreamFrame::Error { .. })
+                );
 
                 if frame_tx.send(Ok(frame_bytes)).await.is_err() {
                     warn!(%peer, "Frame receiver dropped — client disconnected?");

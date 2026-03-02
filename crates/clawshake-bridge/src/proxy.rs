@@ -106,7 +106,10 @@ pub(crate) async fn read_framed<T: AsyncRead + Unpin + Send>(io: &mut T) -> io::
     Ok(buf)
 }
 
-pub(crate) async fn write_framed<T: AsyncWrite + Unpin + Send>(io: &mut T, data: &[u8]) -> io::Result<()> {
+pub(crate) async fn write_framed<T: AsyncWrite + Unpin + Send>(
+    io: &mut T,
+    data: &[u8],
+) -> io::Result<()> {
     let len = (data.len() as u32).to_be_bytes();
     io.write_all(&len).await?;
     io.write_all(data).await?;
