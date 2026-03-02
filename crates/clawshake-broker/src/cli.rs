@@ -4,11 +4,96 @@
 //! duplicating the manifest-loading and formatting logic.
 
 use anyhow::{bail, Context, Result};
+use clap::Subcommand;
 use clawshake_core::manifest::Manifest;
 use clawshake_core::permissions::PermissionStore;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use tracing::{info, warn};
 
 use crate::watcher;
+
+// ---------------------------------------------------------------------------
+// Shared CLI types
+// ---------------------------------------------------------------------------
+
+/// `tools` subcommands shared between `clawshake-broker tools` and
+/// `clawshake tools`.
+#[derive(Subcommand, Debug)]
+pub enum ToolsAction {
+    /// List all registered tools.
+    List {
+        /// Output as JSON instead of a human-readable table.
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
+
+    /// Validate a manifest file without installing it.
+    Validate {
+        /// Path to the manifest JSON file.
+        file: PathBuf,
+    },
+
+    /// Install a manifest file into the manifests directory.
+    Add {
+        /// Path to the manifest JSON file to install.
+        file: PathBuf,
+    },
+
+    /// Remove an installed manifest by name.
+    Remove {
+        /// Manifest name (e.g. "calendar", not "calendar.json").
+        name: String,
+    },
+}
+
+// ---------------------------------------------------------------------------
+// Code mode detection
+// ---------------------------------------------------------------------------
+
+/// Detect Node.js on PATH and resolve the effective code-mode state.
+///
+/// Returns `(has_node, code_mode_active)`.  `code_mode_active` is `true`
+/// when the code-mode tools (run_code / describe_tools) should be seeded,
+/// i.e. Node.js is available.  `code_mode_flag` is the CLI `--code-mode`
+/// toggle controlling tools/list filtering.
+pub fn detect_code_mode(code_mode_flag: bool) -> (bool, bool) {
+    let has_node = which::which("node").is_ok();
+    if code_mode_flag && !has_node {
+        warn!(
+            "Node.js not found on PATH — code mode unavailable. \
+             Install Node.js 18+ to enable."
+        );
+        return (false, false);
+    }
+    if has_node {
+        if code_mode_flag {
+            info!("Code mode enabled (Node.js detected)");
+        } else {
+            info!(
+                "Node.js detected — run_code and describe_tools available. \
+                 Use --code-mode to hide individual tools from tools/list."
+            );
+        }
+        // Register code mode tools regardless of toggle — the toggle only
+        // controls tools/list filtering.
+        return (true, true);
+    }
+    (false, false)
+}
+
+/// Dispatch a `ToolsAction`.
+pub async fn run_tools_action(
+    action: &ToolsAction,
+    manifests_dir: &Path,
+    db_path: &Path,
+) -> Result<()> {
+    match action {
+        ToolsAction::List { json } => list_tools(manifests_dir, db_path, *json).await,
+        ToolsAction::Validate { file } => validate_manifest(file),
+        ToolsAction::Add { file } => add_manifest(file, manifests_dir),
+        ToolsAction::Remove { name } => remove_manifest(name, manifests_dir),
+    }
+}
 
 // ---------------------------------------------------------------------------
 // tools list

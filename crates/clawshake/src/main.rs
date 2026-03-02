@@ -31,7 +31,6 @@ use clawshake_core::{
     permissions::PermissionStore,
 };
 use clawshake_tools::cli::{run_network_cmd, NetworkCmd};
-use std::path::PathBuf;
 use tracing::{info, warn};
 
 // ---------------------------------------------------------------------------
@@ -65,6 +64,10 @@ enum Command {
         /// Ignored in Track-1 mode.
         #[arg(long, default_value_t = 7475, value_name = "PORT")]
         port: u16,
+
+        /// Expose only run_code + describe_tools instead of individual tools.
+        #[arg(long, default_value_t = false)]
+        code_mode: bool,
 
         #[command(flatten)]
         p2p: P2pArgs,
@@ -111,35 +114,7 @@ enum Command {
     /// and falls back to a manifest scan when the broker is not running.
     Tools {
         #[command(subcommand)]
-        action: ToolsAction,
-    },
-}
-
-#[derive(Subcommand, Debug)]
-enum ToolsAction {
-    /// List all registered tools.
-    List {
-        /// Output as JSON instead of a human-readable table.
-        #[arg(long, default_value_t = false)]
-        json: bool,
-    },
-
-    /// Validate a manifest file without installing it.
-    Validate {
-        /// Path to the manifest JSON file.
-        file: PathBuf,
-    },
-
-    /// Install a manifest file into the manifests directory.
-    Add {
-        /// Path to the manifest JSON file to install.
-        file: PathBuf,
-    },
-
-    /// Remove an installed manifest by name.
-    Remove {
-        /// Manifest name (e.g. "calendar", not "calendar.json").
-        name: String,
+        action: clawshake_broker::cli::ToolsAction,
     },
 }
 
@@ -180,21 +155,8 @@ async fn main() -> Result<()> {
 
         Command::Tools { action } => {
             let manifests_dir = clawshake_dir.join("manifests");
-            match action {
-                ToolsAction::List { json } => {
-                    builtins::seed(&manifests_dir, false)?;
-                    clawshake_broker::cli::list_tools(&manifests_dir, &db_path, json).await?;
-                }
-                ToolsAction::Validate { file } => {
-                    clawshake_broker::cli::validate_manifest(&file)?;
-                }
-                ToolsAction::Add { file } => {
-                    clawshake_broker::cli::add_manifest(&file, &manifests_dir)?;
-                }
-                ToolsAction::Remove { name } => {
-                    clawshake_broker::cli::remove_manifest(&name, &manifests_dir)?;
-                }
-            }
+            builtins::seed(&manifests_dir, false)?;
+            clawshake_broker::cli::run_tools_action(&action, &manifests_dir, &db_path).await?;
         }
 
         Command::Status { json } => {
@@ -206,7 +168,12 @@ async fn main() -> Result<()> {
         }
 
         // ---- Node startup -------------------------------------------------
-        Command::Run { port, p2p, mcp } => {
+        Command::Run {
+            port,
+            code_mode,
+            p2p,
+            mcp,
+        } => {
             // Check that clawshake-tools is available on PATH.
             check_tools_binary();
 
@@ -218,10 +185,8 @@ async fn main() -> Result<()> {
                 let permissions = PermissionStore::open(&db_path).await?;
 
                 // Detect Node.js for code mode.
-                let has_node = which::which("node").is_ok();
-                if has_node {
-                    info!("Node.js detected — run_code and describe_tools available");
-                }
+                let (has_node, _code_mode_active) =
+                    clawshake_broker::cli::detect_code_mode(code_mode);
                 let shim_cache = ShimCache::new();
 
                 builtins::seed(&manifests_dir, has_node)?;
@@ -243,7 +208,7 @@ async fn main() -> Result<()> {
                     servers,
                     Some(sse_rx),
                     shim_cache,
-                    false, // code_mode toggle (--code-mode not exposed in unified binary yet)
+                    code_mode,
                 ));
                 info!("Broker HTTP server starting on :{broker_port}");
 

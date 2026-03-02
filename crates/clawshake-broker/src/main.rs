@@ -1,7 +1,6 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use clawshake_core::permissions::PermissionStore;
-use std::path::PathBuf;
 use tracing::info;
 
 mod builtins;
@@ -52,35 +51,7 @@ enum Command {
     /// Reads manifests and permissions — no running server needed.
     Tools {
         #[command(subcommand)]
-        action: ToolsAction,
-    },
-}
-
-#[derive(Subcommand, Debug)]
-enum ToolsAction {
-    /// List all registered tools.
-    List {
-        /// Output as JSON instead of a human-readable table.
-        #[arg(long, default_value_t = false)]
-        json: bool,
-    },
-
-    /// Validate a manifest file without installing it.
-    Validate {
-        /// Path to the manifest JSON file.
-        file: PathBuf,
-    },
-
-    /// Install a manifest file into the manifests directory.
-    Add {
-        /// Path to the manifest JSON file to install.
-        file: PathBuf,
-    },
-
-    /// Remove an installed manifest by name.
-    Remove {
-        /// Manifest name (e.g. "calendar", not "calendar.json").
-        name: String,
+        action: cli::ToolsAction,
     },
 }
 
@@ -108,45 +79,12 @@ async fn main() -> Result<()> {
     let db_path = clawshake_dir.join("permissions.db");
 
     match cli.command {
-        Command::Tools { action } => match action {
-            ToolsAction::List { json } => {
-                cli::list_tools(&manifests_dir, &db_path, json).await?;
-            }
-            ToolsAction::Validate { file } => {
-                cli::validate_manifest(&file)?;
-            }
-            ToolsAction::Add { file } => {
-                cli::add_manifest(&file, &manifests_dir)?;
-            }
-            ToolsAction::Remove { name } => {
-                cli::remove_manifest(&name, &manifests_dir)?;
-            }
-        },
+        Command::Tools { action } => {
+            cli::run_tools_action(&action, &manifests_dir, &db_path).await?;
+        }
 
         Command::Run { port, code_mode } => {
-            // Detect Node.js on PATH.
-            let has_node = which::which("node").is_ok();
-            let code_mode_active = if code_mode && !has_node {
-                tracing::warn!(
-                    "Node.js not found on PATH — code mode unavailable. \
-                     Install Node.js 18+ to enable."
-                );
-                false
-            } else if has_node {
-                if code_mode {
-                    info!("Code mode enabled (Node.js detected)");
-                } else {
-                    info!(
-                        "Node.js detected — run_code and describe_tools available. \
-                         Use --code-mode to hide individual tools from tools/list."
-                    );
-                }
-                // Register code mode tools regardless of toggle — the toggle
-                // only controls tools/list filtering.
-                true
-            } else {
-                false
-            };
+            let (_has_node, code_mode_active) = cli::detect_code_mode(code_mode);
 
             // Seed built-in manifests (network.json, and optionally codemode.json).
             builtins::seed(&manifests_dir, code_mode_active)?;
