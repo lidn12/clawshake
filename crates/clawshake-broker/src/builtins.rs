@@ -190,7 +190,7 @@ const NETWORK_MANIFEST: &str = r#"{
     },
     {
       "name": "network_call",
-      "description": "Invoke a tool on a specific remote peer over the P2P network and return its result. The peer must be currently connected (use network_ping to check). Use network_tools with a query to inspect the tool's inputSchema before calling.",
+      "description": "Invoke a tool on a specific remote peer over the P2P network and return its result. The peer must be currently connected (use network_ping to check). Use network_tools with a query to inspect the tool's inputSchema before calling. Pass the tool's input parameters as the `arguments` field (not `params`), e.g. { \"peer_id\": \"...\", \"tool\": \"read_file\", \"arguments\": { \"path\": \"/tmp/foo.txt\" } }.",
       "inputSchema": {
         "type": "object",
         "properties": {
