@@ -44,6 +44,7 @@ pub async fn handle(
         "network_ping" => ping(params, connected),
         "network_call" => call(params, call_tx).await,
         "network_record" => record(params, table, dht_tx).await,
+        "network_models" => models(params, table),
         _ => err(&format!("unknown network method: {}", method)),
     }
 }
@@ -325,6 +326,44 @@ async fn call(params: &Value, call_tx: Option<&OutboundCallTx>) -> Value {
 
 fn err(msg: &str) -> Value {
     json!({ "error": msg })
+}
+
+// ---------------------------------------------------------------------------
+// network_models
+// ---------------------------------------------------------------------------
+
+/// List AI models available on the P2P network.
+///
+/// Without `peer_id`: aggregates models from all peers in the table.
+/// With `peer_id`: filters to models from that specific peer.
+fn models(params: &Value, table: &PeerTable) -> Value {
+    let filter_peer = params["peer_id"].as_str();
+
+    let peers = table.all();
+    let mut result = Vec::new();
+
+    for peer in &peers {
+        if let Some(filter) = filter_peer {
+            if peer.peer_id != filter {
+                continue;
+            }
+        }
+        for model in &peer.models {
+            let mut entry = json!({
+                "name": model.name,
+                "peer_id": peer.peer_id,
+            });
+            if let Some(ctx) = model.context_length {
+                entry["context_length"] = json!(ctx);
+            }
+            if let Some(ref p) = model.params {
+                entry["params"] = json!(p);
+            }
+            result.push(entry);
+        }
+    }
+
+    json!({ "models": result })
 }
 
 // ---------------------------------------------------------------------------

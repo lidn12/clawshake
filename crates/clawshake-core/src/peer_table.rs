@@ -19,6 +19,18 @@ pub struct ToolSummary {
     pub input_schema: Option<Value>,
 }
 
+/// A model available on a remote peer.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ModelSummary {
+    pub name: String,
+    /// Maximum context length in tokens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_length: Option<u64>,
+    /// Human-readable parameter count (e.g. "70B").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub params: Option<String>,
+}
+
 /// A discovered peer node on the network.
 #[derive(Debug, Clone)]
 pub struct PeerInfo {
@@ -27,6 +39,8 @@ pub struct PeerInfo {
     pub addrs: Vec<String>,
     /// Tools this peer has announced (name + description).
     pub tools: Vec<ToolSummary>,
+    /// Models this peer serves (empty if no model server configured).
+    pub models: Vec<ModelSummary>,
     /// Whether this peer was found via libp2p DHT or Tailscale.
     pub source: PeerSource,
     /// Unix timestamp (seconds) when this record was last observed.

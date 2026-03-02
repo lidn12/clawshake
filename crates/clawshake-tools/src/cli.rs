@@ -63,6 +63,13 @@ pub enum NetworkCmd {
         #[arg(long, value_name = "JSON|-")]
         args: Option<String>,
     },
+
+    /// List AI models available on the peer-to-peer network.
+    Models {
+        /// Filter to models from a specific peer. Omit to list all.
+        #[arg(long, value_name = "PEER_ID")]
+        peer_id: Option<String>,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -104,6 +111,13 @@ pub async fn run_network_cmd(cmd: &NetworkCmd) -> Result<()> {
                 "network_call",
                 json!({ "peer_id": peer_id, "tool": tool, "arguments": arguments }),
             )
+        }
+        NetworkCmd::Models { peer_id } => {
+            let mut p = json!({});
+            if let Some(pid) = peer_id {
+                p["peer_id"] = json!(pid);
+            }
+            ("network_models", p)
         }
     };
 

@@ -214,6 +214,24 @@ const NETWORK_MANIFEST: &str = r#"{
         "command": "clawshake-tools",
         "args": ["network", "call", "--peer-id", "{{peer_id}}", "--tool", "{{tool}}", "--args", "{{arguments}}"]
       }
+    },
+    {
+      "name": "network_models",
+      "description": "List AI models available on the peer-to-peer network. Returns model names, context lengths, parameter counts, and the peer hosting each model.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "peer_id": {
+            "type": "string",
+            "description": "Filter to models from a specific peer. Omit to list models from all peers."
+          }
+        }
+      },
+      "invoke": {
+        "type": "cli",
+        "command": "clawshake-tools",
+        "args": ["network", "models", "--peer-id", "{{peer_id}}"]
+      }
     }
   ]
 }

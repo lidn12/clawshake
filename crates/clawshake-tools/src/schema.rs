@@ -7,7 +7,7 @@
 
 use serde_json::{json, Value};
 
-/// Returns MCP tool schema objects for all six `network_*` tools.
+/// Returns MCP tool schema objects for all `network_*` tools.
 /// Suitable for embedding directly in a `tools/list` JSON-RPC response.
 pub fn tool_definitions() -> Vec<Value> {
     vec![
@@ -100,6 +100,19 @@ pub fn tool_definitions() -> Vec<Value> {
                     }
                 },
                 "required": ["peer_id"]
+            }
+        }),
+        json!({
+            "name": "network_models",
+            "description": "List AI models available on the peer-to-peer network. Returns model names, context lengths, parameter counts, and the peer hosting each model.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "peer_id": {
+                        "type": "string",
+                        "description": "Filter to models from a specific peer. Omit to list models from all peers."
+                    }
+                }
             }
         }),
     ]

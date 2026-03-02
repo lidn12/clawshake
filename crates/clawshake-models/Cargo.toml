@@ -1,0 +1,25 @@
+[package]
+name = "clawshake-models"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Model proxy layer for sharing private LLMs over the clawshake P2P network"
+
+[lib]
+name = "clawshake_models"
+path = "src/lib.rs"
+
+[dependencies]
+clawshake-core = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }
+axum = { workspace = true }
+futures = { workspace = true }
+tokio-stream = { workspace = true }
+async-stream = { workspace = true }
+bytes = { workspace = true }

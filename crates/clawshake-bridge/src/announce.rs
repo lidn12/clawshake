@@ -9,7 +9,8 @@
 //! to discover its tool list — this is how `network_tools(peer_id)` will work.
 
 use anyhow::Result;
-use clawshake_core::peer_table::{PeerInfo, PeerSource, ToolSummary};
+use clawshake_core::models::ModelAnnounce;
+use clawshake_core::peer_table::{ModelSummary, PeerInfo, PeerSource, ToolSummary};
 use clawshake_core::permissions::PermissionStore;
 use libp2p::{kad, Multiaddr, PeerId};
 use serde::{Deserialize, Serialize};
@@ -37,12 +38,16 @@ fn default_input_schema() -> serde_json::Value {
 /// The value stored in the DHT for each clawshake-bridge node.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AnnouncementRecord {
-    /// Schema version, always 1 for now.
+    /// Schema version.  1 = tools only, 2 = tools + models.
     pub v: u8,
     /// String form of the publishing peer's PeerId.
     pub peer_id: String,
     /// Tool entries with name, description, and input schema.
     pub tools: Vec<ToolAnnounce>,
+    /// Models available on this peer.  Empty if no model server configured.
+    /// Added in schema v2; `#[serde(default)]` ensures v1 records parse fine.
+    #[serde(default)]
+    pub models: Vec<ModelAnnounce>,
     /// Listen multiaddrs for direct connections.
     pub addrs: Vec<String>,
     /// Unix timestamp (seconds) when this record was built.
@@ -61,10 +66,20 @@ impl AnnouncementRecord {
                 input_schema: Some(t.input_schema.clone()),
             })
             .collect();
+        let models: Vec<ModelSummary> = self
+            .models
+            .iter()
+            .map(|m| ModelSummary {
+                name: m.name.clone(),
+                context_length: m.context_length,
+                params: m.params.clone(),
+            })
+            .collect();
         PeerInfo {
             peer_id: self.peer_id.clone(),
             addrs: self.addrs.clone(),
             tools,
+            models,
             source: PeerSource::Libp2p,
             last_seen: self.ts,
             raw_record: serde_json::to_value(self).ok(),
@@ -127,6 +142,7 @@ pub async fn build_record(
         v: 1,
         peer_id: peer_id.to_string(),
         tools,
+        models: Vec::new(),
         addrs: listen_addrs.iter().map(|a| a.to_string()).collect(),
         ts,
     };

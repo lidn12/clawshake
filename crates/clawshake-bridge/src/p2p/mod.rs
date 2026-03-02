@@ -7,7 +7,7 @@ use std::{
     time::Duration,
 };
 
-use crate::{announce, proxy};
+use crate::{announce, proxy, stream};
 use anyhow::{Context, Result};
 
 /// Read the local keypair from disk and return the derived `PeerId`.
@@ -63,6 +63,7 @@ struct ClawshakeBehaviour {
     identify: identify::Behaviour,
     mdns: mdns::tokio::Behaviour,
     proxy: proxy::Behaviour,
+    stream: stream::Behaviour,
     relay_server: Toggle<relay::Behaviour>,
     relay_client: relay::client::Behaviour,
     autonat: autonat::Behaviour,
@@ -130,6 +131,8 @@ pub async fn run(
 
             let proxy = proxy::new_behaviour();
 
+            let stream_proto = stream::new_behaviour();
+
             // Only enable relay hop if the --relay-server flag was set.
             // Using Toggle so non-relay nodes don't advertise the
             // relay-hop protocol and peers won't waste time trying
@@ -170,6 +173,7 @@ pub async fn run(
                 identify,
                 mdns,
                 proxy,
+                stream: stream_proto,
                 relay_server,
                 relay_client,
                 autonat,
@@ -428,6 +432,53 @@ pub async fn run(
                         } else {
                             warn!("MCP outbound failure to {peer}: {error}");
                         }
+                    }
+
+                    // ── Inbound stream protocol request (model completions) ──
+                    SwarmEvent::Behaviour(ClawshakeBehaviourEvent::Stream(
+                        request_response::Event::Message {
+                            peer,
+                            message: request_response::Message::Request {
+                                request, channel, ..
+                            },
+                            ..
+                        },
+                    )) => {
+                        // Parse the StreamFrame and handle model/streaming requests.
+                        // For now, log and return an error — the model backend
+                        // handler is wired in the clawshake-models crate.
+                        info!(%peer, "Inbound stream protocol request ({} bytes)", request.len());
+                        let err_frame = clawshake_core::stream::StreamFrame::error(
+                            "unknown",
+                            "Stream protocol handler not yet connected to model backend",
+                            Some(-32601),
+                        );
+                        let _ = swarm.behaviour_mut().stream.send_response(
+                            channel,
+                            err_frame.to_bytes(),
+                        );
+                    }
+
+                    // ── Stream protocol response (outbound model call result) ─
+                    SwarmEvent::Behaviour(ClawshakeBehaviourEvent::Stream(
+                        request_response::Event::Message {
+                            message: request_response::Message::Response {
+                                request_id, response,
+                            },
+                            ..
+                        },
+                    )) => {
+                        // TODO: Route to pending model completion futures.
+                        info!("Stream response for {request_id:?} ({} bytes)", response.len());
+                    }
+
+                    // ── Stream protocol outbound failure ──────────────────────
+                    SwarmEvent::Behaviour(ClawshakeBehaviourEvent::Stream(
+                        request_response::Event::OutboundFailure {
+                            peer, request_id, error, ..
+                        },
+                    )) => {
+                        warn!("Stream outbound failure to {peer} ({request_id:?}): {error}");
                     }
 
                     // ── Everything else ───────────────────────────────────────

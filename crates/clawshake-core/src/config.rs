@@ -25,6 +25,7 @@ use tracing::{debug, info};
 #[serde(default)]
 pub struct Config {
     pub network: NetworkConfig,
+    pub models: ModelsConfig,
 }
 
 /// Network-related settings.
@@ -36,6 +37,81 @@ pub struct NetworkConfig {
     /// When empty (or absent), the node operates in local-only mode — peers
     /// are discovered via mDNS but no external connections are made.
     pub bootstrap: Vec<String>,
+}
+
+/// Model proxy settings.
+///
+/// When this section is absent the model proxy is completely disabled — no
+/// DHT advertisement, no model handler registered, zero overhead.
+///
+/// # Example
+///
+/// ```toml
+/// [models]
+/// endpoint = "http://127.0.0.1:11434"
+/// advertise = "all"
+/// proxy_port = 11435
+/// ```
+#[derive(Debug, Deserialize)]
+#[serde(default)]
+pub struct ModelsConfig {
+    /// Local model server endpoint (Ollama, vLLM, llama.cpp, etc.).
+    /// Must expose an OpenAI-compatible API.
+    pub endpoint: Option<String>,
+
+    /// Which models to advertise on the P2P network.
+    ///
+    /// - `"all"` (default when endpoint is set) — query the backend's
+    ///   `/v1/models` at startup and advertise everything.
+    /// - An explicit list of model names to advertise.
+    /// - Absent or empty — do not advertise any models.
+    pub advertise: AdvertiseModels,
+
+    /// Port for the local OpenAI-compatible proxy server.
+    /// Applications point `OPENAI_BASE_URL` at `http://127.0.0.1:{proxy_port}/v1`.
+    pub proxy_port: u16,
+}
+
+impl Default for ModelsConfig {
+    fn default() -> Self {
+        Self {
+            endpoint: None,
+            advertise: AdvertiseModels::None,
+            proxy_port: 11435,
+        }
+    }
+}
+
+impl ModelsConfig {
+    /// Returns `true` if a model server endpoint is configured.
+    pub fn is_enabled(&self) -> bool {
+        self.endpoint.is_some()
+    }
+}
+
+/// Controls which models are advertised on the network.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum AdvertiseModels {
+    /// Advertise all models discovered from the backend.
+    All(AdvertiseAll),
+    /// Advertise a specific list of model names.
+    List(Vec<String>),
+    /// Do not advertise any models.
+    None,
+}
+
+/// Helper for deserializing the string `"all"`.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub enum AdvertiseAll {
+    #[serde(rename = "all")]
+    All,
+}
+
+impl Default for AdvertiseModels {
+    fn default() -> Self {
+        Self::None
+    }
 }
 
 /// Return the default config directory: `~/.clawshake`.
