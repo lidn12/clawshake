@@ -215,6 +215,8 @@ The other saving comes from round trips. A multi-step workflow — list a direct
 
 Code mode is most effective for sessions with many tools loaded and workflows with more than one or two steps. For a single one-off call to a well-known tool it adds unnecessary overhead, so the tradeoff is workload-dependent.
 
+> This approach was independently validated by [Anthropic](https://www.anthropic.com/engineering/code-execution-with-mcp) (measuring up to 98.7% token reduction on real workflows) and [Cloudflare](https://blog.cloudflare.com/code-mode/) ("LLMs are better at writing code to call MCP, than at calling MCP directly"). Clawshake's implementation follows the same pattern.
+
 ## Architecture
 
 ```
