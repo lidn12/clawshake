@@ -22,13 +22,17 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "network_tools",
-            "description": "Fetch all tools for a specific peer directly from the DHT (live, not cached). Returns each tool's name, description, and inputSchema. Use this before network_call to inspect parameter requirements.",
+            "description": "Progressive tool discovery for a remote peer. Without a query, returns a compact category summary of the peer's published tools grouped by name prefix. With a query, returns matching tools with their full name, description, and inputSchema — just enough to call them via network_call.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "peer_id": {
                         "type": "string",
                         "description": "libp2p peer ID string (from network_peers)"
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "Filter tools by name or description substring. Omit for a category summary."
                     }
                 },
                 "required": ["peer_id"]
@@ -64,7 +68,7 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "network_call",
-            "description": "Invoke a tool on a specific remote peer over the P2P network and return its result. The peer must be currently connected (use network_ping to check). Use network_tools to inspect the tool's inputSchema before calling.",
+            "description": "Invoke a tool on a specific remote peer over the P2P network and return its result. The peer must be currently connected (use network_ping to check). Use network_tools with a query to inspect the tool's inputSchema before calling.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -82,24 +86,6 @@ pub fn tool_definitions() -> Vec<Value> {
                     }
                 },
                 "required": ["peer_id", "tool"]
-            }
-        }),
-        json!({
-            "name": "network_describe",
-            "description": "Progressive tool discovery for a remote peer. Without a query, returns a compact category summary of the peer's published tools. With a query, returns matching tools with their full name, description, and inputSchema — just enough to call them via network_call.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "peer_id": {
-                        "type": "string",
-                        "description": "libp2p peer ID string (from network_peers)"
-                    },
-                    "query": {
-                        "type": "string",
-                        "description": "Filter tools by name or description substring. Omit for a category summary."
-                    }
-                },
-                "required": ["peer_id"]
             }
         }),
         json!({

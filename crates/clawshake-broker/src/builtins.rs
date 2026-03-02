@@ -110,13 +110,17 @@ const NETWORK_MANIFEST: &str = r#"{
     },
     {
       "name": "network_tools",
-      "description": "Get all tools for a specific peer with their names, descriptions, and inputSchema. Use this before network_call to inspect parameter requirements.",
+      "description": "Progressive tool discovery for a remote peer. Without a query, returns a compact category summary of the peer's published tools. With a query, returns matching tools with their full name, description, and inputSchema — just enough to call them via network_call.",
       "inputSchema": {
         "type": "object",
         "properties": {
           "peer_id": {
             "type": "string",
             "description": "The libp2p peer ID of the target node (e.g. 12D3KooW...)."
+          },
+          "query": {
+            "type": "string",
+            "description": "Filter tools by name or description substring. Omit for a category summary."
           }
         },
         "required": ["peer_id"]
@@ -124,7 +128,7 @@ const NETWORK_MANIFEST: &str = r#"{
       "invoke": {
         "type": "cli",
         "command": "clawshake-tools",
-        "args": ["network", "tools", "--peer-id", "{{peer_id}}"]
+        "args": ["network", "tools", "--peer-id", "{{peer_id}}", "--query", "{{query}}"]
       }
     },
     {
@@ -166,29 +170,6 @@ const NETWORK_MANIFEST: &str = r#"{
       }
     },
     {
-      "name": "network_describe",
-      "description": "Progressive tool discovery for a remote peer. Without a query, returns a compact category summary of the peer's published tools. With a query, returns matching tools with their full name, description, and inputSchema — just enough to call them via network_call.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "peer_id": {
-            "type": "string",
-            "description": "The libp2p peer ID to discover tools for."
-          },
-          "query": {
-            "type": "string",
-            "description": "Filter tools by name or description substring. Omit for a category summary."
-          }
-        },
-        "required": ["peer_id"]
-      },
-      "invoke": {
-        "type": "cli",
-        "command": "clawshake-tools",
-        "args": ["network", "describe", "--peer-id", "{{peer_id}}", "--query", "{{query}}"]
-      }
-    },
-    {
       "name": "network_record",
       "description": "Fetch the raw DHT announcement record for a peer. Returns the full AnnouncementRecord including schema version, tools list, listen addresses, and timestamp.",
       "inputSchema": {
@@ -209,7 +190,7 @@ const NETWORK_MANIFEST: &str = r#"{
     },
     {
       "name": "network_call",
-      "description": "Invoke a tool on a specific remote peer over the P2P network and return its result. The peer must be currently connected (use network_ping to check). Use network_tools to inspect the tool's inputSchema before calling.",
+      "description": "Invoke a tool on a specific remote peer over the P2P network and return its result. The peer must be currently connected (use network_ping to check). Use network_tools with a query to inspect the tool's inputSchema before calling.",
       "inputSchema": {
         "type": "object",
         "properties": {

@@ -1,6 +1,6 @@
 //! `network_*` tool handlers.
 //!
-//! This module owns all handler logic for the six built-in P2P network tools.
+//! This module owns all handler logic for the built-in P2P network tools.
 //! The MCP schemas for these tools live in [`crate::schema`].
 //!
 //! Called by:
@@ -40,7 +40,6 @@ pub async fn handle(
     match method {
         "network_peers" => peers(table),
         "network_tools" => tools(params, table, dht_tx).await,
-        "network_describe" => describe(params, table, dht_tx).await,
         "network_search" => search(params, table),
         "network_ping" => ping(params, connected),
         "network_call" => call(params, call_tx).await,
@@ -68,48 +67,6 @@ fn peers(table: &PeerTable) -> Value {
     json!({ "peers": list })
 }
 
-fn tools<'a>(
-    params: &'a Value,
-    table: &'a PeerTable,
-    dht_tx: Option<&'a DhtLookupTx>,
-) -> impl std::future::Future<Output = Value> + 'a {
-    // Capture params synchronously before the async block.
-    let peer_id = params["peer_id"].as_str().map(|s| s.to_string());
-    async move {
-        let peer_id = match peer_id {
-            Some(s) => s,
-            None => return err("missing required parameter: peer_id"),
-        };
-
-        // Try a live DHT lookup first; fall back to the cached peer table.
-        let peer = match dht_lookup_peer(&peer_id, dht_tx).await {
-            Some(p) => p,
-            None => match table.get(&peer_id) {
-                Some(p) => p,
-                None => return err(&format!("peer {} not found in table or DHT", peer_id)),
-            },
-        };
-
-        let tools: Vec<Value> = peer
-            .tools
-            .iter()
-            .map(|t| {
-                let mut entry = json!({
-                    "name":        t.name,
-                    "description": t.description,
-                });
-                if let Some(schema) = &t.input_schema {
-                    entry["inputSchema"] = schema.clone();
-                } else {
-                    entry["inputSchema"] = json!({ "type": "object" });
-                }
-                entry
-            })
-            .collect();
-        json!({ "tools": tools })
-    }
-}
-
 /// Progressive tool discovery for a remote peer.
 ///
 /// Without `query`: returns a compact category summary grouped by name prefix,
@@ -117,7 +74,7 @@ fn tools<'a>(
 ///
 /// With `query`: returns matching tools with full name, description, and
 /// inputSchema — just enough to call them without requesting the full list.
-fn describe<'a>(
+fn tools<'a>(
     params: &'a Value,
     table: &'a PeerTable,
     dht_tx: Option<&'a DhtLookupTx>,
@@ -130,7 +87,7 @@ fn describe<'a>(
             None => return err("missing required parameter: peer_id"),
         };
 
-        // Fetch tools via DHT (live) or peer table (cached).
+        // Try a live DHT lookup first; fall back to the cached peer table.
         let peer = match dht_lookup_peer(&peer_id, dht_tx).await {
             Some(p) => p,
             None => match table.get(&peer_id) {
@@ -176,14 +133,13 @@ fn describe<'a>(
             }
             None => {
                 // Summary mode: group by dot-prefix (e.g. "spotify.play" → "spotify").
-                // Tools without a dot prefix go into a "misc" group.
+                // Tools without a dot prefix use the full name as their group.
                 let mut groups: std::collections::BTreeMap<String, Vec<String>> =
                     std::collections::BTreeMap::new();
                 for t in tools {
                     let prefix = if let Some(pos) = t.name.find('.') {
                         t.name[..pos].to_string()
                     } else {
-                        // Use the full name as its own group for ungrouped tools.
                         t.name.clone()
                     };
                     groups.entry(prefix).or_default().push(t.name.clone());
@@ -204,7 +160,7 @@ fn describe<'a>(
                     })
                     .collect();
                 let summary = format!(
-                    "Peer {} has {} tool(s):\n{}\n\nCall network_describe with a query to see full schemas for specific tools.",
+                    "Peer {} has {} tool(s):\n{}\n\nCall network_tools with a query to see full schemas for specific tools.",
                     peer_id,
                     tools.len(),
                     lines.join("\n")

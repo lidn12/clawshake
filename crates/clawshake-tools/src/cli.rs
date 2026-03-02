@@ -19,11 +19,16 @@ pub enum NetworkCmd {
     /// List all discovered bridge nodes on the network.
     Peers,
 
-    /// Get the full tool listing (names, descriptions, inputSchemas) for a
-    /// specific peer.
+    /// Progressive tool discovery for a remote peer.
+    ///
+    /// Without --query: returns a compact category summary.
+    /// With --query: returns matching tools with full schemas.
     Tools {
         #[arg(long, value_name = "PEER_ID")]
         peer_id: String,
+        /// Filter tools by name or description substring. Omit for a summary.
+        #[arg(long, value_name = "QUERY")]
+        query: Option<String>,
     },
 
     /// Search for tools across all known peers by name or description
@@ -37,18 +42,6 @@ pub enum NetworkCmd {
     Ping {
         #[arg(long, value_name = "PEER_ID")]
         peer_id: String,
-    },
-
-    /// Progressive tool discovery for a remote peer.
-    ///
-    /// Without --query: returns a compact category summary.
-    /// With --query: returns matching tools with full schemas.
-    Describe {
-        #[arg(long, value_name = "PEER_ID")]
-        peer_id: String,
-        /// Filter tools by name or description substring.
-        #[arg(long, value_name = "QUERY")]
-        query: Option<String>,
     },
 
     /// Fetch the raw DHT announcement record for a peer.
@@ -80,16 +73,15 @@ pub enum NetworkCmd {
 pub async fn run_network_cmd(cmd: &NetworkCmd) -> Result<()> {
     let (method, params): (&str, serde_json::Value) = match cmd {
         NetworkCmd::Peers => ("network_peers", json!({})),
-        NetworkCmd::Tools { peer_id } => ("network_tools", json!({ "peer_id": peer_id })),
-        NetworkCmd::Search { query } => ("network_search", json!({ "query": query })),
-        NetworkCmd::Ping { peer_id } => ("network_ping", json!({ "peer_id": peer_id })),
-        NetworkCmd::Describe { peer_id, query } => {
+        NetworkCmd::Tools { peer_id, query } => {
             let mut p = json!({ "peer_id": peer_id });
             if let Some(q) = query {
                 p["query"] = json!(q);
             }
-            ("network_describe", p)
+            ("network_tools", p)
         }
+        NetworkCmd::Search { query } => ("network_search", json!({ "query": query })),
+        NetworkCmd::Ping { peer_id } => ("network_ping", json!({ "peer_id": peer_id })),
         NetworkCmd::Record { peer_id } => ("network_record", json!({ "peer_id": peer_id })),
         NetworkCmd::Call {
             peer_id,
