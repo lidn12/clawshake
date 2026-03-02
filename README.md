@@ -177,13 +177,43 @@ Every clawshake node exposes six built-in tools for peer discovery and cross-mac
 | Tool | What it does |
 |------|-------------|
 | `network_peers` | List discovered nodes (from local cache) |
-| `network_tools` | Fetch a peer's tools live from the DHT |
+| `network_tools` | Progressive tool discovery — summary by default, full schemas with `--query` |
 | `network_search` | Search for tools across peers by name |
 | `network_ping` | Check if a peer is connected |
 | `network_call` | Invoke a tool on a remote peer |
 | `network_record` | Fetch a peer's raw DHT announcement |
 
 These are regular MCP tools — your agent can use them to discover and call tools on other machines without any manual setup.
+
+## Code mode
+
+By default the broker exposes every registered tool directly as an MCP tool. With `--code-mode`, the broker instead exposes two meta-tools:
+
+| Tool | What it does |
+|------|--------------|
+| `describe_tools` | Returns tool names, descriptions, and JS function signatures grouped by category. Accepts an optional query to filter. |
+| `run_code` | Executes a JavaScript snippet in Node.js with all local tools pre-loaded as async functions. |
+
+Start in code mode:
+
+```bash
+clawshake run --code-mode
+```
+
+The agent calls `describe_tools` to discover what is available, then `run_code` to act — keeping multiple tool calls, conditional logic, and state in a single round trip:
+
+```js
+// Inside run_code
+const peers = await network.peers();
+const summary = await network.tools({ peer_id: peers.peers[0].peer_id });
+console.log(summary.description);
+```
+
+**Why this matters for token cost:** Every MCP session starts with `tools/list`, which serializes the full `inputSchema` for every registered tool. With dozens of tools loaded, this alone can consume a significant chunk of the context budget — before the agent has done any actual work. In code mode, `tools/list` returns just two schemas. The agent pays only for what it looks up via `describe_tools`, and only when it needs it.
+
+The other saving comes from round trips. A multi-step workflow — list a directory, read a file, transform it, write it back — normally requires one tool call per step, each carrying the full prompt context. Inside `run_code`, all of that runs as a single call with intermediate state kept in the JS runtime, not serialized back and forth through the model.
+
+Code mode is most effective for sessions with many tools loaded and workflows with more than one or two steps. For a single one-off call to a well-known tool it adds unnecessary overhead, so the tradeoff is workload-dependent.
 
 ## Architecture
 
@@ -232,6 +262,7 @@ A reference config with the public relay address is included at [config.toml](co
 
 ```
 clawshake run                     Start the daemon (broker + bridge)
+clawshake run --code-mode         Start in code mode (run_code + describe_tools only)
 clawshake status [--json]         Show node identity and peer count
 clawshake tools list [--json]     List registered tools
 clawshake tools add <file>        Install a manifest
