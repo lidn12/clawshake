@@ -10,7 +10,7 @@
 //! full JSON-RPC envelopes.
 
 use clawshake_core::stream::STREAM_PROTOCOL;
-use futures::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use futures::io::{AsyncRead, AsyncWrite};
 use libp2p::{
     request_response::{self, ProtocolSupport},
     StreamProtocol,
@@ -19,8 +19,7 @@ use std::io;
 
 use async_trait::async_trait;
 
-/// Maximum payload per frame (16 MiB, same as MCP protocol).
-const MAX_FRAME_PAYLOAD: u32 = 16 * 1024 * 1024;
+use crate::proxy::{read_framed, write_framed};
 
 // ---------------------------------------------------------------------------
 // Codec — length-prefixed StreamFrame JSON
@@ -52,7 +51,7 @@ impl request_response::Codec for StreamCodec {
     where
         T: AsyncRead + Unpin + Send,
     {
-        read_frame(io).await
+        read_framed(io).await
     }
 
     async fn read_response<T>(
@@ -63,7 +62,7 @@ impl request_response::Codec for StreamCodec {
     where
         T: AsyncRead + Unpin + Send,
     {
-        read_frame(io).await
+        read_framed(io).await
     }
 
     async fn write_request<T>(
@@ -75,7 +74,7 @@ impl request_response::Codec for StreamCodec {
     where
         T: AsyncWrite + Unpin + Send,
     {
-        write_frame(io, &req).await
+        write_framed(io, &req).await
     }
 
     async fn write_response<T>(
@@ -87,31 +86,8 @@ impl request_response::Codec for StreamCodec {
     where
         T: AsyncWrite + Unpin + Send,
     {
-        write_frame(io, &res).await
+        write_framed(io, &res).await
     }
-}
-
-async fn read_frame<T: AsyncRead + Unpin + Send>(io: &mut T) -> io::Result<Vec<u8>> {
-    let mut len_buf = [0u8; 4];
-    io.read_exact(&mut len_buf).await?;
-    let len = u32::from_be_bytes(len_buf);
-    if len > MAX_FRAME_PAYLOAD {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("stream frame too large: {len} bytes"),
-        ));
-    }
-    let mut buf = vec![0u8; len as usize];
-    io.read_exact(&mut buf).await?;
-    Ok(buf)
-}
-
-async fn write_frame<T: AsyncWrite + Unpin + Send>(io: &mut T, data: &[u8]) -> io::Result<()> {
-    let len = (data.len() as u32).to_be_bytes();
-    io.write_all(&len).await?;
-    io.write_all(data).await?;
-    io.flush().await?;
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------

@@ -91,7 +91,7 @@ impl request_response::Codec for McpCodec {
     }
 }
 
-async fn read_framed<T: AsyncRead + Unpin + Send>(io: &mut T) -> io::Result<Vec<u8>> {
+pub(crate) async fn read_framed<T: AsyncRead + Unpin + Send>(io: &mut T) -> io::Result<Vec<u8>> {
     let mut len_buf = [0u8; 4];
     io.read_exact(&mut len_buf).await?;
     let len = u32::from_be_bytes(len_buf);
@@ -106,7 +106,7 @@ async fn read_framed<T: AsyncRead + Unpin + Send>(io: &mut T) -> io::Result<Vec<
     Ok(buf)
 }
 
-async fn write_framed<T: AsyncWrite + Unpin + Send>(io: &mut T, data: &[u8]) -> io::Result<()> {
+pub(crate) async fn write_framed<T: AsyncWrite + Unpin + Send>(io: &mut T, data: &[u8]) -> io::Result<()> {
     let len = (data.len() as u32).to_be_bytes();
     io.write_all(&len).await?;
     io.write_all(data).await?;

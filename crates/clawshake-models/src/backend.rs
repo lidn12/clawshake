@@ -39,10 +39,8 @@ impl ModelBackend {
         let url = format!("{}/v1/models", self.endpoint);
         match self.client.get(&url).send().await {
             Ok(resp) if resp.status().is_success() => {
-                let body: OpenAiModelsResponse = resp
-                    .json()
-                    .await
-                    .context("parsing /v1/models response")?;
+                let body: OpenAiModelsResponse =
+                    resp.json().await.context("parsing /v1/models response")?;
                 return Ok(body
                     .data
                     .into_iter()
@@ -64,10 +62,7 @@ impl ModelBackend {
             .send()
             .await
             .context("querying /api/tags")?;
-        let body: OllamaTagsResponse = resp
-            .json()
-            .await
-            .context("parsing /api/tags response")?;
+        let body: OllamaTagsResponse = resp.json().await.context("parsing /api/tags response")?;
         Ok(body
             .models
             .into_iter()
@@ -127,6 +122,7 @@ fn parse_sse_stream(
 ) -> impl Stream<Item = StreamFrame> + Send + 'static {
     async_stream::stream! {
         let mut buffer = String::new();
+        let mut last_usage: Option<serde_json::Value> = None;
 
         tokio::pin!(byte_stream);
 
@@ -144,7 +140,7 @@ fn parse_sse_stream(
             // Process complete SSE lines
             while let Some(pos) = buffer.find('\n') {
                 let line = buffer[..pos].trim().to_string();
-                buffer = buffer[pos + 1..].to_string();
+                let _ = buffer.drain(..=pos);
 
                 if line.is_empty() {
                     continue;
@@ -153,24 +149,25 @@ fn parse_sse_stream(
                 if let Some(data) = line.strip_prefix("data: ") {
                     let data = data.trim();
                     if data == "[DONE]" {
-                        yield StreamFrame::done(&request_id);
+                        yield StreamFrame::Done {
+                            request_id: request_id.clone(),
+                            meta: last_usage.take(),
+                        };
                         return;
                     }
 
                     match serde_json::from_str::<serde_json::Value>(data) {
                         Ok(parsed) => {
-                            // Extract usage from the final chunk if present
-                            let usage = parsed.get("usage").cloned();
+                            // Capture usage from the final chunk if present
+                            if let Some(usage) = parsed.get("usage").cloned() {
+                                last_usage = Some(usage);
+                            }
 
                             // Forward the delta as a Chunk
                             yield StreamFrame::Chunk {
                                 request_id: request_id.clone(),
                                 data: parsed,
                             };
-
-                            // If this chunk had usage info and a stop finish_reason,
-                            // the next line will be [DONE]
-                            let _ = usage; // usage forwarded in the data; Done.meta will carry it
                         }
                         Err(e) => {
                             warn!(data, "Failed to parse SSE data as JSON: {e}");
@@ -181,7 +178,10 @@ fn parse_sse_stream(
         }
 
         // Stream ended without [DONE] — send Done anyway
-        yield StreamFrame::done(&request_id);
+        yield StreamFrame::Done {
+            request_id: request_id.clone(),
+            meta: last_usage.take(),
+        };
     }
 }
 

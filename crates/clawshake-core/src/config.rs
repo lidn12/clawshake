@@ -76,7 +76,7 @@ impl Default for ModelsConfig {
     fn default() -> Self {
         Self {
             endpoint: None,
-            advertise: AdvertiseModels::None,
+            advertise: AdvertiseModels::default(),
             proxy_port: 11435,
         }
     }
@@ -95,10 +95,10 @@ impl ModelsConfig {
 pub enum AdvertiseModels {
     /// Advertise all models discovered from the backend.
     All(AdvertiseAll),
+    /// Do not advertise any models (explicit `"none"` in config).
+    None(AdvertiseNone),
     /// Advertise a specific list of model names.
     List(Vec<String>),
-    /// Do not advertise any models.
-    None,
 }
 
 /// Helper for deserializing the string `"all"`.
@@ -108,9 +108,23 @@ pub enum AdvertiseAll {
     All,
 }
 
+/// Helper for deserializing the string `"none"`.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub enum AdvertiseNone {
+    #[serde(rename = "none")]
+    None,
+}
+
 impl Default for AdvertiseModels {
     fn default() -> Self {
-        Self::None
+        Self::None(AdvertiseNone::None)
+    }
+}
+
+impl AdvertiseModels {
+    /// Returns `true` if no models should be advertised.
+    pub fn is_none(&self) -> bool {
+        matches!(self, Self::None(_))
     }
 }
 

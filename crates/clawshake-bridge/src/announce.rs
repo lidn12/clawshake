@@ -69,11 +69,8 @@ impl AnnouncementRecord {
         let models: Vec<ModelSummary> = self
             .models
             .iter()
-            .map(|m| ModelSummary {
-                name: m.name.clone(),
-                context_length: m.context_length,
-                params: m.params.clone(),
-            })
+            .cloned()
+            .map(ModelSummary::from)
             .collect();
         PeerInfo {
             peer_id: self.peer_id.clone(),

@@ -31,6 +31,16 @@ pub struct ModelSummary {
     pub params: Option<String>,
 }
 
+impl From<crate::models::ModelAnnounce> for ModelSummary {
+    fn from(m: crate::models::ModelAnnounce) -> Self {
+        Self {
+            name: m.name,
+            context_length: m.context_length,
+            params: m.params,
+        }
+    }
+}
+
 /// A discovered peer node on the network.
 #[derive(Debug, Clone)]
 pub struct PeerInfo {
