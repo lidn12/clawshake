@@ -51,5 +51,15 @@ pub async fn dispatch(
             })?;
             server.tools_call(tool_name, arguments).await
         }
+        InvokeConfig::CodeMode => {
+            // Code mode tools (run_code, describe_tools) are not dispatched
+            // through the router — they are handled directly in mcp_server
+            // because they need access to the registry and shim cache.
+            // If we reach here, something is misconfigured.
+            anyhow::bail!(
+                "code mode tool '{tool_name}' should be handled by the MCP server, \
+                 not dispatched through the router"
+            )
+        }
     }
 }

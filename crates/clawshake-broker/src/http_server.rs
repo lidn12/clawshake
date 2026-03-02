@@ -44,6 +44,7 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::{
+    invoke::codemode::ShimCache,
     mcp_server,
     watcher::{ManifestRegistry, McpServerMap},
 };
@@ -60,6 +61,9 @@ struct AppState {
     permissions: PermissionStore,
     sessions: Sessions,
     servers: McpServerMap,
+    shim_cache: ShimCache,
+    port: u16,
+    code_mode: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -67,18 +71,24 @@ struct AppState {
 // ---------------------------------------------------------------------------
 
 /// Bind an MCP HTTP SSE server on `127.0.0.1:<port>` and serve forever.
+/// Bind an MCP HTTP SSE server on `127.0.0.1:<port>` and serve forever.
 pub async fn serve(
     port: u16,
     registry: ManifestRegistry,
     permissions: PermissionStore,
     servers: McpServerMap,
     notify_rx: Option<tokio::sync::mpsc::Receiver<()>>,
+    shim_cache: ShimCache,
+    code_mode: bool,
 ) -> Result<()> {
     let state = AppState {
         registry,
         permissions,
         sessions: Arc::new(RwLock::new(HashMap::new())),
         servers,
+        shim_cache,
+        port,
+        code_mode,
     };
 
     // When the manifest registry changes, broadcast notifications/tools/list_changed
@@ -108,6 +118,7 @@ pub async fn serve(
         .route("/sse", get(sse_handler))
         .route("/messages", post(messages_handler))
         .route("/", post(direct_handler))
+        .route("/invoke", post(invoke_handler))
         .with_state(state);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
@@ -195,6 +206,9 @@ async fn messages_handler(
     let registry = state.registry.clone();
     let permissions = state.permissions.clone();
     let servers = state.servers.clone();
+    let shim_cache = state.shim_cache.clone();
+    let port = state.port;
+    let code_mode = state.code_mode;
 
     tokio::spawn(async move {
         let response = match serde_json::from_str::<JsonRpcRequest>(&body) {
@@ -202,7 +216,17 @@ async fn messages_handler(
                 let r = JsonRpcResponse::err(None, -32700, format!("Parse error: {e}"));
                 serde_json::to_string(&r).expect("JSON-RPC response serializes to string")
             }
-            Ok(req) => match mcp_server::handle(&req, &registry, &permissions, &servers).await {
+            Ok(req) => match mcp_server::handle(
+                &req,
+                &registry,
+                &permissions,
+                &servers,
+                &shim_cache,
+                port,
+                code_mode,
+            )
+            .await
+            {
                 Some(resp) => {
                     serde_json::to_string(&resp).expect("JSON-RPC response serializes to string")
                 }
@@ -231,8 +255,16 @@ async fn direct_handler(State(state): State<AppState>, body: String) -> impl Int
     let response = match serde_json::from_str::<JsonRpcRequest>(&body) {
         Err(e) => JsonRpcResponse::err(None, -32700, format!("Parse error: {e}")),
         Ok(req) => {
-            match mcp_server::handle(&req, &state.registry, &state.permissions, &state.servers)
-                .await
+            match mcp_server::handle(
+                &req,
+                &state.registry,
+                &state.permissions,
+                &state.servers,
+                &state.shim_cache,
+                state.port,
+                state.code_mode,
+            )
+            .await
             {
                 Some(resp) => resp,
                 // Notification — no response body; return empty 204.
@@ -245,6 +277,80 @@ async fn direct_handler(State(state): State<AppState>, body: String) -> impl Int
     debug!(resp = ?response, "→ POST /");
     Json(serde_json::to_value(response).expect("response serializes to JSON")).into_response()
 }
+
+// ---------------------------------------------------------------------------
+// POST /invoke — synchronous tool dispatch for code-mode Node.js callbacks
+// ---------------------------------------------------------------------------
+
+/// Synchronous REST endpoint used by the Node.js subprocess spawned in
+/// code mode.  Receives a tool name and arguments, dispatches through
+/// `router::dispatch`, and returns the result as JSON.
+///
+/// Request:  `{"tool": "mail_send", "arguments": {"to": "...", ...}}`
+/// Response: `{"result": "...", "is_error": false}`
+async fn invoke_handler(State(state): State<AppState>, body: String) -> impl IntoResponse {
+    debug!(body = %body, "← POST /invoke");
+
+    #[derive(serde::Deserialize)]
+    struct InvokeRequest {
+        tool: String,
+        #[serde(default)]
+        arguments: serde_json::Value,
+    }
+
+    let req: InvokeRequest = match serde_json::from_str(&body) {
+        Ok(r) => r,
+        Err(e) => {
+            let resp = serde_json::json!({"result": format!("Bad request: {e}"), "is_error": true});
+            return (StatusCode::BAD_REQUEST, Json(resp)).into_response();
+        }
+    };
+
+    // Ensure arguments is an object.
+    let arguments = if req.arguments.is_object() {
+        req.arguments
+    } else {
+        serde_json::Value::Object(Default::default())
+    };
+
+    // Permission check (same as tools/call).
+    use clawshake_core::identity::AgentId;
+    use clawshake_core::permissions::Decision;
+    let decision = state.permissions.check(&AgentId::Local, &req.tool).await;
+    match decision {
+        Decision::Allow => {}
+        Decision::Deny => {
+            let resp = serde_json::json!({
+                "result": format!("Permission denied: '{}'", req.tool),
+                "is_error": true
+            });
+            return Json(resp).into_response();
+        }
+        Decision::Ask => {
+            // Auto-allow for local callers.
+            if let Err(e) = state
+                .permissions
+                .set("local", &req.tool, Decision::Allow)
+                .await
+            {
+                warn!("Failed to persist permission: {e}");
+            }
+        }
+    }
+
+    // Dispatch.
+    let (result, is_error) =
+        match crate::router::dispatch(&req.tool, &arguments, &state.registry, &state.servers).await
+        {
+            Ok(text) => (text, false),
+            Err(e) => (format!("{e}"), true),
+        };
+
+    let resp = serde_json::json!({"result": result, "is_error": is_error});
+    debug!(resp = %resp, "→ POST /invoke");
+    Json(resp).into_response()
+}
+
 // ---------------------------------------------------------------------------
 
 struct CleanupStream<S> {

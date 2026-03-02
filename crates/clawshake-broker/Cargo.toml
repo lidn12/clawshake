@@ -32,3 +32,4 @@ axum = { workspace = true }
 tokio-stream = { workspace = true }
 uuid = { workspace = true }
 futures = { workspace = true }
+which = { workspace = true }

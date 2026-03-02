@@ -1,4 +1,5 @@
 pub mod cli;
+pub mod codemode;
 pub mod deeplink;
 pub mod http;
 pub mod mcp;

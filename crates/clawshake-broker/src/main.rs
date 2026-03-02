@@ -4,12 +4,15 @@ use clawshake_core::permissions::PermissionStore;
 use std::path::PathBuf;
 use tracing::info;
 
+mod builtins;
 mod cli;
 mod http_server;
 mod invoke;
 mod mcp_server;
 mod router;
 mod watcher;
+
+use invoke::codemode::ShimCache;
 
 /// Clawshake Broker — manifest watcher and MCP server for local capabilities.
 #[derive(Parser, Debug)]
@@ -35,6 +38,12 @@ enum Command {
         /// Omit to use stdio mode instead.
         #[arg(long)]
         port: Option<u16>,
+
+        /// Enable code mode: hide individual tools from tools/list and expose
+        /// only run_code + describe_tools.  Tools remain callable by name
+        /// through run_code scripts.  Requires Node.js on PATH.
+        #[arg(long, default_value_t = false)]
+        code_mode: bool,
     },
 
     /// List all tools registered with the broker.
@@ -114,9 +123,39 @@ async fn main() -> Result<()> {
             }
         },
 
-        Command::Run { port } => {
+        Command::Run { port, code_mode } => {
+            // Detect Node.js on PATH.
+            let has_node = which::which("node").is_ok();
+            let code_mode_active = if code_mode && !has_node {
+                tracing::warn!(
+                    "Node.js not found on PATH — code mode unavailable. \
+                     Install Node.js 18+ to enable."
+                );
+                false
+            } else if has_node {
+                if code_mode {
+                    info!("Code mode enabled (Node.js detected)");
+                } else {
+                    info!(
+                        "Node.js detected — run_code and describe_tools available. \
+                         Use --code-mode to hide individual tools from tools/list."
+                    );
+                }
+                // Register code mode tools regardless of toggle — the toggle
+                // only controls tools/list filtering.
+                true
+            } else {
+                false
+            };
+
+            // Seed built-in manifests (network.json, and optionally codemode.json).
+            builtins::seed(&manifests_dir, code_mode_active)?;
+
             // Open permission store.
             let permissions = PermissionStore::open(&db_path).await?;
+
+            // Create shim cache.
+            let shim_cache = ShimCache::new();
 
             // Load manifests and start file watcher.
             let registry = watcher::ManifestRegistry::new();
@@ -125,13 +164,22 @@ async fn main() -> Result<()> {
             info!(tools = registry.tool_count(), "Broker ready");
 
             if let Some(port) = port {
-                return http_server::serve(port, registry, permissions, servers, Some(sse_rx))
-                    .await;
+                return http_server::serve(
+                    port,
+                    registry,
+                    permissions,
+                    servers,
+                    Some(sse_rx),
+                    shim_cache,
+                    code_mode,
+                )
+                .await;
             }
 
             // Default: MCP stdio loop (no SSE sessions — drop the receiver).
             drop(sse_rx);
-            mcp_server::serve_stdio(registry, permissions, servers).await?;
+            mcp_server::serve_stdio(registry, permissions, servers, shim_cache, code_mode_active)
+                .await?;
         }
     }
 

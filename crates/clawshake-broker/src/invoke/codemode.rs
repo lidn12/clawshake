@@ -1,0 +1,539 @@
+//! Code mode: `run_code` and `describe_tools` handlers.
+//!
+//! Generates a JavaScript shim from the `ManifestRegistry` (and optionally
+//! `PeerTable`) so agents can write JS scripts that chain tool calls.
+//! The shim defines async helper functions — one per tool — that call back
+//! into the broker via `POST /invoke`.  The agent's script is wrapped in
+//! an async IIFE and piped to `node -` via stdin.
+
+use std::collections::HashMap;
+use std::fmt::Write;
+use std::net::SocketAddr;
+use std::sync::{Arc, RwLock};
+
+use anyhow::{bail, Result};
+use axum::{extract::State, http::StatusCode, response::IntoResponse, routing::post, Json, Router};
+use clawshake_core::permissions::PermissionStore;
+use tokio::io::AsyncWriteExt;
+use tokio::process::Command;
+use tracing::{debug, warn};
+
+use crate::watcher::{LoadedTool, ManifestRegistry, McpServerMap};
+
+// ---------------------------------------------------------------------------
+// Shim cache
+// ---------------------------------------------------------------------------
+
+/// Cached shim: full JS source + a compact category summary string.
+#[derive(Debug, Clone)]
+struct CachedShim {
+    /// Full JS source with all tool functions and the `_call` helper.
+    full_js: String,
+    /// Compact category summary for `describe_tools` with no query.
+    /// e.g. "- mail (3 tools): send, search, read\n"
+    categories: String,
+}
+
+/// Thread-safe shim cache.  Regenerated whenever the manifest registry changes.
+#[derive(Clone, Default)]
+pub struct ShimCache {
+    inner: Arc<RwLock<Option<CachedShim>>>,
+}
+
+impl ShimCache {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Invalidate the cache so the next request regenerates the shim.
+    #[allow(dead_code)] // Will be wired to watcher change events.
+    pub fn invalidate(&self) {
+        let mut cache = self.inner.write().expect("shim cache lock");
+        *cache = None;
+    }
+
+    /// Get or generate the shim for the given broker port and registry.
+    fn get_or_generate(&self, port: u16, registry: &ManifestRegistry) -> CachedShim {
+        {
+            let cache = self.inner.read().expect("shim cache lock");
+            if let Some(ref shim) = *cache {
+                return shim.clone();
+            }
+        }
+
+        let tools = registry.all();
+        let shim = generate_shim(port, &tools);
+
+        let mut cache = self.inner.write().expect("shim cache lock");
+        *cache = Some(shim.clone());
+        shim
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Shim generator
+// ---------------------------------------------------------------------------
+
+/// Generate the full JS shim and category summary from the loaded tools.
+fn generate_shim(port: u16, tools: &[LoadedTool]) -> CachedShim {
+    // Group tools by source.
+    let mut by_source: HashMap<&str, Vec<&LoadedTool>> = HashMap::new();
+    for lt in tools {
+        // Skip code-mode tools themselves to avoid recursion.
+        if lt.source == "codemode" {
+            continue;
+        }
+        by_source.entry(&lt.source).or_default().push(lt);
+    }
+
+    // Sort sources for deterministic output.
+    let mut sources: Vec<&&str> = by_source.keys().collect();
+    sources.sort();
+
+    // --- Build full JS shim ---
+    let mut js = String::with_capacity(4096);
+
+    // _call helper
+    writeln!(js, "const _BROKER = 'http://127.0.0.1:{port}';").unwrap();
+    writeln!(js, "async function _call(name, args) {{").unwrap();
+    writeln!(js, "  const r = await fetch(`${{_BROKER}}/invoke`, {{").unwrap();
+    writeln!(js, "    method: 'POST',").unwrap();
+    writeln!(js, "    headers: {{'Content-Type': 'application/json'}},").unwrap();
+    writeln!(
+        js,
+        "    body: JSON.stringify({{tool: name, arguments: args || {{}}}})"
+    )
+    .unwrap();
+    writeln!(js, "  }});").unwrap();
+    writeln!(js, "  if (!r.ok) throw new Error(`invoke failed: ${{r.status}}`);").unwrap();
+    writeln!(js, "  const j = await r.json();").unwrap();
+    writeln!(js, "  if (j.is_error) throw new Error(j.result);").unwrap();
+    writeln!(js, "  try {{ return JSON.parse(j.result); }} catch {{ return j.result; }}").unwrap();
+    writeln!(js, "}}").unwrap();
+    writeln!(js).unwrap();
+
+    // --- Build category summary ---
+    let mut categories = String::with_capacity(512);
+
+    for source in &sources {
+        let group = &by_source[**source];
+
+        // Category summary line
+        let tool_names: Vec<&str> = group.iter().map(|lt| lt.tool.name.as_str()).collect();
+        let names_preview = if tool_names.len() <= 5 {
+            tool_names.join(", ")
+        } else {
+            let mut preview: Vec<&str> = tool_names[..4].to_vec();
+            preview.push("...");
+            preview.join(", ")
+        };
+        writeln!(
+            categories,
+            "- {} ({} tools): {}",
+            source,
+            group.len(),
+            names_preview
+        )
+        .unwrap();
+
+        // JS object with tool functions
+        writeln!(js, "const {} = {{", safe_js_ident(source)).unwrap();
+        for lt in group {
+            // JSDoc comment
+            writeln!(js, "  /** {} */", lt.tool.description.replace("*/", "* /")).unwrap();
+
+            // Function name: strip source prefix if present.
+            let fn_name = lt
+                .tool
+                .name
+                .strip_prefix(&format!("{}_", source))
+                .unwrap_or(&lt.tool.name);
+
+            writeln!(
+                js,
+                "  {}: (args) => _call('{}', args),",
+                safe_js_ident(fn_name),
+                lt.tool.name
+            )
+            .unwrap();
+        }
+        writeln!(js, "}};").unwrap();
+        writeln!(js).unwrap();
+    }
+
+    CachedShim {
+        full_js: js,
+        categories,
+    }
+}
+
+/// Generate a filtered JS shim containing only tools matching the query.
+fn generate_filtered_shim(_port: u16, tools: &[LoadedTool], query: &str) -> String {
+    let query_lower = query.to_lowercase();
+    let keywords: Vec<&str> = query_lower.split_whitespace().collect();
+
+    let filtered: Vec<&LoadedTool> = tools
+        .iter()
+        .filter(|lt| {
+            // Skip code-mode tools themselves.
+            if lt.source == "codemode" {
+                return false;
+            }
+            // Match if any keyword appears in source, name, or description.
+            keywords.iter().any(|kw| {
+                lt.source.to_lowercase().contains(kw)
+                    || lt.tool.name.to_lowercase().contains(kw)
+                    || lt.tool.description.to_lowercase().contains(kw)
+            })
+        })
+        .collect();
+
+    if filtered.is_empty() {
+        return format!("No tools matching '{query}'. Call describe_tools with no query to see all categories.");
+    }
+
+    // Group by source.
+    let mut by_source: HashMap<&str, Vec<&&LoadedTool>> = HashMap::new();
+    for lt in &filtered {
+        by_source.entry(&lt.source).or_default().push(lt);
+    }
+    let mut sources: Vec<&&str> = by_source.keys().collect();
+    sources.sort();
+
+    let mut js = String::with_capacity(2048);
+
+    // Include _call helper in filtered output too so agents can copy-paste
+    writeln!(js, "// Use these functions inside run_code's script parameter:").unwrap();
+    writeln!(js).unwrap();
+
+    for source in &sources {
+        let group = &by_source[**source];
+        writeln!(js, "const {} = {{", safe_js_ident(source)).unwrap();
+        for lt in group {
+            // Build param hints from inputSchema
+            let param_hint = param_hint_from_schema(&lt.tool.input_schema);
+            writeln!(
+                js,
+                "  /** {} @param {{{}}} args */",
+                lt.tool.description.replace("*/", "* /"),
+                param_hint
+            )
+            .unwrap();
+
+            let fn_name = lt
+                .tool
+                .name
+                .strip_prefix(&format!("{}_", source))
+                .unwrap_or(&lt.tool.name);
+
+            writeln!(
+                js,
+                "  {}: (args) => _call('{}', args),",
+                safe_js_ident(fn_name),
+                lt.tool.name
+            )
+            .unwrap();
+        }
+        writeln!(js, "}};").unwrap();
+        writeln!(js).unwrap();
+    }
+
+    js
+}
+
+/// Build a compact parameter hint string from `InputSchema`.
+fn param_hint_from_schema(schema: &clawshake_core::manifest::InputSchema) -> String {
+    if schema.properties.is_empty() {
+        return String::new();
+    }
+    let mut parts = Vec::new();
+    for (key, val) in &schema.properties {
+        let typ = val
+            .get("type")
+            .and_then(|t| t.as_str())
+            .unwrap_or("any");
+        let required = schema.required.contains(key);
+        if required {
+            parts.push(format!("{key}: {typ}"));
+        } else {
+            parts.push(format!("{key}?: {typ}"));
+        }
+    }
+    parts.join(", ")
+}
+
+/// Make a string safe as a JS identifier (replace non-alphanumeric with _).
+fn safe_js_ident(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for (i, c) in s.chars().enumerate() {
+        if c.is_ascii_alphanumeric() || c == '_' || c == '$' {
+            out.push(c);
+        } else if i == 0 {
+            out.push('_');
+        } else {
+            out.push('_');
+        }
+    }
+    // Ensure it doesn't start with a digit.
+    if out.starts_with(|c: char| c.is_ascii_digit()) {
+        out.insert(0, '_');
+    }
+    if out.is_empty() {
+        out.push_str("_unnamed");
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
+// run_code
+// ---------------------------------------------------------------------------
+
+/// Execute agent-supplied JavaScript by piping it to `node -` via stdin.
+///
+/// The generated JS shim is prepended so the agent's code can call tool
+/// functions directly.  stdout is captured and returned.  stderr + exit
+/// code signal errors.
+///
+/// When `port` is 0 (stdio mode), an ephemeral HTTP server is spun up on
+/// a random port for the duration of the call so the Node.js subprocess
+/// can call tools back via `POST /invoke`.
+pub async fn invoke_run_code(
+    script: &str,
+    port: u16,
+    registry: &ManifestRegistry,
+    permissions: &PermissionStore,
+    servers: &McpServerMap,
+    shim_cache: &ShimCache,
+    timeout_secs: u64,
+) -> Result<String> {
+    // If we're in stdio mode (no HTTP server), spin up an ephemeral one.
+    let (effective_port, _ephemeral_guard) = if port == 0 {
+        let (p, guard) = start_ephemeral_invoke_server(
+            registry.clone(),
+            permissions.clone(),
+            servers.clone(),
+        )
+        .await?;
+        (p, Some(guard))
+    } else {
+        (port, None)
+    };
+
+    let cached = shim_cache.get_or_generate(effective_port, registry);
+
+    // Combine shim + agent script in an async IIFE.
+    let combined = format!(
+        "{}\n;(async () => {{\n{}\n}})().catch(e => {{ console.error(e.message || e); process.exit(1); }});\n",
+        cached.full_js, script
+    );
+
+    debug!(script_len = combined.len(), "run_code: spawning node");
+
+    let mut child = Command::new("node")
+        .arg("-") // read from stdin
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("Failed to spawn node: {e}. Is Node.js installed?"))?;
+
+    // Write script to stdin then close it.
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(combined.as_bytes()).await?;
+        // stdin is dropped here, closing the pipe.
+    }
+
+    // Apply timeout.
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(timeout_secs),
+        child.wait_with_output(),
+    )
+    .await;
+
+    match result {
+        Ok(Ok(output)) => {
+            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+            if output.status.success() {
+                debug!(stdout_len = stdout.len(), "run_code: success");
+                Ok(stdout)
+            } else {
+                let msg = if stderr.is_empty() {
+                    format!("Script exited with code {}", output.status)
+                } else {
+                    stderr
+                };
+                bail!("{msg}")
+            }
+        }
+        Ok(Err(e)) => bail!("Failed to wait for node process: {e}"),
+        Err(_) => {
+            // Timeout — child has been moved into wait_with_output() which
+            // timed out.  Tokio drops the Child (and kills it) when the
+            // future is dropped, so no explicit kill is needed here.
+            warn!("run_code: timeout after {timeout_secs}s");
+            bail!("Script timed out after {timeout_secs} seconds")
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// describe_tools
+// ---------------------------------------------------------------------------
+
+/// Handle `describe_tools` calls.
+///
+/// - No query → return category summary.
+/// - With query → return filtered JS shim showing matching tool functions.
+pub fn invoke_describe_tools(
+    query: Option<&str>,
+    port: u16,
+    registry: &ManifestRegistry,
+    shim_cache: &ShimCache,
+) -> String {
+    match query {
+        None | Some("") => {
+            let cached = shim_cache.get_or_generate(port, registry);
+            format!(
+                "Available tool categories:\n{}\nCall describe_tools with a query to get JS function signatures for specific tools.",
+                cached.categories
+            )
+        }
+        Some(q) => {
+            let tools = registry.all();
+            generate_filtered_shim(port, &tools, q)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Ephemeral invoke server (for stdio mode)
+// ---------------------------------------------------------------------------
+
+/// Shared state for the ephemeral invoke server.
+#[derive(Clone)]
+struct EphemeralState {
+    registry: ManifestRegistry,
+    permissions: PermissionStore,
+    servers: McpServerMap,
+}
+
+/// Guard that shuts down the ephemeral server when dropped.
+pub struct EphemeralServerGuard {
+    shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
+}
+
+impl Drop for EphemeralServerGuard {
+    fn drop(&mut self) {
+        if let Some(tx) = self.shutdown_tx.take() {
+            let _ = tx.send(());
+        }
+    }
+}
+
+/// Spin up a temporary HTTP server with only `POST /invoke` on a random port.
+///
+/// Returns `(port, guard)`.  The server runs until the guard is dropped.
+async fn start_ephemeral_invoke_server(
+    registry: ManifestRegistry,
+    permissions: PermissionStore,
+    servers: McpServerMap,
+) -> Result<(u16, EphemeralServerGuard)> {
+    let state = EphemeralState {
+        registry,
+        permissions,
+        servers,
+    };
+
+    let app = Router::new()
+        .route("/invoke", post(ephemeral_invoke_handler))
+        .with_state(state);
+
+    // Bind to a random port on loopback.
+    let listener = tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0u16))).await?;
+    let port = listener.local_addr()?.port();
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+
+    debug!(port, "Ephemeral invoke server started");
+
+    tokio::spawn(async move {
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async {
+                let _ = shutdown_rx.await;
+            })
+            .await
+            .ok();
+        debug!("Ephemeral invoke server stopped");
+    });
+
+    Ok((port, EphemeralServerGuard { shutdown_tx: Some(shutdown_tx) }))
+}
+
+/// Invoke handler for the ephemeral server — same logic as `http_server::invoke_handler`.
+async fn ephemeral_invoke_handler(
+    State(state): State<EphemeralState>,
+    body: String,
+) -> impl IntoResponse {
+    debug!(body = %body, "← POST /invoke (ephemeral)");
+
+    #[derive(serde::Deserialize)]
+    struct InvokeRequest {
+        tool: String,
+        #[serde(default)]
+        arguments: serde_json::Value,
+    }
+
+    let req: InvokeRequest = match serde_json::from_str(&body) {
+        Ok(r) => r,
+        Err(e) => {
+            let resp =
+                serde_json::json!({"result": format!("Bad request: {e}"), "is_error": true});
+            return (StatusCode::BAD_REQUEST, Json(resp)).into_response();
+        }
+    };
+
+    let arguments = if req.arguments.is_object() {
+        req.arguments
+    } else {
+        serde_json::Value::Object(Default::default())
+    };
+
+    // Permission check.
+    use clawshake_core::identity::AgentId;
+    use clawshake_core::permissions::Decision;
+    let decision = state.permissions.check(&AgentId::Local, &req.tool).await;
+    match decision {
+        Decision::Allow => {}
+        Decision::Deny => {
+            let resp = serde_json::json!({
+                "result": format!("Permission denied: '{}'", req.tool),
+                "is_error": true
+            });
+            return Json(resp).into_response();
+        }
+        Decision::Ask => {
+            if let Err(e) = state
+                .permissions
+                .set("local", &req.tool, Decision::Allow)
+                .await
+            {
+                warn!("Failed to persist permission: {e}");
+            }
+        }
+    }
+
+    // Dispatch.
+    let (result, is_error) =
+        match crate::router::dispatch(&req.tool, &arguments, &state.registry, &state.servers)
+            .await
+        {
+            Ok(text) => (text, false),
+            Err(e) => (format!("{e}"), true),
+        };
+
+    let resp = serde_json::json!({"result": result, "is_error": is_error});
+    debug!(resp = %resp, "→ POST /invoke (ephemeral)");
+    Json(resp).into_response()
+}

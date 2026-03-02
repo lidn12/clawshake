@@ -13,8 +13,47 @@ use tracing::info;
 /// (filename, JSON content)
 const BUILTIN_MANIFESTS: &[(&str, &str)] = &[("network.json", NETWORK_MANIFEST)];
 
+/// Code mode manifest — seeded only when Node.js is detected on PATH.
+const CODEMODE_MANIFEST: &str = r#"{
+  "version": "1.0",
+  "tools": [
+    {
+      "name": "run_code",
+      "description": "Execute a JavaScript script that can call any available tool as an async function. Use describe_tools first to discover the JS API. Intermediate results stay in the JS runtime and only console.log() output is returned. This is dramatically more token-efficient for multi-step workflows.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "script": {
+            "type": "string",
+            "description": "JavaScript code to execute. All tool functions are pre-loaded as async functions. Wrap multi-step logic in a single script. Use console.log() to return results."
+          }
+        },
+        "required": ["script"]
+      },
+      "invoke": { "type": "cli", "command": "__code_mode__", "args": [] }
+    },
+    {
+      "name": "describe_tools",
+      "description": "Search available tools and return their JavaScript API definitions for use with run_code. Call with no query to list all tool categories. Call with a query to get specific tool function signatures.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Filter tools by name, source, or description substring. Omit for category summary."
+          }
+        }
+      },
+      "invoke": { "type": "cli", "command": "__code_mode__", "args": [] }
+    }
+  ]
+}
+"#;
+
 /// Seed all built-in manifests into `manifests_dir` if they are not already present.
-pub fn seed(manifests_dir: &Path) -> Result<()> {
+///
+/// When `code_mode` is true (Node.js detected), also seeds `codemode.json`.
+pub fn seed(manifests_dir: &Path, code_mode: bool) -> Result<()> {
     std::fs::create_dir_all(manifests_dir)?;
     for (filename, content) in BUILTIN_MANIFESTS {
         let path = manifests_dir.join(filename);
@@ -23,6 +62,22 @@ pub fn seed(manifests_dir: &Path) -> Result<()> {
             info!("Seeded built-in manifest: {filename}");
         }
     }
+
+    let codemode_path = manifests_dir.join("codemode.json");
+    if code_mode {
+        if !codemode_path.exists() {
+            std::fs::write(&codemode_path, CODEMODE_MANIFEST)?;
+            info!("Seeded built-in manifest: codemode.json (Node.js detected)");
+        }
+    } else {
+        // If Node.js is not available, remove a previously seeded codemode manifest
+        // so the tools don't appear in listings.
+        if codemode_path.exists() {
+            std::fs::remove_file(&codemode_path)?;
+            info!("Removed codemode.json (Node.js not found)");
+        }
+    }
+
     Ok(())
 }
 

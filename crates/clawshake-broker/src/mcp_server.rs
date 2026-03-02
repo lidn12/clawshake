@@ -12,6 +12,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tracing::{debug, warn};
 
 use crate::{
+    invoke::codemode::ShimCache,
     router,
     watcher::{ManifestRegistry, McpServerMap},
 };
@@ -29,11 +30,18 @@ pub async fn serve_stdio(
     registry: ManifestRegistry,
     permissions: PermissionStore,
     servers: McpServerMap,
+    shim_cache: ShimCache,
+    code_mode: bool,
 ) -> Result<()> {
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
     let mut lines = BufReader::new(stdin).lines();
     let mut out = stdout;
+
+    // stdio mode doesn't have an HTTP port for /invoke callbacks,
+    // so code mode tools won't work over stdio. We still pass port=0
+    // but run_code will fail gracefully if called.
+    let port = 0u16;
 
     while let Some(line) = lines.next_line().await? {
         let line = line.trim().to_string();
@@ -48,7 +56,18 @@ pub async fn serve_stdio(
                 PARSE_ERROR,
                 format!("Parse error: {e}"),
             )),
-            Ok(req) => handle(&req, &registry, &permissions, &servers).await,
+            Ok(req) => {
+                handle(
+                    &req,
+                    &registry,
+                    &permissions,
+                    &servers,
+                    &shim_cache,
+                    port,
+                    code_mode,
+                )
+                .await
+            }
         };
 
         if let Some(resp) = response {
@@ -68,6 +87,9 @@ pub(crate) async fn handle(
     registry: &ManifestRegistry,
     permissions: &PermissionStore,
     servers: &McpServerMap,
+    shim_cache: &ShimCache,
+    port: u16,
+    code_mode: bool,
 ) -> Option<JsonRpcResponse> {
     let id = req.id.clone();
     match req.method.as_str() {
@@ -92,9 +114,18 @@ pub(crate) async fn handle(
 
         // ---------------------------------------------------------------
         "tools/list" => {
-            let defs: Vec<McpToolDef> = registry
-                .all()
+            let all_tools = registry.all();
+            let defs: Vec<McpToolDef> = all_tools
                 .into_iter()
+                .filter(|lt| {
+                    // In code mode (--code-mode), hide individual tools from
+                    // the listing — only show run_code + describe_tools.
+                    // The hidden tools are still callable by name via run_code.
+                    if code_mode && lt.source != "codemode" {
+                        return false;
+                    }
+                    true
+                })
                 .map(|lt| {
                     let schema = serde_json::to_value(&lt.tool.input_schema)
                         .unwrap_or_else(|_| json!({"type":"object","properties":{}}));
@@ -158,6 +189,52 @@ pub(crate) async fn handle(
                         warn!("Failed to persist permission: {e}");
                     }
                 }
+            }
+
+            // --- Code mode tools: handle directly without router dispatch ---
+            if params.name == "run_code" {
+                let script = params
+                    .arguments
+                    .get("script")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+
+                let timeout_secs = 30u64; // TODO: make configurable
+                let (content, is_error) = match crate::invoke::codemode::invoke_run_code(
+                    script,
+                    port,
+                    registry,
+                    permissions,
+                    servers,
+                    shim_cache,
+                    timeout_secs,
+                )
+                .await
+                {
+                    Ok(stdout) => (vec![McpContent::text(stdout)], false),
+                    Err(e) => (vec![McpContent::text(format!("{e}"))], true),
+                };
+                let result = ToolsCallResult { content, is_error };
+                return Some(JsonRpcResponse::ok(
+                    id,
+                    serde_json::to_value(result).expect("MCP result serializes to JSON"),
+                ));
+            }
+
+            if params.name == "describe_tools" {
+                let query = params.arguments.get("query").and_then(|v| v.as_str());
+
+                let text = crate::invoke::codemode::invoke_describe_tools(
+                    query, port, registry, shim_cache,
+                );
+                let result = ToolsCallResult {
+                    content: vec![McpContent::text(text)],
+                    is_error: false,
+                };
+                return Some(JsonRpcResponse::ok(
+                    id,
+                    serde_json::to_value(result).expect("MCP result serializes to JSON"),
+                ));
             }
 
             // Dispatch.

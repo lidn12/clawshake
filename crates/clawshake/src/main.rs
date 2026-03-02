@@ -25,7 +25,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use clawshake_bridge::cli::{run_permissions_action, McpArgs, P2pArgs, PermissionsAction};
-use clawshake_broker::{builtins, http_server, watcher};
+use clawshake_broker::{builtins, http_server, invoke::codemode::ShimCache, watcher};
 use clawshake_core::{
     mcp_client::{HttpClient, McpClient},
     permissions::PermissionStore,
@@ -182,7 +182,7 @@ async fn main() -> Result<()> {
             let manifests_dir = clawshake_dir.join("manifests");
             match action {
                 ToolsAction::List { json } => {
-                    builtins::seed(&manifests_dir)?;
+                    builtins::seed(&manifests_dir, false)?;
                     clawshake_broker::cli::list_tools(&manifests_dir, &db_path, json).await?;
                 }
                 ToolsAction::Validate { file } => {
@@ -199,7 +199,7 @@ async fn main() -> Result<()> {
 
         Command::Status { json } => {
             let manifests_dir = clawshake_dir.join("manifests");
-            builtins::seed(&manifests_dir)?;
+            builtins::seed(&manifests_dir, false)?;
             let (total, published) =
                 clawshake_broker::cli::tool_counts(&manifests_dir, &db_path).await;
             clawshake_bridge::cli::show_status(json, Some((total, published))).await?;
@@ -217,7 +217,14 @@ async fn main() -> Result<()> {
                 let manifests_dir = clawshake_dir.join("manifests");
                 let permissions = PermissionStore::open(&db_path).await?;
 
-                builtins::seed(&manifests_dir)?;
+                // Detect Node.js for code mode.
+                let has_node = which::which("node").is_ok();
+                if has_node {
+                    info!("Node.js detected — run_code and describe_tools available");
+                }
+                let shim_cache = ShimCache::new();
+
+                builtins::seed(&manifests_dir, has_node)?;
                 let registry = watcher::ManifestRegistry::new();
                 let (sse_tx, sse_rx) = tokio::sync::mpsc::channel::<()>(4);
                 let servers = watcher::start(
@@ -235,6 +242,8 @@ async fn main() -> Result<()> {
                     permissions,
                     servers,
                     Some(sse_rx),
+                    shim_cache,
+                    false, // code_mode toggle (--code-mode not exposed in unified binary yet)
                 ));
                 info!("Broker HTTP server starting on :{broker_port}");
 
