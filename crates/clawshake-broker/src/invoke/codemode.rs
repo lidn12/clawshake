@@ -328,8 +328,10 @@ pub async fn invoke_run_code(
     let cached = shim_cache.get_or_generate(effective_port, registry);
 
     // Combine shim + agent script in an async IIFE.
+    // If the script returns a non-undefined value it is automatically printed,
+    // so both `return result` and `console.log(result)` work as output.
     let combined = format!(
-        "{}\n;(async () => {{\n{}\n}})().catch(e => {{ console.error(e.message || e); process.exit(1); }});\n",
+        "{}\n;(async () => {{\n{}\n}})().then(r => {{ if (r !== undefined) console.log(typeof r === 'string' ? r : JSON.stringify(r, null, 2)); }}).catch(e => {{ console.error(e.message || e); process.exit(1); }});\n",
         cached.full_js, script
     );
 

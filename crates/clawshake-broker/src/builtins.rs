@@ -25,7 +25,7 @@ const CODEMODE_MANIFEST: &str = r#"{
         "properties": {
           "script": {
             "type": "string",
-            "description": "JavaScript code to execute. All tool functions are pre-loaded as async functions. Wrap multi-step logic in a single script. Use console.log() to return results."
+            "description": "JavaScript code to execute. All tool functions are pre-loaded as async functions. Wrap multi-step logic in a single script. Output is collected from console.log() calls. A top-level return value is also automatically printed, so both styles work: `console.log(result)` and `return result`."
           }
         },
         "required": ["script"]
