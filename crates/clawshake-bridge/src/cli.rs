@@ -319,7 +319,11 @@ pub async fn start_bridge(
     // Load config to check for [models] section.
     let config = clawshake_core::config::load(None).unwrap_or_default();
     let (model_backend, stream_call_rx) = if config.models.is_enabled() {
-        let endpoint = config.models.endpoint.as_deref().unwrap_or("http://127.0.0.1:11434");
+        let endpoint = config
+            .models
+            .endpoint
+            .as_deref()
+            .unwrap_or("http://127.0.0.1:11434");
         let mb = clawshake_models::backend::ModelBackend::new(endpoint);
         info!("Model proxy enabled — backend: {endpoint}");
 
@@ -398,6 +402,31 @@ pub async fn show_status(json: bool, tool_info: Option<(usize, usize)>) -> Resul
     // ---- Probe for a running node via IPC -----
     let live = probe_node().await;
 
+    // ---- Model info from config + backend probe -----
+    let config = clawshake_core::config::load(None).unwrap_or_default();
+    let model_names = if let Some(endpoint) = &config.models.endpoint {
+        let backend = clawshake_models::backend::ModelBackend::new(endpoint);
+        match backend.list_models().await {
+            Ok(all) => {
+                let filtered: Vec<String> = match &config.models.advertise {
+                    clawshake_core::config::AdvertiseModels::All(_) => {
+                        all.into_iter().map(|m| m.name).collect()
+                    }
+                    clawshake_core::config::AdvertiseModels::List(names) => all
+                        .into_iter()
+                        .filter(|m| names.iter().any(|n| n == &m.name))
+                        .map(|m| m.name)
+                        .collect(),
+                    clawshake_core::config::AdvertiseModels::None(_) => Vec::new(),
+                };
+                Some(filtered)
+            }
+            Err(_) => Some(Vec::new()), // endpoint configured but unreachable
+        }
+    } else {
+        None // no endpoint configured
+    };
+
     if json {
         let mut obj = serde_json::json!({
             "peer_id": peer_id,
@@ -407,6 +436,13 @@ pub async fn show_status(json: bool, tool_info: Option<(usize, usize)>) -> Resul
         if let Some((total, published)) = tool_info {
             obj["tools"] = serde_json::json!(total);
             obj["published"] = serde_json::json!(published);
+        }
+        if let Some(ref names) = model_names {
+            obj["models"] = serde_json::json!({
+                "endpoint": config.models.endpoint,
+                "proxy_port": config.models.proxy_port,
+                "advertised": names,
+            });
         }
         println!("{}", serde_json::to_string_pretty(&obj)?);
     } else {
@@ -424,6 +460,27 @@ pub async fn show_status(json: bool, tool_info: Option<(usize, usize)>) -> Resul
         }
         if let Some((total, published)) = tool_info {
             println!("Tools:      {} registered ({} published)", total, published);
+        }
+        match &model_names {
+            Some(names) if !names.is_empty() => {
+                println!(
+                    "Models:     {} advertised (proxy :{}) ",
+                    names.len(),
+                    config.models.proxy_port
+                );
+                for name in names {
+                    println!("            - {name}");
+                }
+            }
+            Some(_) => {
+                println!(
+                    "Models:     endpoint configured ({}) but no models found",
+                    config.models.endpoint.as_deref().unwrap_or("?")
+                );
+            }
+            None => {
+                println!("Models:     not configured");
+            }
         }
     }
 

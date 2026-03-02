@@ -282,7 +282,9 @@ pub async fn run(
     const ANNOUNCE_INTERVAL: u64 = 300; // 5 minutes
 
     // Load config for model advertise settings.
-    let models_config = clawshake_core::config::load(None).unwrap_or_default().models;
+    let models_config = clawshake_core::config::load(None)
+        .unwrap_or_default()
+        .models;
 
     if let Some(ref b) = backend {
         let backend_clone = b.clone();
@@ -299,8 +301,14 @@ pub async fn run(
                 tick.tick().await;
                 let addrs = addr::dedup_announce_addrs(&addrs_clone);
                 let models = query_models(&model_backend_clone, &advertise_clone).await;
-                match announce::build_record(peer_id_clone, &addrs, &backend_clone, &perms_clone, models)
-                    .await
+                match announce::build_record(
+                    peer_id_clone,
+                    &addrs,
+                    &backend_clone,
+                    &perms_clone,
+                    models,
+                )
+                .await
                 {
                     Ok(record) => {
                         if dht_tx_clone.send(record).await.is_err() {
@@ -339,8 +347,14 @@ pub async fn run(
                 }
                 let addrs = addr::dedup_announce_addrs(&addrs_event);
                 let models = query_models(&model_backend_event, &advertise_event).await;
-                match announce::build_record(local_peer_id, &addrs, &backend_event, &perms_event, models)
-                    .await
+                match announce::build_record(
+                    local_peer_id,
+                    &addrs,
+                    &backend_event,
+                    &perms_event,
+                    models,
+                )
+                .await
                 {
                     Ok(record) => {
                         let _ = dht_tx_event.send(record).await;
@@ -471,8 +485,9 @@ pub async fn run(
                         if let Some(ref mb) = model_backend {
                             let mb = mb.clone();
                             let tx = stream_resp_tx.clone();
+                            let perm_store = Arc::clone(&store);
                             tokio::spawn(async move {
-                                let response = handle_model_request(&mb, &request, &peer.to_string()).await;
+                                let response = handle_model_request(&mb, &request, &peer.to_string(), &perm_store).await;
                                 let _ = tx.send((channel, response)).await;
                             });
                         } else {
@@ -650,14 +665,21 @@ async fn query_models(
         }
     };
 
-    match advertise {
+    let result = match advertise {
         AdvertiseModels::All(_) => all_models,
         AdvertiseModels::List(names) => all_models
             .into_iter()
             .filter(|m| names.iter().any(|n| n == &m.name))
             .collect(),
         AdvertiseModels::None(_) => Vec::new(),
+    };
+
+    if !result.is_empty() {
+        let names: Vec<&str> = result.iter().map(|m| m.name.as_str()).collect();
+        info!(count = result.len(), models = ?names, "Advertising models on the network");
     }
+
+    result
 }
 
 /// Handle an inbound model completion request from a peer.
@@ -669,8 +691,11 @@ async fn handle_model_request(
     backend: &ModelBackend,
     request_bytes: &[u8],
     peer: &str,
+    store: &PermissionStore,
 ) -> Vec<u8> {
+    use clawshake_core::identity::AgentId;
     use clawshake_core::models::ModelRequest;
+    use clawshake_core::permissions::Decision;
     use futures::StreamExt;
 
     // Parse the request
@@ -688,14 +713,41 @@ async fn handle_model_request(
         }
     };
 
+    // Permission check — reuse the same store as MCP tools.
+    // The model name is the "tool name" for permission purposes.
+    // Example: `clawshake permissions allow p2p:* qwen2.5:7b`
+    let agent_id = AgentId::P2p(peer.to_string());
+    match store.check(&agent_id, &req.model).await {
+        Decision::Allow => {
+            info!(model = %req.model, %peer, "Model access granted");
+        }
+        _ => {
+            warn!(model = %req.model, %peer, "Model access denied");
+            return serde_json::to_vec(&serde_json::json!({
+                "error": {
+                    "message": format!(
+                        "Permission denied: peer '{}' is not allowed to use model '{}'. \
+                         Grant access with: clawshake permissions allow p2p:{} {}",
+                        peer, req.model, peer, req.model
+                    ),
+                    "type": "permission_denied",
+                }
+            }))
+            .unwrap_or_default();
+        }
+    }
+
     info!(model = %req.model, %peer, "Handling model completion request");
 
     // Generate a request ID for tracking
-    let request_id = format!("p2p-{}-{}", peer.chars().take(8).collect::<String>(),
+    let request_id = format!(
+        "p2p-{}-{}",
+        peer.chars().take(8).collect::<String>(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis())
-            .unwrap_or(0));
+            .unwrap_or(0)
+    );
 
     // Run the completion
     let stream = match backend.complete(&request_id, &req).await {
@@ -734,10 +786,7 @@ async fn handle_model_request(
                         {
                             content.push_str(text);
                         }
-                        if let Some(reason) = choice
-                            .get("finish_reason")
-                            .and_then(|r| r.as_str())
-                        {
+                        if let Some(reason) = choice.get("finish_reason").and_then(|r| r.as_str()) {
                             finish_reason = Some(reason.to_string());
                         }
                     }
