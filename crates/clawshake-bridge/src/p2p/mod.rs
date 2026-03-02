@@ -35,11 +35,14 @@ pub fn peer_id_from_disk(override_path: Option<&std::path::Path>) -> Result<Peer
     Ok(PeerId::from(&kp.public()))
 }
 use clawshake_core::{
+    config::AdvertiseModels,
     mcp_client::McpClient,
-    network_channel::{ConnectedPeers, DhtLookup, OutboundCall},
+    models::ModelAnnounce,
+    network_channel::{ConnectedPeers, DhtLookup, OutboundCall, OutboundStreamCall},
     peer_table::PeerTable,
     permissions::PermissionStore,
 };
+use clawshake_models::backend::ModelBackend;
 use libp2p::futures::StreamExt;
 use libp2p::{
     autonat, dcutr, identify, kad, mdns, noise, relay, rendezvous, request_response,
@@ -93,6 +96,8 @@ pub async fn run(
     mut call_rx: mpsc::Receiver<OutboundCall>,
     reannounce_rx: Option<mpsc::Receiver<()>>,
     mut dht_lookup_rx: mpsc::Receiver<DhtLookup>,
+    model_backend: Option<ModelBackend>,
+    mut stream_call_rx: Option<mpsc::Receiver<OutboundStreamCall>>,
 ) -> Result<()> {
     let keypair = keypair::load_or_create_keypair(identity.as_deref())?;
     let local_peer_id = PeerId::from(&keypair.public());
@@ -276,19 +281,25 @@ pub async fn run(
     // every ANNOUNCE_INTERVAL seconds.
     const ANNOUNCE_INTERVAL: u64 = 300; // 5 minutes
 
+    // Load config for model advertise settings.
+    let models_config = clawshake_core::config::load(None).unwrap_or_default().models;
+
     if let Some(ref b) = backend {
         let backend_clone = b.clone();
         let dht_tx_clone = dht_tx.clone();
         let peer_id_clone = local_peer_id;
         let addrs_clone = listen_addrs.clone();
         let perms_clone = Arc::clone(&store);
+        let model_backend_clone = model_backend.clone();
+        let advertise_clone = models_config.advertise.clone();
         tokio::spawn(async move {
             let mut tick = interval(Duration::from_secs(ANNOUNCE_INTERVAL));
             tick.tick().await; // burn the immediate first tick
             loop {
                 tick.tick().await;
                 let addrs = addr::dedup_announce_addrs(&addrs_clone);
-                match announce::build_record(peer_id_clone, &addrs, &backend_clone, &perms_clone)
+                let models = query_models(&model_backend_clone, &advertise_clone).await;
+                match announce::build_record(peer_id_clone, &addrs, &backend_clone, &perms_clone, models)
                     .await
                 {
                     Ok(record) => {
@@ -308,6 +319,8 @@ pub async fn run(
         let dht_tx_event = dht_tx.clone();
         let addrs_event = listen_addrs.clone();
         let perms_event = Arc::clone(&store);
+        let model_backend_event = model_backend.clone();
+        let advertise_event = models_config.advertise.clone();
         let mut reannounce_rx = reannounce_rx;
         tokio::spawn(async move {
             loop {
@@ -325,7 +338,8 @@ pub async fn run(
                     break;
                 }
                 let addrs = addr::dedup_announce_addrs(&addrs_event);
-                match announce::build_record(local_peer_id, &addrs, &backend_event, &perms_event)
+                let models = query_models(&model_backend_event, &advertise_event).await;
+                match announce::build_record(local_peer_id, &addrs, &backend_event, &perms_event, models)
                     .await
                 {
                     Ok(record) => {
@@ -345,6 +359,16 @@ pub async fn run(
         request_response::OutboundRequestId,
         oneshot::Sender<Result<Vec<u8>, String>>,
     > = std::collections::HashMap::new();
+
+    // Pending outbound stream calls (model completions via the local proxy).
+    let mut pending_stream_outbound: std::collections::HashMap<
+        request_response::OutboundRequestId,
+        oneshot::Sender<Result<Vec<u8>, String>>,
+    > = std::collections::HashMap::new();
+
+    // Async stream (model) responses: spawned tasks send back here.
+    let (stream_resp_tx, mut stream_resp_rx) =
+        mpsc::channel::<(request_response::ResponseChannel<Vec<u8>>, Vec<u8>)>(64);
 
     let mut state = event::NodeState {
         relay_banner_shown: false,
@@ -444,19 +468,23 @@ pub async fn run(
                             ..
                         },
                     )) => {
-                        // Parse the StreamFrame and handle model/streaming requests.
-                        // For now, log and return an error — the model backend
-                        // handler is wired in the clawshake-models crate.
-                        info!(%peer, "Inbound stream protocol request ({} bytes)", request.len());
-                        let err_frame = clawshake_core::stream::StreamFrame::error(
-                            "unknown",
-                            "Stream protocol handler not yet connected to model backend",
-                            Some(-32601),
-                        );
-                        let _ = swarm.behaviour_mut().stream.send_response(
-                            channel,
-                            err_frame.to_bytes(),
-                        );
+                        if let Some(ref mb) = model_backend {
+                            let mb = mb.clone();
+                            let tx = stream_resp_tx.clone();
+                            tokio::spawn(async move {
+                                let response = handle_model_request(&mb, &request, &peer.to_string()).await;
+                                let _ = tx.send((channel, response)).await;
+                            });
+                        } else {
+                            info!(%peer, "Inbound stream request but no model backend configured");
+                            let err = serde_json::to_vec(&serde_json::json!({
+                                "error": {
+                                    "message": "No model backend configured on this node",
+                                    "type": "server_error",
+                                }
+                            })).unwrap_or_default();
+                            let _ = swarm.behaviour_mut().stream.send_response(channel, err);
+                        }
                     }
 
                     // ── Stream protocol response (outbound model call result) ─
@@ -468,8 +496,11 @@ pub async fn run(
                             ..
                         },
                     )) => {
-                        // TODO: Route to pending model completion futures.
-                        info!("Stream response for {request_id:?} ({} bytes)", response.len());
+                        if let Some(tx) = pending_stream_outbound.remove(&request_id) {
+                            let _ = tx.send(Ok(response));
+                        } else {
+                            info!("Stream: received response for unknown request {request_id:?}");
+                        }
                     }
 
                     // ── Stream protocol outbound failure ──────────────────────
@@ -478,7 +509,11 @@ pub async fn run(
                             peer, request_id, error, ..
                         },
                     )) => {
-                        warn!("Stream outbound failure to {peer} ({request_id:?}): {error}");
+                        if let Some(tx) = pending_stream_outbound.remove(&request_id) {
+                            let _ = tx.send(Err(format!("Stream call to {peer} failed: {error}")));
+                        } else {
+                            warn!("Stream outbound failure to {peer} ({request_id:?}): {error}");
+                        }
                     }
 
                     // ── Everything else ───────────────────────────────────────
@@ -516,6 +551,29 @@ pub async fn run(
             // Deliver async proxy responses back through the swarm.
             Some((channel, response)) = resp_rx.recv() => {
                 let _ = swarm.behaviour_mut().proxy.send_response(channel, response);
+            }
+
+            // Deliver async stream (model) responses back through the swarm.
+            Some((channel, response)) = stream_resp_rx.recv() => {
+                let _ = swarm.behaviour_mut().stream.send_response(channel, response);
+            }
+
+            // Outbound stream call: model proxy sends a completion request to a peer.
+            Some(OutboundStreamCall { peer_id, request, response_tx }) = async {
+                match stream_call_rx.as_mut() {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                match peer_id.parse::<PeerId>() {
+                    Ok(pid) => {
+                        let req_id = swarm.behaviour_mut().stream.send_request(&pid, request);
+                        pending_stream_outbound.insert(req_id, response_tx);
+                    }
+                    Err(e) => {
+                        let _ = response_tx.send(Err(format!("invalid peer_id '{peer_id}': {e}")));
+                    }
+                }
             }
 
             // Publish DHT announcement records from the announce task.
@@ -564,4 +622,163 @@ pub async fn run(
     }
     info!("Node stopped.");
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Model proxy helpers
+// ---------------------------------------------------------------------------
+
+/// Query the model backend for available models, filtered by the advertise
+/// configuration.  Returns an empty vec if no model backend is configured.
+async fn query_models(
+    backend: &Option<ModelBackend>,
+    advertise: &AdvertiseModels,
+) -> Vec<ModelAnnounce> {
+    let backend = match backend {
+        Some(b) => b,
+        None => return Vec::new(),
+    };
+    if advertise.is_none() {
+        return Vec::new();
+    }
+
+    let all_models = match backend.list_models().await {
+        Ok(m) => m,
+        Err(e) => {
+            warn!("Failed to query model backend: {e}");
+            return Vec::new();
+        }
+    };
+
+    match advertise {
+        AdvertiseModels::All(_) => all_models,
+        AdvertiseModels::List(names) => all_models
+            .into_iter()
+            .filter(|m| names.iter().any(|n| n == &m.name))
+            .collect(),
+        AdvertiseModels::None(_) => Vec::new(),
+    }
+}
+
+/// Handle an inbound model completion request from a peer.
+///
+/// Parses the request bytes as a `ModelRequest`, runs the completion against
+/// the local model backend, collects all streamed chunks into a single
+/// non-streaming OpenAI-compatible response, and returns the response bytes.
+async fn handle_model_request(
+    backend: &ModelBackend,
+    request_bytes: &[u8],
+    peer: &str,
+) -> Vec<u8> {
+    use clawshake_core::models::ModelRequest;
+    use futures::StreamExt;
+
+    // Parse the request
+    let req: ModelRequest = match serde_json::from_slice(request_bytes) {
+        Ok(r) => r,
+        Err(e) => {
+            warn!(%peer, "Failed to parse model request: {e}");
+            return serde_json::to_vec(&serde_json::json!({
+                "error": {
+                    "message": format!("Invalid model request: {e}"),
+                    "type": "invalid_request_error",
+                }
+            }))
+            .unwrap_or_default();
+        }
+    };
+
+    info!(model = %req.model, %peer, "Handling model completion request");
+
+    // Generate a request ID for tracking
+    let request_id = format!("p2p-{}-{}", peer.chars().take(8).collect::<String>(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0));
+
+    // Run the completion
+    let stream = match backend.complete(&request_id, &req).await {
+        Ok(s) => s,
+        Err(e) => {
+            warn!(%peer, "Model completion failed: {e}");
+            return serde_json::to_vec(&serde_json::json!({
+                "error": {
+                    "message": format!("Model backend error: {e}"),
+                    "type": "server_error",
+                }
+            }))
+            .unwrap_or_default();
+        }
+    };
+
+    // Collect all streamed chunks into a single response.
+    // Each Chunk.data is an OpenAI streaming delta — we extract the content
+    // text from each and concatenate.
+    let mut content = String::new();
+    let mut usage = None;
+    let mut finish_reason = None;
+
+    tokio::pin!(stream);
+    while let Some(frame) = stream.next().await {
+        match frame {
+            clawshake_core::stream::StreamFrame::Chunk { data, .. } => {
+                // Extract content from OpenAI delta format:
+                // { "choices": [{ "delta": { "content": "..." }, "finish_reason": "stop" }] }
+                if let Some(choices) = data.get("choices").and_then(|c| c.as_array()) {
+                    for choice in choices {
+                        if let Some(text) = choice
+                            .get("delta")
+                            .and_then(|d| d.get("content"))
+                            .and_then(|c| c.as_str())
+                        {
+                            content.push_str(text);
+                        }
+                        if let Some(reason) = choice
+                            .get("finish_reason")
+                            .and_then(|r| r.as_str())
+                        {
+                            finish_reason = Some(reason.to_string());
+                        }
+                    }
+                }
+            }
+            clawshake_core::stream::StreamFrame::Done { meta, .. } => {
+                usage = meta;
+            }
+            clawshake_core::stream::StreamFrame::Error { message, .. } => {
+                warn!(%peer, "Model stream error: {message}");
+                return serde_json::to_vec(&serde_json::json!({
+                    "error": {
+                        "message": message,
+                        "type": "server_error",
+                    }
+                }))
+                .unwrap_or_default();
+            }
+        }
+    }
+
+    // Build a non-streaming OpenAI-compatible response.
+    let mut response = serde_json::json!({
+        "id": request_id,
+        "object": "chat.completion",
+        "model": req.model,
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": content,
+            },
+            "finish_reason": finish_reason.unwrap_or_else(|| "stop".to_string()),
+        }],
+    });
+
+    if let Some(u) = usage {
+        response["usage"] = u;
+    }
+
+    info!(model = %req.model, %peer, content_len = content.len(), "Model completion done");
+
+    serde_json::to_vec(&response).unwrap_or_default()
 }

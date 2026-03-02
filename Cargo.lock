@@ -532,6 +532,7 @@ dependencies = [
  "async-trait",
  "clap",
  "clawshake-core",
+ "clawshake-models",
  "clawshake-tools",
  "dirs",
  "futures",

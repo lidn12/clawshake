@@ -16,6 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 clawshake-core = { workspace = true }
+clawshake-models = { workspace = true }
 clawshake-tools = { workspace = true }
 tokio = { workspace = true }
 clap = { workspace = true }

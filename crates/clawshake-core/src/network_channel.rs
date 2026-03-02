@@ -72,3 +72,30 @@ pub type DhtLookupTx = mpsc::Sender<DhtLookup>;
 pub fn new_dht_lookup_channel() -> (DhtLookupTx, mpsc::Receiver<DhtLookup>) {
     mpsc::channel(16)
 }
+
+// ---------------------------------------------------------------------------
+// Outbound stream (model proxy) call channel
+// ---------------------------------------------------------------------------
+
+/// A single outbound model completion request to be routed through the swarm's
+/// stream protocol to a specific peer.
+///
+/// Sent by the local model proxy (`clawshake-models`) when a client calls
+/// `POST /v1/chat/completions` with a `model@peer_id` model ID.
+pub struct OutboundStreamCall {
+    /// Target peer ID string — parsed to `PeerId` inside the swarm loop.
+    pub peer_id: String,
+    /// Raw JSON bytes of the [`ModelRequest`](crate::models::ModelRequest).
+    pub request: Vec<u8>,
+    /// Oneshot channel to deliver the raw response bytes (or an error string).
+    pub response_tx: oneshot::Sender<Result<Vec<u8>, String>>,
+}
+
+/// Sender half of the outbound stream call channel.
+pub type OutboundStreamCallTx = mpsc::Sender<OutboundStreamCall>;
+
+/// Create a new outbound stream call channel.
+/// Pass the receiver to `p2p::run()`; keep the sender for the model proxy.
+pub fn new_outbound_stream_call_channel() -> (OutboundStreamCallTx, mpsc::Receiver<OutboundStreamCall>) {
+    mpsc::channel(16)
+}

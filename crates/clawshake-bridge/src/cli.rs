@@ -315,6 +315,36 @@ pub async fn start_bridge(
         dht_lookup_tx,
     ));
 
+    // -- Model proxy --------------------------------------------------------
+    // Load config to check for [models] section.
+    let config = clawshake_core::config::load(None).unwrap_or_default();
+    let (model_backend, stream_call_rx) = if config.models.is_enabled() {
+        let endpoint = config.models.endpoint.as_deref().unwrap_or("http://127.0.0.1:11434");
+        let mb = clawshake_models::backend::ModelBackend::new(endpoint);
+        info!("Model proxy enabled — backend: {endpoint}");
+
+        // Outbound stream call channel: the proxy server sends completion
+        // requests here; the p2p event loop routes them to peers.
+        let (stream_call_tx, stream_call_rx) =
+            clawshake_core::network_channel::new_outbound_stream_call_channel();
+
+        // Spawn the local OpenAI-compatible proxy server.
+        let proxy_state = std::sync::Arc::new(clawshake_models::proxy::ProxyState {
+            peer_table: Arc::clone(&table),
+            stream_call_tx,
+        });
+        let proxy_port = config.models.proxy_port;
+        tokio::spawn(async move {
+            if let Err(e) = clawshake_models::proxy::serve(proxy_state, proxy_port).await {
+                tracing::error!("Model proxy server exited with error: {e}");
+            }
+        });
+
+        (Some(mb), Some(stream_call_rx))
+    } else {
+        (None, None)
+    };
+
     crate::p2p::run(
         p2p_port,
         p2p_args.boot_peers,
@@ -327,6 +357,8 @@ pub async fn start_bridge(
         call_rx,
         Some(reannounce_rx),
         dht_lookup_rx,
+        model_backend,
+        stream_call_rx,
     )
     .await
 }

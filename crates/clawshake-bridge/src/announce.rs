@@ -106,6 +106,7 @@ pub async fn build_record(
     listen_addrs: &[Multiaddr],
     backend: &McpClient,
     permissions: &PermissionStore,
+    models: Vec<ModelAnnounce>,
 ) -> Result<kad::Record> {
     let raw_tools = backend.tools_list().await?;
 
@@ -128,7 +129,9 @@ pub async fn build_record(
         });
     }
 
-    let count = tools.len();
+    let tool_count = tools.len();
+    let model_count = models.len();
+    let version = if models.is_empty() { 1 } else { 2 };
 
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -136,15 +139,15 @@ pub async fn build_record(
         .unwrap_or(0);
 
     let record = AnnouncementRecord {
-        v: 1,
+        v: version,
         peer_id: peer_id.to_string(),
         tools,
-        models: Vec::new(),
+        models,
         addrs: listen_addrs.iter().map(|a| a.to_string()).collect(),
         ts,
     };
 
-    info!(tools = count, peer = %peer_id, "Built DHT announcement");
+    info!(tools = tool_count, models = model_count, peer = %peer_id, "Built DHT announcement");
 
     Ok(kad::Record {
         key: kad::RecordKey::new(&peer_id.to_bytes()),
