@@ -107,8 +107,22 @@ pub(crate) async fn handle(
         }
 
         // ---------------------------------------------------------------
+        "ping" => {
+            // MCP liveness ping — respond with empty result.
+            Some(JsonRpcResponse::ok(id, json!({})))
+        }
+
+        // ---------------------------------------------------------------
         "notifications/initialized" => {
             // Client notification — no response.
+            None
+        }
+
+        // ---------------------------------------------------------------
+        "notifications/cancelled" => {
+            // Client cancelled an in-flight request — no response.
+            // (We don't currently track cancellable requests, but we must
+            // not return METHOD_NOT_FOUND for this standard notification.)
             None
         }
 

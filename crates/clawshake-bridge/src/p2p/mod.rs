@@ -38,7 +38,9 @@ use clawshake_core::{
     config::AdvertiseModels,
     mcp_client::McpClient,
     models::ModelAnnounce,
-    network_channel::{ConnectedPeers, DhtLookup, OutboundCall, OutboundStreamCall},
+    network_channel::{
+        ConnectedPeers, DhtLookup, OutboundCall, OutboundModelStreamingCall, OutboundStreamCall,
+    },
     peer_table::PeerTable,
     permissions::PermissionStore,
 };
@@ -67,6 +69,7 @@ struct ClawshakeBehaviour {
     mdns: mdns::tokio::Behaviour,
     proxy: proxy::Behaviour,
     stream: stream::Behaviour,
+    model_stream: libp2p_stream::Behaviour,
     relay_server: Toggle<relay::Behaviour>,
     relay_client: relay::client::Behaviour,
     autonat: autonat::Behaviour,
@@ -98,6 +101,7 @@ pub async fn run(
     mut dht_lookup_rx: mpsc::Receiver<DhtLookup>,
     model_backend: Option<ModelBackend>,
     mut stream_call_rx: Option<mpsc::Receiver<OutboundStreamCall>>,
+    mut model_streaming_rx: Option<mpsc::Receiver<OutboundModelStreamingCall>>,
 ) -> Result<()> {
     let keypair = keypair::load_or_create_keypair(identity.as_deref())?;
     let local_peer_id = PeerId::from(&keypair.public());
@@ -137,6 +141,8 @@ pub async fn run(
             let proxy = proxy::new_behaviour();
 
             let stream_proto = stream::new_behaviour();
+
+            let model_stream = libp2p_stream::Behaviour::new();
 
             // Only enable relay hop if the --relay-server flag was set.
             // Using Toggle so non-relay nodes don't advertise the
@@ -179,6 +185,7 @@ pub async fn run(
                 mdns,
                 proxy,
                 stream: stream_proto,
+                model_stream,
                 relay_server,
                 relay_client,
                 autonat,
@@ -384,6 +391,40 @@ pub async fn run(
     let (stream_resp_tx, mut stream_resp_rx) =
         mpsc::channel::<(request_response::ResponseChannel<Vec<u8>>, Vec<u8>)>(64);
 
+    // -- Model streaming (libp2p-stream) ------------------------------------
+    // Obtain a Control handle for opening outbound streams and accepting
+    // inbound ones.  The protocol uses the same framing as request_response
+    // (4-byte BE length prefix) but allows multiple frames per stream —
+    // essential for real-time token streaming from model backends.
+    let model_stream_protocol =
+        StreamProtocol::try_from_owned("/clawshake/models/stream/1.0.0".to_string())
+            .expect("valid model stream protocol");
+
+    let mut model_stream_control = swarm.behaviour().model_stream.new_control();
+
+    // Accept inbound model streams — spawn a long-lived task that loops over
+    // incoming streams and handles each in its own sub-task.
+    if let Some(ref mb) = model_backend {
+        let mb_inbound = mb.clone();
+        let store_inbound = Arc::clone(&store);
+        let mut incoming = model_stream_control
+            .accept(model_stream_protocol.clone())
+            .expect("model stream protocol not yet registered");
+        tokio::spawn(async move {
+            while let Some((peer, stream)) = incoming.next().await {
+                let mb = mb_inbound.clone();
+                let store = store_inbound.clone();
+                tokio::spawn(async move {
+                    if let Err(e) =
+                        handle_inbound_model_stream(&mb, stream, &peer.to_string(), &store).await
+                    {
+                        warn!(%peer, "Inbound model stream error: {e}");
+                    }
+                });
+            }
+        });
+    }
+
     let mut state = event::NodeState {
         relay_banner_shown: false,
         relay_reserved_peers: std::collections::HashSet::new(),
@@ -587,6 +628,34 @@ pub async fn run(
                     }
                     Err(e) => {
                         let _ = response_tx.send(Err(format!("invalid peer_id '{peer_id}': {e}")));
+                    }
+                }
+            }
+
+            // Outbound model streaming call: like above but uses libp2p-stream
+            // for true frame-by-frame streaming.  Opens a bidirectional stream,
+            // writes the request, then reads StreamFrame JSON objects and
+            // forwards each through the mpsc channel.
+            Some(OutboundModelStreamingCall { peer_id, request, frame_tx }) = async {
+                match model_streaming_rx.as_mut() {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                match peer_id.parse::<PeerId>() {
+                    Ok(pid) => {
+                        let mut ctl = model_stream_control.clone();
+                        let proto = model_stream_protocol.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = drive_outbound_model_stream(
+                                &mut ctl, pid, proto, &request, frame_tx,
+                            ).await {
+                                warn!(%pid, "Outbound model stream failed: {e}");
+                            }
+                        });
+                    }
+                    Err(e) => {
+                        let _ = frame_tx.send(Err(format!("invalid peer_id '{peer_id}': {e}"))).await;
                     }
                 }
             }
@@ -830,4 +899,155 @@ async fn handle_model_request(
     info!(model = %req.model, %peer, content_len = content.len(), "Model completion done");
 
     serde_json::to_vec(&response).unwrap_or_default()
+}
+
+// ---------------------------------------------------------------------------
+// libp2p-stream model streaming helpers
+// ---------------------------------------------------------------------------
+
+/// Handle an inbound model stream from a remote peer.
+///
+/// Reads the `ModelRequest` from the stream, runs the completion against the
+/// local model backend, and writes each `StreamFrame` back as it's produced.
+/// The remote proxy reads these frames and forwards them as SSE events to
+/// the HTTP client — giving true token-by-token streaming.
+async fn handle_inbound_model_stream(
+    backend: &ModelBackend,
+    mut stream: libp2p::swarm::Stream,
+    peer: &str,
+    store: &PermissionStore,
+) -> Result<()> {
+    use clawshake_core::identity::AgentId;
+    use clawshake_core::models::ModelRequest;
+    use clawshake_core::permissions::Decision;
+    use clawshake_core::stream::StreamFrame;
+    use futures::io::AsyncWriteExt;
+
+    // Read the request (length-prefixed).
+    let request_bytes = proxy::read_framed(&mut stream)
+        .await
+        .context("reading model request from stream")?;
+
+    let req: ModelRequest =
+        serde_json::from_slice(&request_bytes).context("parsing model request JSON")?;
+
+    info!(model = %req.model, %peer, "Inbound model stream");
+
+    // Permission check
+    let agent_id = AgentId::P2p(peer.to_string());
+    match store.check(&agent_id, &req.model).await {
+        Decision::Allow => {
+            info!(model = %req.model, %peer, "Model stream access granted");
+        }
+        _ => {
+            warn!(model = %req.model, %peer, "Model stream access denied");
+            let err = StreamFrame::error(
+                "denied",
+                format!(
+                    "Permission denied: peer '{}' is not allowed to use model '{}'. \
+                     Grant access with: clawshake permissions allow p2p:{} {}",
+                    peer, req.model, peer, req.model
+                ),
+                Some(-32001),
+            );
+            proxy::write_framed(&mut stream, &err.to_bytes()).await?;
+            stream.close().await?;
+            return Ok(());
+        }
+    }
+
+    let request_id = format!(
+        "p2p-{}-{}",
+        peer.chars().take(8).collect::<String>(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0)
+    );
+
+    // Run the completion — returns a stream of StreamFrames.
+    let frame_stream = match backend.complete(&request_id, &req).await {
+        Ok(s) => s,
+        Err(e) => {
+            let err = StreamFrame::error(&request_id, format!("Backend error: {e}"), Some(-32603));
+            proxy::write_framed(&mut stream, &err.to_bytes()).await?;
+            stream.close().await?;
+            return Ok(());
+        }
+    };
+
+    // Forward each frame from the backend to the remote peer.
+    tokio::pin!(frame_stream);
+    while let Some(frame) = futures::StreamExt::next(&mut frame_stream).await {
+        let bytes = frame.to_bytes();
+        if proxy::write_framed(&mut stream, &bytes).await.is_err() {
+            warn!(%peer, "Stream write failed — peer disconnected?");
+            return Ok(());
+        }
+    }
+
+    stream.close().await?;
+    info!(model = %req.model, %peer, "Model stream completed");
+    Ok(())
+}
+
+/// Drive an outbound model stream: open a bidirectional stream to the peer,
+/// write the request, and read `StreamFrame`s back, forwarding each through
+/// the mpsc channel to the proxy's SSE response.
+async fn drive_outbound_model_stream(
+    control: &mut libp2p_stream::Control,
+    peer: PeerId,
+    protocol: StreamProtocol,
+    request: &[u8],
+    frame_tx: mpsc::Sender<Result<Vec<u8>, String>>,
+) -> Result<()> {
+    use futures::io::AsyncWriteExt;
+
+    info!(%peer, "Opening model stream");
+
+    let mut stream = control
+        .open_stream(peer, protocol)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to open model stream to {peer}: {e}"))?;
+
+    // Write the request (length-prefixed).
+    proxy::write_framed(&mut stream, request)
+        .await
+        .context("writing model request to stream")?;
+
+    // Read frames until the stream is closed or a Done/Error frame arrives.
+    loop {
+        match proxy::read_framed(&mut stream).await {
+            Ok(frame_bytes) => {
+                // Check if this is a terminal frame (Done or Error)
+                let is_terminal =
+                    match clawshake_core::stream::StreamFrame::from_bytes(&frame_bytes) {
+                        Ok(clawshake_core::stream::StreamFrame::Done { .. }) => true,
+                        Ok(clawshake_core::stream::StreamFrame::Error { .. }) => true,
+                        _ => false,
+                    };
+
+                if frame_tx.send(Ok(frame_bytes)).await.is_err() {
+                    warn!(%peer, "Frame receiver dropped — client disconnected?");
+                    break;
+                }
+
+                if is_terminal {
+                    break;
+                }
+            }
+            Err(e) => {
+                // EOF = stream closed by peer (normal after Done frame).
+                if e.kind() == std::io::ErrorKind::UnexpectedEof {
+                    break;
+                }
+                let _ = frame_tx.send(Err(format!("Stream read error: {e}"))).await;
+                break;
+            }
+        }
+    }
+
+    let _ = stream.close().await;
+    info!(%peer, "Model stream finished");
+    Ok(())
 }

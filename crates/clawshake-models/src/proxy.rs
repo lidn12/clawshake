@@ -4,19 +4,24 @@
 //! Applications point `OPENAI_BASE_URL` at this address and get transparent
 //! access to models running on any peer in the P2P network.
 //!
+//! When the client requests `stream: true`, the proxy opens a bidirectional
+//! P2P stream (via `libp2p-stream`) and re-emits each model delta as an SSE
+//! event — giving real-time, token-by-token streaming over the network.
+//!
 //! Model IDs use the format `<model_name>@<peer_id>`.
 
 use std::sync::Arc;
 
 use anyhow::Result;
 use axum::{
+    body::Body,
     extract::State,
     http::StatusCode,
     response::{IntoResponse, Json},
     routing::{get, post},
     Router,
 };
-use clawshake_core::network_channel::OutboundStreamCallTx;
+use clawshake_core::network_channel::{OutboundModelStreamingCallTx, OutboundStreamCallTx};
 use clawshake_core::peer_table::PeerTable;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -26,8 +31,10 @@ use tracing::{info, warn};
 pub struct ProxyState {
     /// Peer table — used to discover models from DHT announcements.
     pub peer_table: Arc<PeerTable>,
-    /// Channel to send outbound stream calls through the P2P swarm.
+    /// Channel for non-streaming model calls (request-response).
     pub stream_call_tx: OutboundStreamCallTx,
+    /// Channel for streaming model calls (libp2p-stream, frame-by-frame).
+    pub model_streaming_tx: OutboundModelStreamingCallTx,
 }
 
 /// Start the local model proxy server on the given port.
@@ -82,10 +89,8 @@ struct CompletionRequest {
     temperature: Option<f64>,
     #[serde(default)]
     max_tokens: Option<u64>,
-    /// Whether to stream the response. Currently always collected into a
-    /// single response for P2P transport; SSE streaming will be added later.
+    /// Whether to stream the response as SSE events.
     #[serde(default)]
-    #[allow(dead_code)]
     stream: Option<bool>,
 }
 
@@ -99,10 +104,16 @@ struct MessageInput {
 ///
 /// Parses the `model` field as `model_name@peer_id`, opens a P2P stream
 /// to that peer, and forwards the completion request.
+///
+/// When `stream: true`, returns `text/event-stream` (SSE) with real-time
+/// token deltas forwarded from the remote model backend.  Otherwise returns
+/// a single JSON response.
 async fn chat_completions(
     State(state): State<Arc<ProxyState>>,
     Json(req): Json<CompletionRequest>,
 ) -> impl IntoResponse {
+    let wants_streaming = req.stream.unwrap_or(false);
+
     // Parse model@peer_id
     let (model_name, peer_id) = match req.model.rsplit_once('@') {
         Some((m, p)) => (m.to_string(), p.to_string()),
@@ -151,7 +162,7 @@ async fn chat_completions(
             .collect(),
         temperature: req.temperature,
         max_tokens: req.max_tokens,
-        stream: true, // always stream over P2P, we collect on the peer side
+        stream: true, // always stream over P2P, we collect on the peer side if needed
     };
 
     let request_bytes = match serde_json::to_vec(&model_request) {
@@ -170,7 +181,24 @@ async fn chat_completions(
         }
     };
 
-    // Send through the P2P stream protocol and await the response.
+    if wants_streaming {
+        chat_completions_streaming(state, model_name, peer_id, request_bytes)
+            .await
+            .into_response()
+    } else {
+        chat_completions_buffered(state, model_name, peer_id, request_bytes)
+            .await
+            .into_response()
+    }
+}
+
+/// Non-streaming path: send request-response, wait for full result, return JSON.
+async fn chat_completions_buffered(
+    state: Arc<ProxyState>,
+    model_name: String,
+    peer_id: String,
+    request_bytes: Vec<u8>,
+) -> impl IntoResponse {
     let (response_tx, response_rx) = tokio::sync::oneshot::channel();
     let call = clawshake_core::network_channel::OutboundStreamCall {
         peer_id: peer_id.clone(),
@@ -191,19 +219,12 @@ async fn chat_completions(
             .into_response();
     }
 
-    // Wait for the response from the peer.
     match response_rx.await {
         Ok(Ok(response_bytes)) => {
-            // The peer returns an OpenAI-compatible JSON response — pass it through.
             match serde_json::from_slice::<Value>(&response_bytes) {
                 Ok(response_json) => {
-                    // Check if it's an error response from the peer
                     if response_json.get("error").is_some() {
-                        return (
-                            StatusCode::BAD_GATEWAY,
-                            Json(response_json),
-                        )
-                            .into_response();
+                        return (StatusCode::BAD_GATEWAY, Json(response_json)).into_response();
                     }
                     info!(model = %model_name, peer = %peer_id, "Model completion received from peer");
                     (StatusCode::OK, Json(response_json)).into_response()
@@ -236,17 +257,102 @@ async fn chat_completions(
             )
                 .into_response()
         }
-        Err(_) => {
-            (
-                StatusCode::GATEWAY_TIMEOUT,
-                Json(json!({
-                    "error": {
-                        "message": "P2P call was dropped (peer may have disconnected)",
-                        "type": "server_error",
-                    }
-                })),
-            )
-                .into_response()
-        }
+        Err(_) => (
+            StatusCode::GATEWAY_TIMEOUT,
+            Json(json!({
+                "error": {
+                    "message": "P2P call was dropped (peer may have disconnected)",
+                    "type": "server_error",
+                }
+            })),
+        )
+            .into_response(),
     }
+}
+
+/// Streaming path: open a libp2p-stream, read frames, emit SSE events.
+async fn chat_completions_streaming(
+    state: Arc<ProxyState>,
+    model_name: String,
+    peer_id: String,
+    request_bytes: Vec<u8>,
+) -> impl IntoResponse {
+    // Create an mpsc channel for streaming frames from the P2P layer.
+    let (frame_tx, mut frame_rx) = tokio::sync::mpsc::channel::<Result<Vec<u8>, String>>(64);
+
+    let call = clawshake_core::network_channel::OutboundModelStreamingCall {
+        peer_id: peer_id.clone(),
+        request: request_bytes,
+        frame_tx,
+    };
+
+    if state.model_streaming_tx.send(call).await.is_err() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "error": {
+                    "message": "P2P streaming transport is not available",
+                    "type": "server_error",
+                }
+            })),
+        )
+            .into_response();
+    }
+
+    info!(model = %model_name, peer = %peer_id, "Starting SSE stream");
+
+    // Build an SSE response body from the incoming frames.
+    let sse_stream = async_stream::stream! {
+        while let Some(result) = frame_rx.recv().await {
+            match result {
+                Ok(frame_bytes) => {
+                    // Each frame is a StreamFrame JSON object.
+                    // Parse to check type and re-emit as OpenAI SSE.
+                    match clawshake_core::stream::StreamFrame::from_bytes(&frame_bytes) {
+                        Ok(clawshake_core::stream::StreamFrame::Chunk { data, .. }) => {
+                            // Forward the OpenAI delta JSON as an SSE data event.
+                            let json_str = serde_json::to_string(&data).unwrap_or_default();
+                            yield Ok::<_, std::convert::Infallible>(
+                                format!("data: {json_str}\n\n")
+                            );
+                        }
+                        Ok(clawshake_core::stream::StreamFrame::Done { .. }) => {
+                            yield Ok(format!("data: [DONE]\n\n"));
+                            break;
+                        }
+                        Ok(clawshake_core::stream::StreamFrame::Error { message, .. }) => {
+                            let err = serde_json::json!({
+                                "error": { "message": message, "type": "server_error" }
+                            });
+                            yield Ok(format!("data: {}\n\n", serde_json::to_string(&err).unwrap_or_default()));
+                            yield Ok(format!("data: [DONE]\n\n"));
+                            break;
+                        }
+                        Err(e) => {
+                            warn!("Failed to parse stream frame: {e}");
+                        }
+                    }
+                }
+                Err(err) => {
+                    let err_json = serde_json::json!({
+                        "error": { "message": err, "type": "server_error" }
+                    });
+                    yield Ok(format!("data: {}\n\n", serde_json::to_string(&err_json).unwrap_or_default()));
+                    yield Ok(format!("data: [DONE]\n\n"));
+                    break;
+                }
+            }
+        }
+    };
+
+    let body = Body::from_stream(sse_stream);
+
+    axum::response::Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "text/event-stream")
+        .header("Cache-Control", "no-cache")
+        .header("Connection", "keep-alive")
+        .body(body)
+        .unwrap()
+        .into_response()
 }

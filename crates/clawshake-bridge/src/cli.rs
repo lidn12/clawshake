@@ -318,7 +318,7 @@ pub async fn start_bridge(
     // -- Model proxy --------------------------------------------------------
     // Load config to check for [models] section.
     let config = clawshake_core::config::load(None).unwrap_or_default();
-    let (model_backend, stream_call_rx) = if config.models.is_enabled() {
+    let (model_backend, stream_call_rx, model_streaming_rx) = if config.models.is_enabled() {
         let endpoint = config
             .models
             .endpoint
@@ -332,10 +332,15 @@ pub async fn start_bridge(
         let (stream_call_tx, stream_call_rx) =
             clawshake_core::network_channel::new_outbound_stream_call_channel();
 
+        // Outbound model streaming channel: used for SSE streaming requests.
+        let (model_streaming_tx, model_streaming_rx) =
+            clawshake_core::network_channel::new_outbound_model_streaming_channel();
+
         // Spawn the local OpenAI-compatible proxy server.
         let proxy_state = std::sync::Arc::new(clawshake_models::proxy::ProxyState {
             peer_table: Arc::clone(&table),
             stream_call_tx,
+            model_streaming_tx,
         });
         let proxy_port = config.models.proxy_port;
         tokio::spawn(async move {
@@ -344,9 +349,9 @@ pub async fn start_bridge(
             }
         });
 
-        (Some(mb), Some(stream_call_rx))
+        (Some(mb), Some(stream_call_rx), Some(model_streaming_rx))
     } else {
-        (None, None)
+        (None, None, None)
     };
 
     crate::p2p::run(
@@ -363,6 +368,7 @@ pub async fn start_bridge(
         dht_lookup_rx,
         model_backend,
         stream_call_rx,
+        model_streaming_rx,
     )
     .await
 }

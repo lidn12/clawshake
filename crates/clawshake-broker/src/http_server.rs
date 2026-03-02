@@ -164,7 +164,11 @@ async fn sse_handler(
     };
 
     let stream = futures::stream::once(std::future::ready(endpoint_event)).chain(response_stream);
-    Sse::new(stream).keep_alive(KeepAlive::default())
+    Sse::new(stream).keep_alive(
+        KeepAlive::new()
+            .interval(std::time::Duration::from_secs(5))
+            .text("ping"),
+    )
 }
 
 // ---------------------------------------------------------------------------

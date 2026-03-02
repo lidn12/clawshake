@@ -217,6 +217,53 @@ Code mode is most effective for sessions with many tools loaded and workflows wi
 
 > This approach was independently validated by [Anthropic](https://www.anthropic.com/engineering/code-execution-with-mcp) (measuring up to 98.7% token reduction on real workflows) and [Cloudflare](https://blog.cloudflare.com/code-mode/) ("LLMs are better at writing code to call MCP, than at calling MCP directly"). Clawshake's implementation follows the same pattern.
 
+## Model proxy
+
+Clawshake can share a local AI model (Ollama, vLLM, llama.cpp, or any OpenAI-compatible server) across machines over the same P2P network. A laptop with no GPU can transparently call a model running on a desktop with one.
+
+**On the machine with the model**, add a `[models]` section to `~/.clawshake/config.toml`:
+
+```toml
+[models]
+endpoint = "http://127.0.0.1:11434"   # your local model server
+# advertise = "all"                   # share all models (default)
+# advertise = ["llama3.1:70b"]        # or share specific ones
+# proxy_port = 11435                  # local proxy port (default)
+```
+
+Restart `clawshake run`. The node now advertises its models on the DHT and starts an OpenAI-compatible proxy on port 11435.
+
+**On any other machine**, also add the `[models]` section (the `endpoint` can be absent if the machine has no local model — it will still be able to call models on peers):
+
+```toml
+[models]
+# No endpoint needed to use other peers' models
+proxy_port = 11435
+```
+
+Then point any OpenAI SDK at the local proxy:
+
+```bash
+export OPENAI_BASE_URL=http://127.0.0.1:11435/v1
+export OPENAI_API_KEY=ignored
+```
+
+Models are addressed as `model_name@peer_id`. Use the `network_models` MCP tool to discover what is available:
+
+```js
+// Inside run_code
+const models = await network.models({});
+// → [{ id: "qwen2.5:7b@12D3KooW...", owned_by: "ollama", ... }]
+```
+
+Or use the `/v1/models` endpoint directly:
+
+```bash
+curl http://127.0.0.1:11435/v1/models
+```
+
+Both streaming (`stream: true`, SSE) and non-streaming requests are supported. Streaming is carried over a dedicated libp2p stream (`/clawshake/models/stream/1.0.0`) — tokens arrive in real time rather than buffered until the peer finishes generating.
+
 ## Architecture
 
 ```
@@ -224,11 +271,12 @@ crates/
   clawshake/          Unified binary — runs broker + bridge in one process
   clawshake-broker/   MCP server, manifest loading, permission checks
   clawshake-bridge/   libp2p swarm — Kademlia, relay, mDNS, QUIC/TCP
-  clawshake-core/     Shared types — identity, permissions, protocol
+  clawshake-core/     Shared types — identity, permissions, protocol, config
+  clawshake-models/   Model proxy — OpenAI-compatible HTTP server + P2P streaming backend
   clawshake-tools/    Network tools + IPC between broker and bridge
 ```
 
-**P2P stack:** libp2p with Kademlia DHT, mDNS, relay + DCUtR (hole punching), QUIC and TCP transports, Noise encryption.
+**P2P stack:** libp2p 0.56 with Kademlia DHT, mDNS, relay + DCUtR (hole punching), QUIC and TCP transports, Noise encryption, and libp2p-stream for real-time bidirectional streaming.
 
 **Identity:** Ed25519 keypair generated on first run, stored at `~/.clawshake/identity.key`. Peer identity is verified cryptographically via the Noise handshake — it cannot be spoofed.
 

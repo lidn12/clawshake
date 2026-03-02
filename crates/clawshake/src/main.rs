@@ -201,16 +201,29 @@ async fn main() -> Result<()> {
                 info!(tools = registry.tool_count(), "Broker ready");
 
                 let broker_port = port;
-                tokio::spawn(http_server::serve(
-                    broker_port,
-                    registry,
-                    permissions,
-                    servers,
-                    Some(sse_rx),
-                    shim_cache,
-                    code_mode,
-                ));
+                let _broker_handle = tokio::spawn(async move {
+                    if let Err(e) = http_server::serve(
+                        broker_port,
+                        registry,
+                        permissions,
+                        servers,
+                        Some(sse_rx),
+                        shim_cache,
+                        code_mode,
+                    )
+                    .await
+                    {
+                        tracing::error!("Broker HTTP server exited with error: {e:#}");
+                        // Exit the whole process — the bridge without a
+                        // broker is useless and a silent failure is worse.
+                        std::process::exit(1);
+                    }
+                });
                 info!("Broker HTTP server starting on :{broker_port}");
+
+                // Give the broker a moment to bind so VS Code can connect
+                // immediately rather than racing against listener setup.
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
                 Some(McpClient::Http(HttpClient::new(format!(
                     "http://127.0.0.1:{broker_port}"

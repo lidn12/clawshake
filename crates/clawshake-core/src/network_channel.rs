@@ -96,6 +96,40 @@ pub type OutboundStreamCallTx = mpsc::Sender<OutboundStreamCall>;
 
 /// Create a new outbound stream call channel.
 /// Pass the receiver to `p2p::run()`; keep the sender for the model proxy.
-pub fn new_outbound_stream_call_channel() -> (OutboundStreamCallTx, mpsc::Receiver<OutboundStreamCall>) {
+pub fn new_outbound_stream_call_channel(
+) -> (OutboundStreamCallTx, mpsc::Receiver<OutboundStreamCall>) {
+    mpsc::channel(16)
+}
+
+// ---------------------------------------------------------------------------
+// Outbound model streaming call channel
+// ---------------------------------------------------------------------------
+
+/// An outbound model completion request that delivers response frames
+/// incrementally via an mpsc channel (true streaming).
+///
+/// Used when the HTTP client requests `stream: true` — the P2P layer opens a
+/// bidirectional `libp2p-stream` to the peer and forwards each
+/// [`StreamFrame`](crate::stream::StreamFrame) as it arrives from the remote
+/// model backend.
+pub struct OutboundModelStreamingCall {
+    /// Target peer ID string — parsed to `PeerId` inside the swarm loop.
+    pub peer_id: String,
+    /// Raw JSON bytes of the [`ModelRequest`](crate::models::ModelRequest).
+    pub request: Vec<u8>,
+    /// Channel to send streaming frames (serialised `StreamFrame` JSON bytes)
+    /// back to the proxy as they arrive from the remote peer.  Dropped when
+    /// the stream ends.
+    pub frame_tx: mpsc::Sender<Result<Vec<u8>, String>>,
+}
+
+/// Sender half of the outbound model streaming call channel.
+pub type OutboundModelStreamingCallTx = mpsc::Sender<OutboundModelStreamingCall>;
+
+/// Create a new outbound model streaming call channel.
+pub fn new_outbound_model_streaming_channel() -> (
+    OutboundModelStreamingCallTx,
+    mpsc::Receiver<OutboundModelStreamingCall>,
+) {
     mpsc::channel(16)
 }
