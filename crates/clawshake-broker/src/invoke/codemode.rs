@@ -126,15 +126,9 @@ fn generate_shim(port: u16, tools: &[LoadedTool]) -> CachedShim {
     for source in &sources {
         let group = &by_source[**source];
 
-        // Category summary line
+        // Category summary line — show all tool names so agents can see the full list
         let tool_names: Vec<&str> = group.iter().map(|lt| lt.tool.name.as_str()).collect();
-        let names_preview = if tool_names.len() <= 5 {
-            tool_names.join(", ")
-        } else {
-            let mut preview: Vec<&str> = tool_names[..4].to_vec();
-            preview.push("...");
-            preview.join(", ")
-        };
+        let names_preview = tool_names.join(", ");
         writeln!(
             categories,
             "- {} ({} tools): {}",
@@ -404,7 +398,7 @@ pub fn invoke_describe_tools(
         None | Some("") => {
             let cached = shim_cache.get_or_generate(port, registry);
             format!(
-                "Available tool categories:\n{}\nCall describe_tools with a query to get JS function signatures for specific tools.",
+                "Available tool categories:\n{}\nCall describe_tools with a tool name or keyword to get its JS function signature.",
                 cached.categories
             )
         }
