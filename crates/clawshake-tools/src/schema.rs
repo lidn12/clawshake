@@ -85,6 +85,24 @@ pub fn tool_definitions() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "network_describe",
+            "description": "Progressive tool discovery for a remote peer. Without a query, returns a compact category summary of the peer's published tools. With a query, returns matching tools with their full name, description, and inputSchema — just enough to call them via network_call.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "peer_id": {
+                        "type": "string",
+                        "description": "libp2p peer ID string (from network_peers)"
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "Filter tools by name or description substring. Omit for a category summary."
+                    }
+                },
+                "required": ["peer_id"]
+            }
+        }),
+        json!({
             "name": "network_record",
             "description": "Fetch the raw DHT announcement record for a peer directly from the Kademlia DHT (live, not cached) — schema version, peer_id, tools, addrs, and timestamp. Useful for verifying what a peer is currently announcing or debugging schema mismatches.",
             "inputSchema": {

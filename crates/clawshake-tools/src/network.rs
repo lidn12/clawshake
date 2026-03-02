@@ -40,6 +40,7 @@ pub async fn handle(
     match method {
         "network_peers" => peers(table),
         "network_tools" => tools(params, table, dht_tx).await,
+        "network_describe" => describe(params, table, dht_tx).await,
         "network_search" => search(params, table),
         "network_ping" => ping(params, connected),
         "network_call" => call(params, call_tx).await,
@@ -106,6 +107,111 @@ fn tools<'a>(
             })
             .collect();
         json!({ "tools": tools })
+    }
+}
+
+/// Progressive tool discovery for a remote peer.
+///
+/// Without `query`: returns a compact category summary grouped by name prefix,
+/// e.g. `"- weather (3 tools): weather.now, weather.forecast, weather.history"`.
+///
+/// With `query`: returns matching tools with full name, description, and
+/// inputSchema — just enough to call them without requesting the full list.
+fn describe<'a>(
+    params: &'a Value,
+    table: &'a PeerTable,
+    dht_tx: Option<&'a DhtLookupTx>,
+) -> impl std::future::Future<Output = Value> + 'a {
+    let peer_id = params["peer_id"].as_str().map(|s| s.to_string());
+    let query = params["query"].as_str().map(|s| s.to_string());
+    async move {
+        let peer_id = match peer_id {
+            Some(s) => s,
+            None => return err("missing required parameter: peer_id"),
+        };
+
+        // Fetch tools via DHT (live) or peer table (cached).
+        let peer = match dht_lookup_peer(&peer_id, dht_tx).await {
+            Some(p) => p,
+            None => match table.get(&peer_id) {
+                Some(p) => p,
+                None => return err(&format!("peer {} not found in table or DHT", peer_id)),
+            },
+        };
+
+        let tools = &peer.tools;
+
+        if tools.is_empty() {
+            return json!({ "peer_id": peer_id, "description": "This peer has no published tools." });
+        }
+
+        match query {
+            Some(q) => {
+                // Filtered mode: return matching tools with full schemas.
+                let q_lower = q.to_lowercase();
+                let matched: Vec<Value> = tools
+                    .iter()
+                    .filter(|t| {
+                        t.name.to_lowercase().contains(&q_lower)
+                            || t.description.to_lowercase().contains(&q_lower)
+                    })
+                    .map(|t| {
+                        let mut entry = json!({
+                            "name": t.name,
+                            "description": t.description,
+                        });
+                        if let Some(schema) = &t.input_schema {
+                            entry["inputSchema"] = schema.clone();
+                        } else {
+                            entry["inputSchema"] = json!({ "type": "object" });
+                        }
+                        entry
+                    })
+                    .collect();
+                if matched.is_empty() {
+                    json!({ "peer_id": peer_id, "description": format!("No tools matching '{}' on this peer.", q) })
+                } else {
+                    json!({ "peer_id": peer_id, "tools": matched })
+                }
+            }
+            None => {
+                // Summary mode: group by dot-prefix (e.g. "spotify.play" → "spotify").
+                // Tools without a dot prefix go into a "misc" group.
+                let mut groups: std::collections::BTreeMap<String, Vec<String>> =
+                    std::collections::BTreeMap::new();
+                for t in tools {
+                    let prefix = if let Some(pos) = t.name.find('.') {
+                        t.name[..pos].to_string()
+                    } else {
+                        // Use the full name as its own group for ungrouped tools.
+                        t.name.clone()
+                    };
+                    groups.entry(prefix).or_default().push(t.name.clone());
+                }
+                let lines: Vec<String> = groups
+                    .iter()
+                    .map(|(prefix, names)| {
+                        let preview: Vec<&str> = names.iter().take(4).map(|s| s.as_str()).collect();
+                        let suffix = if names.len() > 4 { ", ..." } else { "" };
+                        format!(
+                            "- {} ({} tool{}): {}{}",
+                            prefix,
+                            names.len(),
+                            if names.len() == 1 { "" } else { "s" },
+                            preview.join(", "),
+                            suffix
+                        )
+                    })
+                    .collect();
+                let summary = format!(
+                    "Peer {} has {} tool(s):\n{}\n\nCall network_describe with a query to see full schemas for specific tools.",
+                    peer_id,
+                    tools.len(),
+                    lines.join("\n")
+                );
+                json!({ "peer_id": peer_id, "description": summary })
+            }
+        }
     }
 }
 

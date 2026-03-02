@@ -39,6 +39,18 @@ pub enum NetworkCmd {
         peer_id: String,
     },
 
+    /// Progressive tool discovery for a remote peer.
+    ///
+    /// Without --query: returns a compact category summary.
+    /// With --query: returns matching tools with full schemas.
+    Describe {
+        #[arg(long, value_name = "PEER_ID")]
+        peer_id: String,
+        /// Filter tools by name or description substring.
+        #[arg(long, value_name = "QUERY")]
+        query: Option<String>,
+    },
+
     /// Fetch the raw DHT announcement record for a peer.
     Record {
         #[arg(long, value_name = "PEER_ID")]
@@ -71,6 +83,13 @@ pub async fn run_network_cmd(cmd: &NetworkCmd) -> Result<()> {
         NetworkCmd::Tools { peer_id } => ("network_tools", json!({ "peer_id": peer_id })),
         NetworkCmd::Search { query } => ("network_search", json!({ "query": query })),
         NetworkCmd::Ping { peer_id } => ("network_ping", json!({ "peer_id": peer_id })),
+        NetworkCmd::Describe { peer_id, query } => {
+            let mut p = json!({ "peer_id": peer_id });
+            if let Some(q) = query {
+                p["query"] = json!(q);
+            }
+            ("network_describe", p)
+        }
         NetworkCmd::Record { peer_id } => ("network_record", json!({ "peer_id": peer_id })),
         NetworkCmd::Call {
             peer_id,

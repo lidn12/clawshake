@@ -166,6 +166,29 @@ const NETWORK_MANIFEST: &str = r#"{
       }
     },
     {
+      "name": "network_describe",
+      "description": "Progressive tool discovery for a remote peer. Without a query, returns a compact category summary of the peer's published tools. With a query, returns matching tools with their full name, description, and inputSchema — just enough to call them via network_call.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "peer_id": {
+            "type": "string",
+            "description": "The libp2p peer ID to discover tools for."
+          },
+          "query": {
+            "type": "string",
+            "description": "Filter tools by name or description substring. Omit for a category summary."
+          }
+        },
+        "required": ["peer_id"]
+      },
+      "invoke": {
+        "type": "cli",
+        "command": "clawshake-tools",
+        "args": ["network", "describe", "--peer-id", "{{peer_id}}", "--query", "{{query}}"]
+      }
+    },
+    {
       "name": "network_record",
       "description": "Fetch the raw DHT announcement record for a peer. Returns the full AnnouncementRecord including schema version, tools list, listen addresses, and timestamp.",
       "inputSchema": {
