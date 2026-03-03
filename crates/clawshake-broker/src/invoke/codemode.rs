@@ -125,36 +125,43 @@ fn generate_shim(port: u16, tools: &[LoadedTool]) -> CachedShim {
     for source in &sources {
         let group = &by_source[**source];
 
-        // Category summary line — show all tool names so agents can see the full list
-        let tool_names: Vec<&str> = group.iter().map(|lt| lt.tool.name.as_str()).collect();
-        let names_preview = tool_names.join(", ");
+        // Compute JS function names (strip source prefix) for both summary and shim.
+        let fn_names: Vec<String> = group
+            .iter()
+            .map(|lt| {
+                let fn_name = lt
+                    .tool
+                    .name
+                    .strip_prefix(&format!("{}_", source))
+                    .unwrap_or(&lt.tool.name);
+                safe_js_ident(fn_name)
+            })
+            .collect();
+
+        // Category summary line — show JS dot-notation names so agents can call them directly.
+        let names_preview: Vec<String> = fn_names
+            .iter()
+            .map(|fn_name| format!("{}.{}", source, fn_name))
+            .collect();
         writeln!(
             categories,
             "- {} ({} tools): {}",
             source,
             group.len(),
-            names_preview
+            names_preview.join(", ")
         )
         .unwrap();
 
         // JS object with tool functions
         writeln!(js, "const {} = {{", safe_js_ident(source)).unwrap();
-        for lt in group {
+        for (lt, fn_name) in group.iter().zip(fn_names.iter()) {
             // JSDoc comment
             writeln!(js, "  /** {} */", lt.tool.description.replace("*/", "* /")).unwrap();
-
-            // Function name: strip source prefix if present.
-            let fn_name = lt
-                .tool
-                .name
-                .strip_prefix(&format!("{}_", source))
-                .unwrap_or(&lt.tool.name);
 
             writeln!(
                 js,
                 "  {}: (args) => _call('{}', args),",
-                safe_js_ident(fn_name),
-                lt.tool.name
+                fn_name, lt.tool.name
             )
             .unwrap();
         }
