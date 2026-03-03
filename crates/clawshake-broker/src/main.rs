@@ -5,12 +5,14 @@ use tracing::info;
 
 mod builtins;
 mod cli;
+mod event_queue;
 mod http_server;
 mod invoke;
 mod mcp_server;
 mod router;
 mod watcher;
 
+use event_queue::EventQueue;
 use invoke::codemode::ShimCache;
 
 /// Clawshake Broker — manifest watcher and MCP server for local capabilities.
@@ -95,10 +97,20 @@ async fn main() -> Result<()> {
             // Create shim cache.
             let shim_cache = ShimCache::new();
 
+            // Create event queue.
+            let event_queue = EventQueue::new();
+
             // Load manifests and start file watcher.
             let registry = watcher::ManifestRegistry::new();
+
             let (sse_tx, sse_rx) = tokio::sync::mpsc::channel::<()>(4);
-            let servers = watcher::start(manifests_dir, registry.clone(), None, Some(sse_tx))?;
+            let servers = watcher::start(
+                manifests_dir,
+                registry.clone(),
+                None,
+                Some(sse_tx),
+                Some(event_queue.clone()),
+            )?;
             info!(tools = registry.tool_count(), "Broker ready");
 
             if let Some(port) = port {
@@ -110,14 +122,22 @@ async fn main() -> Result<()> {
                     Some(sse_rx),
                     shim_cache,
                     code_mode,
+                    event_queue,
                 )
                 .await;
             }
 
             // Default: MCP stdio loop (no SSE sessions — drop the receiver).
             drop(sse_rx);
-            mcp_server::serve_stdio(registry, permissions, servers, shim_cache, code_mode_active)
-                .await?;
+            mcp_server::serve_stdio(
+                registry,
+                permissions,
+                servers,
+                shim_cache,
+                code_mode_active,
+                event_queue,
+            )
+            .await?;
         }
     }
 

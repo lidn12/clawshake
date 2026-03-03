@@ -8,6 +8,7 @@ use std::{
 };
 use tracing::{info, warn};
 
+use crate::event_queue::EventQueue;
 use crate::invoke::mcp::McpServer;
 
 // ---------------------------------------------------------------------------
@@ -424,6 +425,7 @@ pub fn start(
     registry: ManifestRegistry,
     change_tx: Option<tokio::sync::mpsc::Sender<()>>,
     sse_notify_tx: Option<tokio::sync::mpsc::Sender<()>>,
+    event_queue: Option<EventQueue>,
 ) -> Result<McpServerMap> {
     let servers = McpServerMap::new();
     let rt = tokio::runtime::Handle::current();
@@ -466,6 +468,7 @@ pub fn start(
     watcher.watch(&manifests_dir, RecursiveMode::NonRecursive)?;
 
     let watch_servers = servers.clone();
+    let watch_eq = event_queue.clone();
     std::thread::spawn(move || {
         let _watcher = watcher;
         for res in rx {
@@ -479,6 +482,7 @@ pub fn start(
                         snapshot_path.as_deref(),
                         change_tx.as_ref(),
                         sse_notify_tx.as_ref(),
+                        watch_eq.as_ref(),
                     );
                     if changed {
                         // Note: static-tool manifests re-announce here.
@@ -510,6 +514,7 @@ fn handle_event(
     snapshot_path: Option<&Path>,
     change_tx: Option<&tokio::sync::mpsc::Sender<()>>,
     sse_notify_tx: Option<&tokio::sync::mpsc::Sender<()>>,
+    event_queue: Option<&EventQueue>,
 ) -> bool {
     use notify::EventKind::*;
     let paths: Vec<&PathBuf> = event
@@ -541,6 +546,20 @@ fn handle_event(
                     change_tx.cloned(),
                     sse_notify_tx.cloned(),
                 );
+                if static_loaded {
+                    if let (Some(eq), Some(source)) = (event_queue, source_name_from_path(path)) {
+                        let tools = registry.tool_count();
+                        let eq = eq.clone();
+                        rt.spawn(async move {
+                            eq.push(
+                                "manifest.loaded",
+                                "watcher",
+                                serde_json::json!({ "name": source, "tools": tools }),
+                            )
+                            .await;
+                        });
+                    }
+                }
                 changed |= static_loaded;
             }
         }
@@ -552,6 +571,18 @@ fn handle_event(
                     info!(source, "Unloaded manifest (file removed)");
                     if let Some(sp) = snapshot_path {
                         write_registry_snapshot(sp, registry);
+                    }
+                    if let Some(eq) = event_queue {
+                        let eq = eq.clone();
+                        let s = source.clone();
+                        rt.spawn(async move {
+                            eq.push(
+                                "manifest.removed",
+                                "watcher",
+                                serde_json::json!({ "name": s }),
+                            )
+                            .await;
+                        });
                     }
                     changed = true;
                 }

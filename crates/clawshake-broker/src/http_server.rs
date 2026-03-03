@@ -44,6 +44,7 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::{
+    event_queue::EventQueue,
     invoke::codemode::ShimCache,
     mcp_server,
     watcher::{ManifestRegistry, McpServerMap},
@@ -64,6 +65,7 @@ struct AppState {
     shim_cache: ShimCache,
     port: u16,
     code_mode: bool,
+    event_queue: EventQueue,
 }
 
 // ---------------------------------------------------------------------------
@@ -80,6 +82,7 @@ pub async fn serve(
     notify_rx: Option<tokio::sync::mpsc::Receiver<()>>,
     shim_cache: ShimCache,
     code_mode: bool,
+    event_queue: EventQueue,
 ) -> Result<()> {
     let state = AppState {
         registry,
@@ -89,6 +92,7 @@ pub async fn serve(
         shim_cache,
         port,
         code_mode,
+        event_queue,
     };
 
     // When the manifest registry changes, broadcast notifications/tools/list_changed
@@ -119,6 +123,7 @@ pub async fn serve(
         .route("/messages", post(messages_handler))
         .route("/", post(direct_handler))
         .route("/invoke", post(invoke_handler))
+        .route("/events", post(events_handler))
         .with_state(state);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
@@ -213,6 +218,7 @@ async fn messages_handler(
     let shim_cache = state.shim_cache.clone();
     let port = state.port;
     let code_mode = state.code_mode;
+    let event_queue = state.event_queue.clone();
 
     tokio::spawn(async move {
         let response = match serde_json::from_str::<JsonRpcRequest>(&body) {
@@ -228,6 +234,7 @@ async fn messages_handler(
                 &shim_cache,
                 port,
                 code_mode,
+                &event_queue,
             )
             .await
             {
@@ -267,6 +274,7 @@ async fn direct_handler(State(state): State<AppState>, body: String) -> impl Int
                 &state.shim_cache,
                 state.port,
                 state.code_mode,
+                &state.event_queue,
             )
             .await
             {
@@ -352,6 +360,46 @@ async fn invoke_handler(State(state): State<AppState>, body: String) -> impl Int
 
     let resp = serde_json::json!({"result": result, "is_error": is_error});
     debug!(resp = %resp, "→ POST /invoke");
+    Json(resp).into_response()
+}
+
+// ---------------------------------------------------------------------------
+// POST /events — external event ingestion
+// ---------------------------------------------------------------------------
+
+/// Accept an event from an external adapter (webhook bot, sidecar daemon,
+/// etc.) and push it into the local EventQueue.
+///
+/// Request:  `{"topic": "telegram.message", "data": {...}, "source": "telegram-bot"}`
+/// Response: `{"ok": true, "id": 42}`
+///
+/// `source` is optional — defaults to `"webhook"`.
+/// Localhost-only (same bind as all other endpoints).
+async fn events_handler(State(state): State<AppState>, body: String) -> impl IntoResponse {
+    debug!(body = %body, "← POST /events");
+
+    #[derive(serde::Deserialize)]
+    struct EventRequest {
+        topic: String,
+        #[serde(default)]
+        data: serde_json::Value,
+        #[serde(default)]
+        source: Option<String>,
+    }
+
+    let req: EventRequest = match serde_json::from_str(&body) {
+        Ok(r) => r,
+        Err(e) => {
+            let resp = serde_json::json!({"ok": false, "error": format!("Bad request: {e}")});
+            return (StatusCode::BAD_REQUEST, Json(resp)).into_response();
+        }
+    };
+
+    let source = req.source.unwrap_or_else(|| "webhook".to_string());
+    let id = state.event_queue.push(&req.topic, &source, req.data).await;
+
+    let resp = serde_json::json!({"ok": true, "id": id});
+    debug!(resp = %resp, "→ POST /events");
     Json(resp).into_response()
 }
 

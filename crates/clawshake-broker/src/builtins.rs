@@ -11,7 +11,58 @@ use std::path::Path;
 use tracing::info;
 
 /// (filename, JSON content)
-const BUILTIN_MANIFESTS: &[(&str, &str)] = &[("network.json", NETWORK_MANIFEST)];
+const BUILTIN_MANIFESTS: &[(&str, &str)] = &[
+    ("network.json", NETWORK_MANIFEST),
+    ("events.json", EVENTS_MANIFEST),
+];
+
+/// Events manifest — seeded as `events.json` alongside `network.json`.
+const EVENTS_MANIFEST: &str = r#"{
+  "version": "1.0",
+  "tools": [
+    {
+      "name": "listen",
+      "description": "Block until events matching the given topics arrive. Returns an array of events and a cursor for resumption. Use this to wait for filesystem changes, peer messages, webhook deliveries, or any other event. Call with no topics to receive all events. The cursor enables efficient polling — pass the returned cursor as 'after' in the next call to only receive new events.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "topics": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Topic prefixes to filter on (e.g. ['fs', 'peer']). Empty or omitted = all topics."
+          },
+          "timeout": {
+            "type": "number",
+            "description": "Max seconds to wait. 0 = block indefinitely. Default: 30"
+          },
+          "after": {
+            "type": "number",
+            "description": "Cursor (event ID). Only return events with id > after. Default: 0 (all buffered events)."
+          }
+        }
+      },
+      "invoke": { "type": "cli", "command": "__event_queue__", "args": [] }
+    },
+    {
+      "name": "emit",
+      "description": "Push an event into the local event queue. Other listeners on this node can receive it via listen(). Use dot-separated topic names (e.g. 'task.complete', 'msg.agent'). To send events to a remote peer, use network_call(peer_id, 'emit', {topic, data}) instead.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "topic": {
+            "type": "string",
+            "description": "Event topic, e.g. 'task.complete', 'msg.agent'"
+          },
+          "data": {
+            "description": "Arbitrary JSON payload"
+          }
+        },
+        "required": ["topic", "data"]
+      },
+      "invoke": { "type": "cli", "command": "__event_queue__", "args": [] }
+    }
+  ]
+}"#;
 
 /// Code mode manifest — seeded only when Node.js is detected on PATH.
 const CODEMODE_MANIFEST: &str = r#"{

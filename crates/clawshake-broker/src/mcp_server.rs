@@ -12,6 +12,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tracing::{debug, warn};
 
 use crate::{
+    event_queue::EventQueue,
     invoke::codemode::ShimCache,
     router,
     watcher::{ManifestRegistry, McpServerMap},
@@ -32,6 +33,7 @@ pub async fn serve_stdio(
     servers: McpServerMap,
     shim_cache: ShimCache,
     code_mode: bool,
+    event_queue: EventQueue,
 ) -> Result<()> {
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
@@ -65,6 +67,7 @@ pub async fn serve_stdio(
                     &shim_cache,
                     port,
                     code_mode,
+                    &event_queue,
                 )
                 .await
             }
@@ -90,6 +93,7 @@ pub(crate) async fn handle(
     shim_cache: &ShimCache,
     port: u16,
     code_mode: bool,
+    event_queue: &EventQueue,
 ) -> Option<JsonRpcResponse> {
     let id = req.id.clone();
     match req.method.as_str() {
@@ -245,6 +249,37 @@ pub(crate) async fn handle(
                     content: vec![McpContent::text(text)],
                     is_error: false,
                 };
+                return Some(JsonRpcResponse::ok(
+                    id,
+                    serde_json::to_value(result).expect("MCP result serializes to JSON"),
+                ));
+            }
+
+            // --- Event queue tools: handle directly ---
+            if params.name == "listen" {
+                let arguments = serde_json::to_value(&params.arguments)
+                    .unwrap_or(Value::Object(Default::default()));
+                let (content, is_error) =
+                    match crate::invoke::events::invoke_listen(&arguments, event_queue).await {
+                        Ok(text) => (vec![McpContent::text(text)], false),
+                        Err(e) => (vec![McpContent::text(e)], true),
+                    };
+                let result = ToolsCallResult { content, is_error };
+                return Some(JsonRpcResponse::ok(
+                    id,
+                    serde_json::to_value(result).expect("MCP result serializes to JSON"),
+                ));
+            }
+
+            if params.name == "emit" {
+                let arguments = serde_json::to_value(&params.arguments)
+                    .unwrap_or(Value::Object(Default::default()));
+                let (content, is_error) =
+                    match crate::invoke::events::invoke_emit(&arguments, event_queue).await {
+                        Ok(text) => (vec![McpContent::text(text)], false),
+                        Err(e) => (vec![McpContent::text(e)], true),
+                    };
+                let result = ToolsCallResult { content, is_error };
                 return Some(JsonRpcResponse::ok(
                     id,
                     serde_json::to_value(result).expect("MCP result serializes to JSON"),

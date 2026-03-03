@@ -191,12 +191,15 @@ async fn main() -> Result<()> {
 
                 builtins::seed(&manifests_dir, has_node)?;
                 let registry = watcher::ManifestRegistry::new();
+
+                let event_queue = clawshake_broker::event_queue::EventQueue::new();
                 let (sse_tx, sse_rx) = tokio::sync::mpsc::channel::<()>(4);
                 let servers = watcher::start(
                     manifests_dir,
                     registry.clone(),
                     Some(reannounce_tx.clone()),
                     Some(sse_tx),
+                    Some(event_queue.clone()),
                 )?;
                 info!(tools = registry.tool_count(), "Broker ready");
 
@@ -210,6 +213,7 @@ async fn main() -> Result<()> {
                         Some(sse_rx),
                         shim_cache,
                         code_mode,
+                        event_queue,
                     )
                     .await
                     {
