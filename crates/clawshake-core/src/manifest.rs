@@ -118,10 +118,9 @@ pub enum InvokeConfig {
     Mcp {
         server_key: String,
     },
-    /// Code-mode tool (`run_code` / `describe_tools`).  Not written in
-    /// manifest JSON — synthesized at runtime by `builtins::seed()` when
-    /// Node.js is detected on the PATH.  The broker handles these tools
-    /// directly in the router without spawning a child process per call.
-    #[serde(skip)]
-    CodeMode,
+    /// An in-process tool handled directly by the broker router without
+    /// spawning a child process.  Serializes as `{"type":"in_process"}`.
+    /// Used for built-in tools like `emit`, `listen`, `run_code`, and
+    /// `describe_tools`.
+    InProcess,
 }

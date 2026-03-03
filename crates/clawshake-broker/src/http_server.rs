@@ -351,12 +351,15 @@ async fn invoke_handler(State(state): State<AppState>, body: String) -> impl Int
     }
 
     // Dispatch.
-    let (result, is_error) =
-        match crate::router::dispatch(&req.tool, &arguments, &state.registry, &state.servers).await
-        {
-            Ok(text) => (text, false),
-            Err(e) => (format!("{e}"), true),
-        };
+    let ctx = crate::router::DispatchContext {
+        registry: &state.registry,
+        servers: &state.servers,
+        event_queue: &state.event_queue,
+    };
+    let (result, is_error) = match crate::router::dispatch(&req.tool, &arguments, &ctx).await {
+        Ok(text) => (text, false),
+        Err(e) => (format!("{e}"), true),
+    };
 
     let resp = serde_json::json!({"result": result, "is_error": is_error});
     debug!(resp = %resp, "→ POST /invoke");

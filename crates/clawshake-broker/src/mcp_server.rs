@@ -225,6 +225,7 @@ pub(crate) async fn handle(
                     permissions,
                     servers,
                     shim_cache,
+                    event_queue,
                     timeout_secs,
                 )
                 .await
@@ -255,48 +256,21 @@ pub(crate) async fn handle(
                 ));
             }
 
-            // --- Event queue tools: handle directly ---
-            if params.name == "listen" {
-                let arguments = serde_json::to_value(&params.arguments)
-                    .unwrap_or(Value::Object(Default::default()));
-                let (content, is_error) =
-                    match crate::invoke::events::invoke_listen(&arguments, event_queue).await {
-                        Ok(text) => (vec![McpContent::text(text)], false),
-                        Err(e) => (vec![McpContent::text(e)], true),
-                    };
-                let result = ToolsCallResult { content, is_error };
-                return Some(JsonRpcResponse::ok(
-                    id,
-                    serde_json::to_value(result).expect("MCP result serializes to JSON"),
-                ));
-            }
-
-            if params.name == "emit" {
-                let arguments = serde_json::to_value(&params.arguments)
-                    .unwrap_or(Value::Object(Default::default()));
-                let (content, is_error) =
-                    match crate::invoke::events::invoke_emit(&arguments, event_queue).await {
-                        Ok(text) => (vec![McpContent::text(text)], false),
-                        Err(e) => (vec![McpContent::text(e)], true),
-                    };
-                let result = ToolsCallResult { content, is_error };
-                return Some(JsonRpcResponse::ok(
-                    id,
-                    serde_json::to_value(result).expect("MCP result serializes to JSON"),
-                ));
-            }
-
             // Dispatch.
             let arguments = serde_json::to_value(&params.arguments)
                 .unwrap_or(Value::Object(Default::default()));
-            let (content, is_error) =
-                match router::dispatch(&params.name, &arguments, registry, servers).await {
-                    Ok(text) => (vec![McpContent::text(text)], false),
-                    Err(e) => (
-                        vec![McpContent::text(format!("Tool '{}': {}", params.name, e))],
-                        true,
-                    ),
-                };
+            let ctx = router::DispatchContext {
+                registry,
+                servers,
+                event_queue,
+            };
+            let (content, is_error) = match router::dispatch(&params.name, &arguments, &ctx).await {
+                Ok(text) => (vec![McpContent::text(text)], false),
+                Err(e) => (
+                    vec![McpContent::text(format!("Tool '{}': {}", params.name, e))],
+                    true,
+                ),
+            };
             let result = ToolsCallResult { content, is_error };
             Some(JsonRpcResponse::ok(
                 id,

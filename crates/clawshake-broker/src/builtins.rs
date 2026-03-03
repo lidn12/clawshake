@@ -31,7 +31,7 @@ const EVENTS_MANIFEST: &str = r#"{
             "items": { "type": "string" },
             "description": "Topic prefixes to filter on (e.g. ['fs', 'peer']). Empty or omitted = all topics."
           },
-          "timeout": {
+          "timeout_secs": {
             "type": "number",
             "description": "Max seconds to wait. 0 = block indefinitely. Default: 30"
           },
@@ -41,7 +41,7 @@ const EVENTS_MANIFEST: &str = r#"{
           }
         }
       },
-      "invoke": { "type": "cli", "command": "__event_queue__", "args": [] }
+      "invoke": { "type": "in_process" }
     },
     {
       "name": "emit",
@@ -59,7 +59,7 @@ const EVENTS_MANIFEST: &str = r#"{
         },
         "required": ["topic", "data"]
       },
-      "invoke": { "type": "cli", "command": "__event_queue__", "args": [] }
+      "invoke": { "type": "in_process" }
     }
   ]
 }"#;
@@ -81,7 +81,7 @@ const CODEMODE_MANIFEST: &str = r#"{
         },
         "required": ["script"]
       },
-      "invoke": { "type": "cli", "command": "__code_mode__", "args": [] }
+      "invoke": { "type": "in_process" }
     },
     {
       "name": "describe_tools",
@@ -95,7 +95,7 @@ const CODEMODE_MANIFEST: &str = r#"{
           }
         }
       },
-      "invoke": { "type": "cli", "command": "__code_mode__", "args": [] }
+      "invoke": { "type": "in_process" }
     }
   ]
 }

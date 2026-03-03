@@ -18,7 +18,7 @@ pub async fn invoke_listen(arguments: &Value, event_queue: &EventQueue) -> Resul
         .unwrap_or_default();
 
     let timeout_secs: f64 = arguments
-        .get("timeout")
+        .get("timeout_secs")
         .and_then(|v| v.as_f64())
         .unwrap_or(30.0);
 

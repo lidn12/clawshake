@@ -307,13 +307,19 @@ pub async fn invoke_run_code(
     permissions: &PermissionStore,
     servers: &McpServerMap,
     shim_cache: &ShimCache,
+    event_queue: &crate::event_queue::EventQueue,
     timeout_secs: u64,
 ) -> Result<String> {
     // If we're in stdio mode (no HTTP server), spin up an ephemeral one.
     let (effective_port, _ephemeral_guard) = if port == 0 {
-        let (p, guard) =
-            start_ephemeral_invoke_server(registry.clone(), permissions.clone(), servers.clone())
-                .await?;
+        let (p, guard) = start_ephemeral_invoke_server(
+            registry.clone(),
+            permissions.clone(),
+            servers.clone(),
+            event_queue.clone(),
+            shim_cache.clone(),
+        )
+        .await?;
         (p, Some(guard))
     } else {
         (port, None)
@@ -428,6 +434,8 @@ struct EphemeralState {
     registry: ManifestRegistry,
     permissions: PermissionStore,
     servers: McpServerMap,
+    event_queue: crate::event_queue::EventQueue,
+    shim_cache: ShimCache,
 }
 
 /// Guard that shuts down the ephemeral server when dropped.
@@ -450,11 +458,15 @@ async fn start_ephemeral_invoke_server(
     registry: ManifestRegistry,
     permissions: PermissionStore,
     servers: McpServerMap,
+    event_queue: crate::event_queue::EventQueue,
+    shim_cache: ShimCache,
 ) -> Result<(u16, EphemeralServerGuard)> {
     let state = EphemeralState {
         registry,
         permissions,
         servers,
+        event_queue,
+        shim_cache,
     };
 
     let app = Router::new()
@@ -540,9 +552,13 @@ async fn ephemeral_invoke_handler(
     }
 
     // Dispatch.
+    let ctx = crate::router::DispatchContext {
+        registry: &state.registry,
+        servers: &state.servers,
+        event_queue: &state.event_queue,
+    };
     let (result, is_error) =
-        match crate::router::dispatch(&req.tool, &arguments, &state.registry, &state.servers).await
-        {
+        match crate::router::dispatch(&req.tool, &arguments, &ctx).await {
             Ok(text) => (text, false),
             Err(e) => (format!("{e}"), true),
         };

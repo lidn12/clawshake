@@ -3,9 +3,17 @@ use clawshake_core::manifest::InvokeConfig;
 use serde_json::Value;
 
 use crate::{
+    event_queue::EventQueue,
     invoke,
     watcher::{ManifestRegistry, McpServerMap},
 };
+
+/// Everything the router needs to dispatch any tool call.
+pub struct DispatchContext<'a> {
+    pub registry: &'a ManifestRegistry,
+    pub servers: &'a McpServerMap,
+    pub event_queue: &'a EventQueue,
+}
 
 /// Dispatch a `tools/call` for `tool_name` to the correct invoke backend.
 ///
@@ -14,10 +22,9 @@ use crate::{
 pub async fn dispatch(
     tool_name: &str,
     arguments: &Value,
-    registry: &ManifestRegistry,
-    servers: &McpServerMap,
+    ctx: &DispatchContext<'_>,
 ) -> Result<String> {
-    let loaded = registry.get(tool_name).ok_or_else(|| {
+    let loaded = ctx.registry.get(tool_name).ok_or_else(|| {
         anyhow::anyhow!(
             "no tool with this name is registered on the node. \
              Re-check available tools via tools/list."
@@ -43,7 +50,7 @@ pub async fn dispatch(
             invoke::script::invoke_powershell(script, arguments).await
         }
         InvokeConfig::Mcp { server_key } => {
-            let server = servers.get(server_key).ok_or_else(|| {
+            let server = ctx.servers.get(server_key).ok_or_else(|| {
                 anyhow::anyhow!(
                     "its MCP server ('{server_key}') is not running. \
                      The node operator may need to restart the broker."
@@ -51,15 +58,25 @@ pub async fn dispatch(
             })?;
             server.tools_call(tool_name, arguments).await
         }
-        InvokeConfig::CodeMode => {
-            // Code mode tools (run_code, describe_tools) are not dispatched
-            // through the router — they are handled directly in mcp_server
-            // because they need access to the registry and shim cache.
-            // If we reach here, something is misconfigured.
-            anyhow::bail!(
-                "code mode tool '{tool_name}' should be handled by the MCP server, \
-                 not dispatched through the router"
-            )
-        }
+        InvokeConfig::InProcess => match tool_name {
+            "emit" => invoke::events::invoke_emit(arguments, ctx.event_queue)
+                .await
+                .map_err(|e| anyhow::anyhow!(e)),
+            "listen" => invoke::events::invoke_listen(arguments, ctx.event_queue)
+                .await
+                .map_err(|e| anyhow::anyhow!(e)),
+            // run_code and describe_tools are MCP-lifecycle tools: they need
+            // the broker port and shim cache which aren't in DispatchContext.
+            // They are intercepted by name in mcp_server::handle() before
+            // reaching the router.  Reaching here means a non-MCP caller
+            // (e.g. POST /invoke) tried to call them directly.
+            "run_code" | "describe_tools" => anyhow::bail!(
+                "'{tool_name}' can only be called through the MCP server, \
+                 not via POST /invoke"
+            ),
+            _ => anyhow::bail!(
+                "in-process tool '{tool_name}' has no registered handler in the router"
+            ),
+        },
     }
 }
