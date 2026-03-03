@@ -302,30 +302,18 @@ fn safe_js_ident(s: &str) -> String {
 /// can call tools back via `POST /invoke`.
 pub async fn invoke_run_code(
     script: &str,
-    port: u16,
-    registry: &ManifestRegistry,
-    permissions: &PermissionStore,
-    servers: &McpServerMap,
-    shim_cache: &ShimCache,
-    event_queue: &crate::event_queue::EventQueue,
+    ctx: &crate::router::DispatchContext<'_>,
     timeout_secs: u64,
 ) -> Result<String> {
     // If we're in stdio mode (no HTTP server), spin up an ephemeral one.
-    let (effective_port, _ephemeral_guard) = if port == 0 {
-        let (p, guard) = start_ephemeral_invoke_server(
-            registry.clone(),
-            permissions.clone(),
-            servers.clone(),
-            event_queue.clone(),
-            shim_cache.clone(),
-        )
-        .await?;
+    let (effective_port, _ephemeral_guard) = if ctx.port == 0 {
+        let (p, guard) = start_ephemeral_invoke_server(ctx).await?;
         (p, Some(guard))
     } else {
-        (port, None)
+        (ctx.port, None)
     };
 
-    let cached = shim_cache.get_or_generate(effective_port, registry);
+    let cached = ctx.shim_cache.get_or_generate(effective_port, ctx.registry);
 
     // Combine shim + agent script in an async IIFE.
     // If the script returns a non-undefined value it is automatically printed,
@@ -405,21 +393,19 @@ pub async fn invoke_run_code(
 /// - With query → return filtered JS shim showing matching tool functions.
 pub fn invoke_describe_tools(
     query: Option<&str>,
-    port: u16,
-    registry: &ManifestRegistry,
-    shim_cache: &ShimCache,
+    ctx: &crate::router::DispatchContext<'_>,
 ) -> String {
     match query {
         None | Some("") => {
-            let cached = shim_cache.get_or_generate(port, registry);
+            let cached = ctx.shim_cache.get_or_generate(ctx.port, ctx.registry);
             format!(
                 "Available tool categories:\n{}\nCall describe_tools with a tool name or keyword to get its JS function signature.",
                 cached.categories
             )
         }
         Some(q) => {
-            let tools = registry.all();
-            generate_filtered_shim(port, &tools, q)
+            let tools = ctx.registry.all();
+            generate_filtered_shim(ctx.port, &tools, q)
         }
     }
 }
@@ -459,22 +445,17 @@ impl Drop for EphemeralServerGuard {
 ///
 /// Returns `(port, guard)`.  The server runs until the guard is dropped.
 async fn start_ephemeral_invoke_server(
-    registry: ManifestRegistry,
-    permissions: PermissionStore,
-    servers: McpServerMap,
-    event_queue: crate::event_queue::EventQueue,
-    shim_cache: ShimCache,
+    ctx: &crate::router::DispatchContext<'_>,
 ) -> Result<(u16, EphemeralServerGuard)> {
-    // Bind first so we know the port before constructing state.
     let listener = tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0u16))).await?;
     let port = listener.local_addr()?.port();
 
     let state = EphemeralState {
-        registry,
-        permissions,
-        servers,
-        event_queue,
-        shim_cache,
+        registry: ctx.registry.clone(),
+        permissions: ctx.permissions.clone(),
+        servers: ctx.servers.clone(),
+        event_queue: ctx.event_queue.clone(),
+        shim_cache: ctx.shim_cache.clone(),
         port,
     };
 
@@ -510,9 +491,12 @@ async fn ephemeral_invoke_handler(
 ) -> axum::response::Response {
     debug!(body = %body, "← POST /invoke (ephemeral)");
     let ctx = crate::router::DispatchContext {
-        registry: &state.registry, servers: &state.servers,
-        event_queue: &state.event_queue, permissions: &state.permissions,
-        shim_cache: &state.shim_cache, port: state.port,
+        registry: &state.registry,
+        servers: &state.servers,
+        event_queue: &state.event_queue,
+        permissions: &state.permissions,
+        shim_cache: &state.shim_cache,
+        port: state.port,
     };
     crate::router::dispatch_invoke(&body, &ctx).await
 }

@@ -187,23 +187,36 @@ async fn main() -> Result<()> {
 
                 let (sse_tx, sse_rx) = tokio::sync::mpsc::channel::<()>(4);
                 let servers = clawshake_broker::watcher::start(
-                    manifests_dir, registry.clone(),
-                    Some(reannounce_tx.clone()), Some(sse_tx), Some(event_queue.clone()),
+                    manifests_dir,
+                    registry.clone(),
+                    Some(reannounce_tx.clone()),
+                    Some(sse_tx),
+                    Some(event_queue.clone()),
                 )?;
                 info!(tools = registry.tool_count(), "Broker ready on :{port}");
 
                 tokio::spawn(async move {
                     if let Err(e) = clawshake_broker::http_server::serve(
-                        port, registry, permissions, servers, Some(sse_rx),
-                        shim_cache, code_mode, event_queue,
-                    ).await {
+                        port,
+                        registry,
+                        permissions,
+                        servers,
+                        Some(sse_rx),
+                        shim_cache,
+                        code_mode,
+                        event_queue,
+                    )
+                    .await
+                    {
                         tracing::error!("Broker HTTP server error: {e:#}");
                         std::process::exit(1);
                     }
                 });
 
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                Some(McpClient::Http(HttpClient::new(format!("http://127.0.0.1:{port}"))))
+                Some(McpClient::Http(HttpClient::new(format!(
+                    "http://127.0.0.1:{port}"
+                ))))
             };
 
             clawshake_bridge::cli::start_bridge(

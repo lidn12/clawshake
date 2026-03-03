@@ -102,21 +102,36 @@ async fn main() -> Result<()> {
 
             let (sse_tx, sse_rx) = tokio::sync::mpsc::channel::<()>(4);
             let servers = watcher::start(
-                manifests_dir, registry.clone(), None,
-                Some(sse_tx), Some(event_queue.clone()),
+                manifests_dir,
+                registry.clone(),
+                None,
+                Some(sse_tx),
+                Some(event_queue.clone()),
             )?;
             info!(tools = registry.tool_count(), "Broker ready");
 
             if let Some(port) = port {
                 http_server::serve(
-                    port, registry, permissions, servers, Some(sse_rx),
-                    shim_cache, code_mode, event_queue,
-                ).await?;
+                    port,
+                    registry,
+                    permissions,
+                    servers,
+                    Some(sse_rx),
+                    shim_cache,
+                    code_mode,
+                    event_queue,
+                )
+                .await?;
             } else {
                 mcp_server::serve_stdio(
-                    registry, permissions, servers, shim_cache,
-                    code_mode_active, event_queue,
-                ).await?;
+                    registry,
+                    permissions,
+                    servers,
+                    shim_cache,
+                    code_mode_active,
+                    event_queue,
+                )
+                .await?;
             }
         }
     }
