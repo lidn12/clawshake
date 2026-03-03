@@ -1,6 +1,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use clawshake_broker::{builtins, cli, event_queue, invoke, mcp_server, watcher};
+use clawshake_broker::{builtins, cli, http_server, mcp_server, watcher};
+use clawshake_core::permissions::PermissionStore;
 use tracing::info;
 
 /// Clawshake Broker — manifest watcher and MCP server for local capabilities.
@@ -69,7 +70,9 @@ async fn main() -> Result<()> {
     // Resolve ~/.clawshake paths.
     let home =
         dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
-    let (manifests_dir, db_path) = clawshake_broker::resolve_paths(&home);
+    let clawshake_dir = home.join(".clawshake");
+    let manifests_dir = clawshake_dir.join("manifests");
+    let db_path = clawshake_dir.join("permissions.db");
 
     match cli.command {
         Command::Tools { action } => {
@@ -89,60 +92,31 @@ async fn main() -> Result<()> {
                 builtins::detect_bridge().await
             };
 
+            let (_, code_mode_active) = cli::detect_code_mode(code_mode);
+            let permissions = PermissionStore::open(&db_path).await?;
+            let shim_cache = clawshake_broker::invoke::codemode::ShimCache::new();
+            let event_queue = clawshake_broker::event_queue::EventQueue::new();
+            let registry = watcher::ManifestRegistry::new();
+
+            builtins::register(&registry, code_mode_active, bridge_available);
+
+            let (sse_tx, sse_rx) = tokio::sync::mpsc::channel::<()>(4);
+            let servers = watcher::start(
+                manifests_dir, registry.clone(), None,
+                Some(sse_tx), Some(event_queue.clone()),
+            )?;
+            info!(tools = registry.tool_count(), "Broker ready");
+
             if let Some(port) = port {
-                // HTTP SSE mode — start_broker spawns the server task.
-                let _handle = clawshake_broker::start_broker(
-                    clawshake_broker::BrokerConfig {
-                        manifests_dir,
-                        db_path,
-                        port,
-                        code_mode,
-                        bridge_available,
-                        reannounce_tx: None,
-                    },
-                )
-                .await?;
-
-                // Block forever — the HTTP server task runs until killed.
-                std::future::pending::<()>().await;
+                http_server::serve(
+                    port, registry, permissions, servers, Some(sse_rx),
+                    shim_cache, code_mode, event_queue,
+                ).await?;
             } else {
-                // Stdio mode — start_broker sets up registry, then we run
-                // the blocking stdio loop ourselves.
-                let (_has_node, code_mode_active) = cli::detect_code_mode(code_mode);
-
-                let handle = clawshake_broker::start_broker(
-                    clawshake_broker::BrokerConfig {
-                        manifests_dir: manifests_dir.clone(),
-                        db_path: db_path.clone(),
-                        port: 0,
-                        code_mode,
-                        bridge_available,
-                        reannounce_tx: None,
-                    },
-                )
-                .await?;
-
-                // For stdio mode we need the components that start_broker
-                // created.  Re-open them here (permissions is cheap to re-open).
-                let permissions =
-                    clawshake_core::permissions::PermissionStore::open(&db_path).await?;
-                let shim_cache = invoke::codemode::ShimCache::new();
-                let event_queue = event_queue::EventQueue::new();
-
-                // We need servers from the watcher; start_broker doesn't expose
-                // them for stdio mode, so we create an empty map (manifests with
-                // MCP sources won't work over stdio anyway).
-                let servers = watcher::McpServerMap::new();
-
                 mcp_server::serve_stdio(
-                    handle.registry,
-                    permissions,
-                    servers,
-                    shim_cache,
-                    code_mode_active,
-                    event_queue,
-                )
-                .await?;
+                    registry, permissions, servers, shim_cache,
+                    code_mode_active, event_queue,
+                ).await?;
             }
         }
     }

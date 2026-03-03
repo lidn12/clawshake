@@ -12,7 +12,7 @@ use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
 
 use anyhow::{bail, Result};
-use axum::{extract::State, response::IntoResponse, routing::post, Json, Router};
+use axum::{extract::State, routing::post, Router};
 use clawshake_core::permissions::PermissionStore;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
@@ -504,31 +504,15 @@ async fn start_ephemeral_invoke_server(
     ))
 }
 
-/// Invoke handler for the ephemeral server — delegates to `router::dispatch_invoke`.
 async fn ephemeral_invoke_handler(
     State(state): State<EphemeralState>,
     body: String,
-) -> impl IntoResponse {
+) -> axum::response::Response {
     debug!(body = %body, "← POST /invoke (ephemeral)");
-
     let ctx = crate::router::DispatchContext {
-        registry: &state.registry,
-        servers: &state.servers,
-        event_queue: &state.event_queue,
-        permissions: &state.permissions,
-        shim_cache: &state.shim_cache,
-        port: state.port,
+        registry: &state.registry, servers: &state.servers,
+        event_queue: &state.event_queue, permissions: &state.permissions,
+        shim_cache: &state.shim_cache, port: state.port,
     };
-
-    match crate::router::dispatch_invoke(&body, &ctx).await {
-        Ok(result) => {
-            let resp = serde_json::json!({"result": result.text, "is_error": result.is_error});
-            debug!(resp = %resp, "→ POST /invoke (ephemeral)");
-            Json(resp).into_response()
-        }
-        Err((status, msg)) => {
-            let resp = serde_json::json!({"result": msg, "is_error": true});
-            (status, Json(resp)).into_response()
-        }
-    }
+    crate::router::dispatch_invoke(&body, &ctx).await
 }

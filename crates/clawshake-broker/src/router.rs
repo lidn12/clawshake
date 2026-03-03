@@ -2,8 +2,9 @@ use std::future::Future;
 use std::pin::Pin;
 
 use anyhow::Result;
+use clawshake_core::identity::AgentId;
 use clawshake_core::manifest::InvokeConfig;
-use clawshake_core::permissions::PermissionStore;
+use clawshake_core::permissions::{Decision, PermissionStore};
 use serde_json::Value;
 
 use crate::{
@@ -23,64 +24,25 @@ pub struct DispatchContext<'a> {
     pub port: u16,
 }
 
-// ---------------------------------------------------------------------------
-// POST /invoke dispatch (shared by http_server and ephemeral server)
-// ---------------------------------------------------------------------------
+/// Parse and dispatch a `POST /invoke` body, returning an axum response.
+pub async fn dispatch_invoke(body: &str, ctx: &DispatchContext<'_>) -> axum::response::Response {
+    use axum::{http::StatusCode, response::IntoResponse, Json};
 
-/// Shared request type for `POST /invoke`.
-#[derive(serde::Deserialize)]
-pub struct InvokeRequest {
-    pub tool: String,
-    #[serde(default)]
-    pub arguments: Value,
-}
+    #[derive(serde::Deserialize)]
+    struct Req { tool: String, #[serde(default)] arguments: Value }
 
-/// Result of a `POST /invoke` dispatch.
-pub struct InvokeResult {
-    pub text: String,
-    pub is_error: bool,
-}
-
-/// Parse, permission-check, and dispatch a `POST /invoke` request body.
-///
-/// This is the single code path used by both `http_server::invoke_handler`
-/// and the ephemeral invoke server in `codemode.rs`.
-pub async fn dispatch_invoke(body: &str, ctx: &DispatchContext<'_>) -> std::result::Result<InvokeResult, (axum::http::StatusCode, String)> {
-    use clawshake_core::identity::AgentId;
-    use clawshake_core::permissions::Decision;
-
-    let req: InvokeRequest = serde_json::from_str(body)
-        .map_err(|e| (axum::http::StatusCode::BAD_REQUEST, format!("Bad request: {e}")))?;
-
-    let arguments = if req.arguments.is_object() {
-        req.arguments
-    } else {
-        Value::Object(Default::default())
+    let req: Req = match serde_json::from_str(body) {
+        Ok(r) => r,
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"result": format!("Bad request: {e}"), "is_error": true}))).into_response();
+        }
     };
-
-    // Permission check.
-    let decision = ctx.permissions.check(&AgentId::Local, &req.tool).await;
-    match decision {
-        Decision::Allow => {}
-        Decision::Deny => {
-            return Ok(InvokeResult {
-                text: format!("Permission denied: '{}'", req.tool),
-                is_error: true,
-            });
-        }
-        Decision::Ask => {
-            if let Err(e) = ctx.permissions.set("local", &req.tool, Decision::Allow).await {
-                tracing::warn!("Failed to persist permission: {e}");
-            }
-        }
-    }
-
-    let (text, is_error) = match dispatch(&req.tool, &arguments, ctx).await {
+    let args = if req.arguments.is_object() { req.arguments } else { Value::Object(Default::default()) };
+    let (text, is_error) = match dispatch(&req.tool, &args, ctx).await {
         Ok(t) => (t, false),
         Err(e) => (format!("{e}"), true),
     };
-
-    Ok(InvokeResult { text, is_error })
+    Json(serde_json::json!({"result": text, "is_error": is_error})).into_response()
 }
 
 /// Dispatch a `tools/call` for `tool_name` to the correct invoke backend.
@@ -96,6 +58,18 @@ pub fn dispatch<'a>(
     ctx: &'a DispatchContext<'a>,
 ) -> Pin<Box<dyn Future<Output = Result<String>> + Send + 'a>> {
     Box::pin(async move {
+    // Permission check (single location for all callers).
+    let decision = ctx.permissions.check(&AgentId::Local, tool_name).await;
+    match decision {
+        Decision::Allow => {}
+        Decision::Deny => anyhow::bail!("Permission denied: '{tool_name}'"),
+        Decision::Ask => {
+            if let Err(e) = ctx.permissions.set("local", tool_name, Decision::Allow).await {
+                tracing::warn!("Failed to persist permission: {e}");
+            }
+        }
+    }
+
     let loaded = ctx.registry.get(tool_name).ok_or_else(|| {
         anyhow::anyhow!(
             "no tool with this name is registered on the node. \

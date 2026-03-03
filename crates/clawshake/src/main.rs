@@ -175,31 +175,35 @@ async fn main() -> Result<()> {
             let backend: Option<McpClient> = if mcp.is_track1() {
                 mcp.build("clawshake-bridge").await?
             } else {
-                let (manifests_dir, db_path) = clawshake_broker::resolve_paths(&clawshake_dir);
+                let manifests_dir = clawshake_dir.join("manifests");
 
-                // In unified mode the bridge is started below, so network
-                // tools will always be available via IPC.
-                let handle = clawshake_broker::start_broker(
-                    clawshake_broker::BrokerConfig {
-                        manifests_dir,
-                        db_path,
-                        port,
-                        code_mode,
-                        bridge_available: true,
-                        reannounce_tx: Some(reannounce_tx.clone()),
-                    },
-                )
-                .await?;
+                let (_, code_mode_active) = clawshake_broker::cli::detect_code_mode(code_mode);
+                let permissions = PermissionStore::open(&db_path).await?;
+                let shim_cache = clawshake_broker::invoke::codemode::ShimCache::new();
+                let event_queue = clawshake_broker::event_queue::EventQueue::new();
+                let registry = clawshake_broker::watcher::ManifestRegistry::new();
 
-                info!("Broker HTTP server starting on :{port}");
+                clawshake_broker::builtins::register(&registry, code_mode_active, true);
 
-                // Give the broker a moment to bind so VS Code can connect
-                // immediately rather than racing against listener setup.
+                let (sse_tx, sse_rx) = tokio::sync::mpsc::channel::<()>(4);
+                let servers = clawshake_broker::watcher::start(
+                    manifests_dir, registry.clone(),
+                    Some(reannounce_tx.clone()), Some(sse_tx), Some(event_queue.clone()),
+                )?;
+                info!(tools = registry.tool_count(), "Broker ready on :{port}");
+
+                tokio::spawn(async move {
+                    if let Err(e) = clawshake_broker::http_server::serve(
+                        port, registry, permissions, servers, Some(sse_rx),
+                        shim_cache, code_mode, event_queue,
+                    ).await {
+                        tracing::error!("Broker HTTP server error: {e:#}");
+                        std::process::exit(1);
+                    }
+                });
+
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-                Some(McpClient::Http(HttpClient::new(format!(
-                    "http://127.0.0.1:{}", handle.port
-                ))))
+                Some(McpClient::Http(HttpClient::new(format!("http://127.0.0.1:{port}"))))
             };
 
             clawshake_bridge::cli::start_bridge(

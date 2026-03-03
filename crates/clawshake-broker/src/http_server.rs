@@ -300,29 +300,14 @@ async fn direct_handler(State(state): State<AppState>, body: String) -> impl Int
 ///
 /// Request:  `{"tool": "mail_send", "arguments": {"to": "...", ...}}`
 /// Response: `{"result": "...", "is_error": false}`
-async fn invoke_handler(State(state): State<AppState>, body: String) -> impl IntoResponse {
+async fn invoke_handler(State(state): State<AppState>, body: String) -> axum::response::Response {
     debug!(body = %body, "← POST /invoke");
-
     let ctx = crate::router::DispatchContext {
-        registry: &state.registry,
-        servers: &state.servers,
-        event_queue: &state.event_queue,
-        permissions: &state.permissions,
-        shim_cache: &state.shim_cache,
-        port: state.port,
+        registry: &state.registry, servers: &state.servers,
+        event_queue: &state.event_queue, permissions: &state.permissions,
+        shim_cache: &state.shim_cache, port: state.port,
     };
-
-    match crate::router::dispatch_invoke(&body, &ctx).await {
-        Ok(result) => {
-            let resp = serde_json::json!({"result": result.text, "is_error": result.is_error});
-            debug!(resp = %resp, "→ POST /invoke");
-            Json(resp).into_response()
-        }
-        Err((status, msg)) => {
-            let resp = serde_json::json!({"result": msg, "is_error": true});
-            (status, Json(resp)).into_response()
-        }
-    }
+    crate::router::dispatch_invoke(&body, &ctx).await
 }
 
 // ---------------------------------------------------------------------------

@@ -1,7 +1,6 @@
 use anyhow::Result;
 use clawshake_core::{
-    identity::AgentId,
-    permissions::{Decision, PermissionStore},
+    permissions::PermissionStore,
     protocol::{
         JsonRpcRequest, JsonRpcResponse, McpContent, McpToolDef, ToolsCallParams, ToolsCallResult,
         ToolsListResult,
@@ -9,7 +8,7 @@ use clawshake_core::{
 };
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tracing::{debug, warn};
+use tracing::debug;
 
 use crate::{
     event_queue::EventQueue,
@@ -178,41 +177,7 @@ pub(crate) async fn handle(
                 }
             };
 
-            // Permission check.
-            let decision = permissions.check(&AgentId::Local, &params.name).await;
-
-            match decision {
-                Decision::Allow => {}
-                Decision::Deny => {
-                    let result = ToolsCallResult {
-                        content: vec![McpContent::text(format!(
-                            "Permission denied: the local agent is not allowed to call '{}'. \
-                             Grant access with: clawshake permissions allow local {}",
-                            params.name, params.name
-                        ))],
-                        is_error: true,
-                    };
-                    return Some(JsonRpcResponse::ok(
-                        id,
-                        serde_json::to_value(result).expect("MCP result serializes to JSON"),
-                    ));
-                }
-                Decision::Ask => {
-                    // First-run: auto-allow for Local callers (can be
-                    // upgraded to interactive prompt in a later milestone).
-                    if let Err(e) = permissions
-                        .set("local", &params.name, Decision::Allow)
-                        .await
-                    {
-                        warn!("Failed to persist permission: {e}");
-                    }
-                }
-            }
-
-            // --- Code mode tools no longer intercepted here: they go through
-            // the router's InProcess arm like every other in-process tool. ---
-
-            // Dispatch.
+            // Dispatch (permission check happens inside router::dispatch).
             let arguments = serde_json::to_value(&params.arguments)
                 .unwrap_or(Value::Object(Default::default()));
             let ctx = router::DispatchContext {
