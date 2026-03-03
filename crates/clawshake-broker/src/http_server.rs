@@ -303,67 +303,26 @@ async fn direct_handler(State(state): State<AppState>, body: String) -> impl Int
 async fn invoke_handler(State(state): State<AppState>, body: String) -> impl IntoResponse {
     debug!(body = %body, "← POST /invoke");
 
-    #[derive(serde::Deserialize)]
-    struct InvokeRequest {
-        tool: String,
-        #[serde(default)]
-        arguments: serde_json::Value,
-    }
-
-    let req: InvokeRequest = match serde_json::from_str(&body) {
-        Ok(r) => r,
-        Err(e) => {
-            let resp = serde_json::json!({"result": format!("Bad request: {e}"), "is_error": true});
-            return (StatusCode::BAD_REQUEST, Json(resp)).into_response();
-        }
-    };
-
-    // Ensure arguments is an object.
-    let arguments = if req.arguments.is_object() {
-        req.arguments
-    } else {
-        serde_json::Value::Object(Default::default())
-    };
-
-    // Permission check (same as tools/call).
-    use clawshake_core::identity::AgentId;
-    use clawshake_core::permissions::Decision;
-    let decision = state.permissions.check(&AgentId::Local, &req.tool).await;
-    match decision {
-        Decision::Allow => {}
-        Decision::Deny => {
-            let resp = serde_json::json!({
-                "result": format!("Permission denied: '{}'", req.tool),
-                "is_error": true
-            });
-            return Json(resp).into_response();
-        }
-        Decision::Ask => {
-            // Auto-allow for local callers.
-            if let Err(e) = state
-                .permissions
-                .set("local", &req.tool, Decision::Allow)
-                .await
-            {
-                warn!("Failed to persist permission: {e}");
-            }
-        }
-    }
-
-    // Dispatch.
     let ctx = crate::router::DispatchContext {
         registry: &state.registry,
         servers: &state.servers,
         event_queue: &state.event_queue,
-    };
-    let (result, is_error) = match crate::router::dispatch(&req.tool, &arguments, &ctx).await {
-        Ok(text) => (text, false),
-        Err(e) => (format!("{e}"), true),
+        permissions: &state.permissions,
+        shim_cache: &state.shim_cache,
+        port: state.port,
     };
 
-    let resp = serde_json::json!({"result": result, "is_error": is_error});
-    debug!(resp = %resp, "→ POST /invoke");
-    Json(resp).into_response()
+    match crate::router::dispatch_invoke(&body, &ctx).await {
+        Ok(result) => {
+            let resp = serde_json::json!({"result": result.text, "is_error": result.is_error});
+            debug!(resp = %resp, "→ POST /invoke");
+            Json(resp).into_response()
+        }
+        Err((status, msg)) => {
+            let resp = serde_json::json!({"result": msg, "is_error": true});
+            (status, Json(resp)).into_response()
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

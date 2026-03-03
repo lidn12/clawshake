@@ -1,19 +1,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use clawshake_core::permissions::PermissionStore;
+use clawshake_broker::{builtins, cli, event_queue, invoke, mcp_server, watcher};
 use tracing::info;
-
-mod builtins;
-mod cli;
-mod event_queue;
-mod http_server;
-mod invoke;
-mod mcp_server;
-mod router;
-mod watcher;
-
-use event_queue::EventQueue;
-use invoke::codemode::ShimCache;
 
 /// Clawshake Broker — manifest watcher and MCP server for local capabilities.
 #[derive(Parser, Debug)]
@@ -81,9 +69,7 @@ async fn main() -> Result<()> {
     // Resolve ~/.clawshake paths.
     let home =
         dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
-    let clawshake_dir = home.join(".clawshake");
-    let manifests_dir = clawshake_dir.join("manifests");
-    let db_path = clawshake_dir.join("permissions.db");
+    let (manifests_dir, db_path) = clawshake_broker::resolve_paths(&home);
 
     match cli.command {
         Command::Tools { action } => {
@@ -95,8 +81,6 @@ async fn main() -> Result<()> {
             code_mode,
             local,
         } => {
-            let (_has_node, code_mode_active) = cli::detect_code_mode(code_mode);
-
             // Detect bridge daemon (unless --local).
             let bridge_available = if local {
                 info!("--local flag set, skipping network tools");
@@ -105,56 +89,61 @@ async fn main() -> Result<()> {
                 builtins::detect_bridge().await
             };
 
-            // Open permission store.
-            let permissions = PermissionStore::open(&db_path).await?;
-
-            // Create shim cache.
-            let shim_cache = ShimCache::new();
-
-            // Create event queue.
-            let event_queue = EventQueue::new();
-
-            // Load manifests and start file watcher.
-            let registry = watcher::ManifestRegistry::new();
-
-            // Register built-in tools directly in the registry (no JSON files).
-            builtins::register(&registry, code_mode_active, bridge_available);
-
-            let (sse_tx, sse_rx) = tokio::sync::mpsc::channel::<()>(4);
-            let servers = watcher::start(
-                manifests_dir,
-                registry.clone(),
-                None,
-                Some(sse_tx),
-                Some(event_queue.clone()),
-            )?;
-            info!(tools = registry.tool_count(), "Broker ready");
-
             if let Some(port) = port {
-                return http_server::serve(
-                    port,
-                    registry,
+                // HTTP SSE mode — start_broker spawns the server task.
+                let _handle = clawshake_broker::start_broker(
+                    clawshake_broker::BrokerConfig {
+                        manifests_dir,
+                        db_path,
+                        port,
+                        code_mode,
+                        bridge_available,
+                        reannounce_tx: None,
+                    },
+                )
+                .await?;
+
+                // Block forever — the HTTP server task runs until killed.
+                std::future::pending::<()>().await;
+            } else {
+                // Stdio mode — start_broker sets up registry, then we run
+                // the blocking stdio loop ourselves.
+                let (_has_node, code_mode_active) = cli::detect_code_mode(code_mode);
+
+                let handle = clawshake_broker::start_broker(
+                    clawshake_broker::BrokerConfig {
+                        manifests_dir: manifests_dir.clone(),
+                        db_path: db_path.clone(),
+                        port: 0,
+                        code_mode,
+                        bridge_available,
+                        reannounce_tx: None,
+                    },
+                )
+                .await?;
+
+                // For stdio mode we need the components that start_broker
+                // created.  Re-open them here (permissions is cheap to re-open).
+                let permissions =
+                    clawshake_core::permissions::PermissionStore::open(&db_path).await?;
+                let shim_cache = invoke::codemode::ShimCache::new();
+                let event_queue = event_queue::EventQueue::new();
+
+                // We need servers from the watcher; start_broker doesn't expose
+                // them for stdio mode, so we create an empty map (manifests with
+                // MCP sources won't work over stdio anyway).
+                let servers = watcher::McpServerMap::new();
+
+                mcp_server::serve_stdio(
+                    handle.registry,
                     permissions,
                     servers,
-                    Some(sse_rx),
                     shim_cache,
-                    code_mode,
+                    code_mode_active,
                     event_queue,
                 )
-                .await;
+                .await?;
             }
-
-            // Default: MCP stdio loop (no SSE sessions — drop the receiver).
-            drop(sse_rx);
-            mcp_server::serve_stdio(
-                registry,
-                permissions,
-                servers,
-                shim_cache,
-                code_mode_active,
-                event_queue,
-            )
-            .await?;
         }
     }
 

@@ -12,7 +12,7 @@ use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
 
 use anyhow::{bail, Result};
-use axum::{extract::State, http::StatusCode, response::IntoResponse, routing::post, Json, Router};
+use axum::{extract::State, response::IntoResponse, routing::post, Json, Router};
 use clawshake_core::permissions::PermissionStore;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
@@ -429,6 +429,9 @@ pub fn invoke_describe_tools(
 // ---------------------------------------------------------------------------
 
 /// Shared state for the ephemeral invoke server.
+///
+/// Contains the same fields as `DispatchContext` but owned (cloneable)
+/// so it can be used as axum state.
 #[derive(Clone)]
 struct EphemeralState {
     registry: ManifestRegistry,
@@ -436,6 +439,7 @@ struct EphemeralState {
     servers: McpServerMap,
     event_queue: crate::event_queue::EventQueue,
     shim_cache: ShimCache,
+    port: u16,
 }
 
 /// Guard that shuts down the ephemeral server when dropped.
@@ -461,21 +465,22 @@ async fn start_ephemeral_invoke_server(
     event_queue: crate::event_queue::EventQueue,
     shim_cache: ShimCache,
 ) -> Result<(u16, EphemeralServerGuard)> {
+    // Bind first so we know the port before constructing state.
+    let listener = tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0u16))).await?;
+    let port = listener.local_addr()?.port();
+
     let state = EphemeralState {
         registry,
         permissions,
         servers,
         event_queue,
         shim_cache,
+        port,
     };
 
     let app = Router::new()
         .route("/invoke", post(ephemeral_invoke_handler))
         .with_state(state);
-
-    // Bind to a random port on loopback.
-    let listener = tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0u16))).await?;
-    let port = listener.local_addr()?.port();
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
@@ -499,71 +504,31 @@ async fn start_ephemeral_invoke_server(
     ))
 }
 
-/// Invoke handler for the ephemeral server — same logic as `http_server::invoke_handler`.
+/// Invoke handler for the ephemeral server — delegates to `router::dispatch_invoke`.
 async fn ephemeral_invoke_handler(
     State(state): State<EphemeralState>,
     body: String,
 ) -> impl IntoResponse {
     debug!(body = %body, "← POST /invoke (ephemeral)");
 
-    #[derive(serde::Deserialize)]
-    struct InvokeRequest {
-        tool: String,
-        #[serde(default)]
-        arguments: serde_json::Value,
-    }
-
-    let req: InvokeRequest = match serde_json::from_str(&body) {
-        Ok(r) => r,
-        Err(e) => {
-            let resp = serde_json::json!({"result": format!("Bad request: {e}"), "is_error": true});
-            return (StatusCode::BAD_REQUEST, Json(resp)).into_response();
-        }
-    };
-
-    let arguments = if req.arguments.is_object() {
-        req.arguments
-    } else {
-        serde_json::Value::Object(Default::default())
-    };
-
-    // Permission check.
-    use clawshake_core::identity::AgentId;
-    use clawshake_core::permissions::Decision;
-    let decision = state.permissions.check(&AgentId::Local, &req.tool).await;
-    match decision {
-        Decision::Allow => {}
-        Decision::Deny => {
-            let resp = serde_json::json!({
-                "result": format!("Permission denied: '{}'", req.tool),
-                "is_error": true
-            });
-            return Json(resp).into_response();
-        }
-        Decision::Ask => {
-            if let Err(e) = state
-                .permissions
-                .set("local", &req.tool, Decision::Allow)
-                .await
-            {
-                warn!("Failed to persist permission: {e}");
-            }
-        }
-    }
-
-    // Dispatch.
     let ctx = crate::router::DispatchContext {
         registry: &state.registry,
         servers: &state.servers,
         event_queue: &state.event_queue,
+        permissions: &state.permissions,
+        shim_cache: &state.shim_cache,
+        port: state.port,
     };
-    let (result, is_error) =
-        match crate::router::dispatch(&req.tool, &arguments, &ctx).await {
-            Ok(text) => (text, false),
-            Err(e) => (format!("{e}"), true),
-        };
 
-    let resp = serde_json::json!({"result": result, "is_error": is_error});
-    debug!(resp = %resp, "→ POST /invoke (ephemeral)");
-    Json(resp).into_response()
+    match crate::router::dispatch_invoke(&body, &ctx).await {
+        Ok(result) => {
+            let resp = serde_json::json!({"result": result.text, "is_error": result.is_error});
+            debug!(resp = %resp, "→ POST /invoke (ephemeral)");
+            Json(resp).into_response()
+        }
+        Err((status, msg)) => {
+            let resp = serde_json::json!({"result": msg, "is_error": true});
+            (status, Json(resp)).into_response()
+        }
+    }
 }

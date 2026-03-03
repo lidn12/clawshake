@@ -209,52 +209,8 @@ pub(crate) async fn handle(
                 }
             }
 
-            // --- Code mode tools: handle directly without router dispatch ---
-            if params.name == "run_code" {
-                let script = params
-                    .arguments
-                    .get("script")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-
-                let timeout_secs = 30u64; // TODO: make configurable
-                let (content, is_error) = match crate::invoke::codemode::invoke_run_code(
-                    script,
-                    port,
-                    registry,
-                    permissions,
-                    servers,
-                    shim_cache,
-                    event_queue,
-                    timeout_secs,
-                )
-                .await
-                {
-                    Ok(stdout) => (vec![McpContent::text(stdout)], false),
-                    Err(e) => (vec![McpContent::text(format!("{e}"))], true),
-                };
-                let result = ToolsCallResult { content, is_error };
-                return Some(JsonRpcResponse::ok(
-                    id,
-                    serde_json::to_value(result).expect("MCP result serializes to JSON"),
-                ));
-            }
-
-            if params.name == "describe_tools" {
-                let query = params.arguments.get("query").and_then(|v| v.as_str());
-
-                let text = crate::invoke::codemode::invoke_describe_tools(
-                    query, port, registry, shim_cache,
-                );
-                let result = ToolsCallResult {
-                    content: vec![McpContent::text(text)],
-                    is_error: false,
-                };
-                return Some(JsonRpcResponse::ok(
-                    id,
-                    serde_json::to_value(result).expect("MCP result serializes to JSON"),
-                ));
-            }
+            // --- Code mode tools no longer intercepted here: they go through
+            // the router's InProcess arm like every other in-process tool. ---
 
             // Dispatch.
             let arguments = serde_json::to_value(&params.arguments)
@@ -263,6 +219,9 @@ pub(crate) async fn handle(
                 registry,
                 servers,
                 event_queue,
+                permissions,
+                shim_cache,
+                port,
             };
             let (content, is_error) = match router::dispatch(&params.name, &arguments, &ctx).await {
                 Ok(text) => (vec![McpContent::text(text)], false),

@@ -25,13 +25,12 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use clawshake_bridge::cli::{run_permissions_action, McpArgs, P2pArgs, PermissionsAction};
-use clawshake_broker::{builtins, http_server, invoke::codemode::ShimCache, watcher};
 use clawshake_core::{
     mcp_client::{HttpClient, McpClient},
     permissions::PermissionStore,
 };
 use clawshake_tools::cli::{run_network_cmd, NetworkCmd};
-use tracing::{info, warn};
+use tracing::info;
 
 // ---------------------------------------------------------------------------
 // CLI definition
@@ -172,67 +171,34 @@ async fn main() -> Result<()> {
             p2p,
             mcp,
         } => {
-            // Check that clawshake-tools is available on PATH.
-            check_tools_binary();
-
             let (reannounce_tx, reannounce_rx) = tokio::sync::mpsc::channel::<()>(4);
             let backend: Option<McpClient> = if mcp.is_track1() {
                 mcp.build("clawshake-bridge").await?
             } else {
-                let manifests_dir = clawshake_dir.join("manifests");
-                let permissions = PermissionStore::open(&db_path).await?;
+                let (manifests_dir, db_path) = clawshake_broker::resolve_paths(&clawshake_dir);
 
-                // Detect Node.js for code mode.
-                let (has_node, _code_mode_active) =
-                    clawshake_broker::cli::detect_code_mode(code_mode);
-                let shim_cache = ShimCache::new();
-
-                let registry = watcher::ManifestRegistry::new();
-                // Register built-in tools in-memory (no JSON files on disk).
-                // The bridge will be started below, so network tools will be
-                // available once IPC is up. Register them eagerly since we
-                // know the bridge will be available in unified mode.
-                builtins::register(&registry, has_node, true);
-
-                let event_queue = clawshake_broker::event_queue::EventQueue::new();
-                let (sse_tx, sse_rx) = tokio::sync::mpsc::channel::<()>(4);
-                let servers = watcher::start(
-                    manifests_dir,
-                    registry.clone(),
-                    Some(reannounce_tx.clone()),
-                    Some(sse_tx),
-                    Some(event_queue.clone()),
-                )?;
-                info!(tools = registry.tool_count(), "Broker ready");
-
-                let broker_port = port;
-                let _broker_handle = tokio::spawn(async move {
-                    if let Err(e) = http_server::serve(
-                        broker_port,
-                        registry,
-                        permissions,
-                        servers,
-                        Some(sse_rx),
-                        shim_cache,
+                // In unified mode the bridge is started below, so network
+                // tools will always be available via IPC.
+                let handle = clawshake_broker::start_broker(
+                    clawshake_broker::BrokerConfig {
+                        manifests_dir,
+                        db_path,
+                        port,
                         code_mode,
-                        event_queue,
-                    )
-                    .await
-                    {
-                        tracing::error!("Broker HTTP server exited with error: {e:#}");
-                        // Exit the whole process — the bridge without a
-                        // broker is useless and a silent failure is worse.
-                        std::process::exit(1);
-                    }
-                });
-                info!("Broker HTTP server starting on :{broker_port}");
+                        bridge_available: true,
+                        reannounce_tx: Some(reannounce_tx.clone()),
+                    },
+                )
+                .await?;
+
+                info!("Broker HTTP server starting on :{port}");
 
                 // Give the broker a moment to bind so VS Code can connect
                 // immediately rather than racing against listener setup.
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
                 Some(McpClient::Http(HttpClient::new(format!(
-                    "http://127.0.0.1:{broker_port}"
+                    "http://127.0.0.1:{}", handle.port
                 ))))
             };
 
@@ -248,23 +214,4 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Startup checks
-// ---------------------------------------------------------------------------
-
-/// Warn if `clawshake-tools` is not found on PATH.
-fn check_tools_binary() {
-    let name = if cfg!(windows) {
-        "clawshake-tools.exe"
-    } else {
-        "clawshake-tools"
-    };
-    if which::which(name).is_err() {
-        warn!(
-            "clawshake-tools not found on PATH; network_* tools will not work. \
-             Install it alongside clawshake or add it to your PATH."
-        );
-    }
 }
