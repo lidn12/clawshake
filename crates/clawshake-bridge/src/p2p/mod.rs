@@ -1,14 +1,37 @@
 mod addr;
 mod event;
 mod keypair;
+mod models;
 
 use std::{
+    collections::{HashMap, HashSet},
     sync::{Arc, RwLock},
     time::Duration,
 };
 
-use crate::{announce, codec, proxy, stream};
+use crate::{announce, proxy, stream};
 use anyhow::{Context, Result};
+use clawshake_core::{
+    mcp_client::McpClient,
+    network_channel::{
+        ConnectedPeers, DhtLookup, OutboundCall, OutboundModelStreamingCall, OutboundStreamCall,
+    },
+    peer_table::PeerTable,
+    permissions::PermissionStore,
+};
+use clawshake_models::backend::ModelBackend;
+use libp2p::futures::StreamExt;
+use libp2p::{
+    autonat, dcutr, identify, kad, mdns, noise, relay, rendezvous, request_response,
+    swarm::{behaviour::toggle::Toggle, NetworkBehaviour, SwarmEvent},
+    tcp, upnp, yamux, Multiaddr, PeerId, StreamProtocol, SwarmBuilder,
+};
+use tokio::{
+    select,
+    sync::{mpsc, oneshot},
+    time::interval,
+};
+use tracing::{info, warn};
 
 /// Read the local keypair from disk and return the derived `PeerId`.
 ///
@@ -34,29 +57,6 @@ pub fn peer_id_from_disk(override_path: Option<&std::path::Path>) -> Result<Peer
         .map_err(|e| anyhow::anyhow!("decoding keypair: {e}"))?;
     Ok(PeerId::from(&kp.public()))
 }
-use clawshake_core::{
-    config::AdvertiseModels,
-    mcp_client::McpClient,
-    models::ModelAnnounce,
-    network_channel::{
-        ConnectedPeers, DhtLookup, OutboundCall, OutboundModelStreamingCall, OutboundStreamCall,
-    },
-    peer_table::PeerTable,
-    permissions::PermissionStore,
-};
-use clawshake_models::backend::ModelBackend;
-use libp2p::futures::StreamExt;
-use libp2p::{
-    autonat, dcutr, identify, kad, mdns, noise, relay, rendezvous, request_response,
-    swarm::{behaviour::toggle::Toggle, NetworkBehaviour, SwarmEvent},
-    tcp, upnp, yamux, Multiaddr, PeerId, StreamProtocol, SwarmBuilder,
-};
-use tokio::{
-    select,
-    sync::{mpsc, oneshot},
-    time::interval,
-};
-use tracing::{info, warn};
 
 // ---------------------------------------------------------------------------
 // Composite behaviour
@@ -337,15 +337,9 @@ pub async fn run(cfg: P2pConfig) -> Result<()> {
                     } => { if v.is_none() { break; } }
                 }
                 let addrs = addr::dedup_announce_addrs(&addrs_ann);
-                let models = query_models(&model_backend_ann, &advertise_ann).await;
-                match announce::build_record(
-                    peer_id_ann,
-                    &addrs,
-                    &backend_ann,
-                    &perms_ann,
-                    models,
-                )
-                .await
+                let models = models::query_models(&model_backend_ann, &advertise_ann).await;
+                match announce::build_record(peer_id_ann, &addrs, &backend_ann, &perms_ann, models)
+                    .await
                 {
                     Ok(record) => {
                         if dht_tx_ann.send(record).await.is_err() {
@@ -362,16 +356,16 @@ pub async fn run(cfg: P2pConfig) -> Result<()> {
     // Pending outbound P2P calls: request_id -> oneshot sender for the response.
     // Populated when network_call sends a request through the swarm; resolved
     // when the proxy Response or OutboundFailure event comes back.
-    let mut pending_outbound: std::collections::HashMap<
+    let mut pending_outbound: HashMap<
         request_response::OutboundRequestId,
         oneshot::Sender<Result<Vec<u8>, String>>,
-    > = std::collections::HashMap::new();
+    > = HashMap::new();
 
     // Pending outbound stream calls (model completions via the local proxy).
-    let mut pending_stream_outbound: std::collections::HashMap<
+    let mut pending_stream_outbound: HashMap<
         request_response::OutboundRequestId,
         oneshot::Sender<Result<Vec<u8>, String>>,
-    > = std::collections::HashMap::new();
+    > = HashMap::new();
 
     // Async stream (model) responses: spawned tasks send back here.
     let (stream_resp_tx, mut stream_resp_rx) =
@@ -402,7 +396,8 @@ pub async fn run(cfg: P2pConfig) -> Result<()> {
                 let store = store_inbound.clone();
                 tokio::spawn(async move {
                     if let Err(e) =
-                        handle_inbound_model_stream(&mb, stream, &peer.to_string(), &store).await
+                        models::handle_inbound_model_stream(&mb, stream, &peer.to_string(), &store)
+                            .await
                     {
                         warn!(%peer, "Inbound model stream error: {e}");
                     }
@@ -413,12 +408,12 @@ pub async fn run(cfg: P2pConfig) -> Result<()> {
 
     let mut state = event::NodeState {
         relay_banner_shown: false,
-        relay_reserved_peers: std::collections::HashSet::new(),
-        rendezvous_cookies: std::collections::HashMap::new(),
-        rendezvous_registered: std::collections::HashSet::new(),
-        rendezvous_servers: std::collections::HashSet::new(),
-        peer_connections: std::collections::HashMap::new(),
-        pending_dht_queries: std::collections::HashMap::new(),
+        relay_reserved_peers: HashSet::new(),
+        rendezvous_cookies: HashMap::new(),
+        rendezvous_registered: HashSet::new(),
+        rendezvous_servers: HashSet::new(),
+        peer_connections: HashMap::new(),
+        pending_dht_queries: HashMap::new(),
     };
     let mut rendezvous_tick = interval(Duration::from_secs(10));
     let ctx = event::EventContext {
@@ -514,17 +509,15 @@ pub async fn run(cfg: P2pConfig) -> Result<()> {
                             let tx = stream_resp_tx.clone();
                             let perm_store = Arc::clone(&store);
                             tokio::spawn(async move {
-                                let response = handle_model_request(&mb, &request, &peer.to_string(), &perm_store).await;
+                                let response = models::handle_model_request(&mb, &request, &peer.to_string(), &perm_store).await;
                                 let _ = tx.send((channel, response)).await;
                             });
                         } else {
                             info!(%peer, "Inbound stream request but no model backend configured");
-                            let err = serde_json::to_vec(&serde_json::json!({
-                                "error": {
-                                    "message": "No model backend configured on this node",
-                                    "type": "server_error",
-                                }
-                            })).unwrap_or_default();
+                            let err = models::model_error_bytes(
+                                "No model backend configured on this node",
+                                "server_error",
+                            );
                             let _ = swarm.behaviour_mut().stream.send_response(channel, err);
                         }
                     }
@@ -633,7 +626,7 @@ pub async fn run(cfg: P2pConfig) -> Result<()> {
                         let mut ctl = model_stream_control.clone();
                         let proto = model_stream_protocol.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = drive_outbound_model_stream(
+                            if let Err(e) = models::drive_outbound_model_stream(
                                 &mut ctl, pid, proto, &request, frame_tx,
                             ).await {
                                 warn!(%pid, "Outbound model stream failed: {e}");
@@ -691,330 +684,5 @@ pub async fn run(cfg: P2pConfig) -> Result<()> {
         }
     }
     info!("Node stopped.");
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Model proxy helpers
-// ---------------------------------------------------------------------------
-
-/// Query the model backend for available models, filtered by the advertise
-/// configuration.  Returns an empty vec if no model backend is configured.
-async fn query_models(
-    backend: &Option<ModelBackend>,
-    advertise: &AdvertiseModels,
-) -> Vec<ModelAnnounce> {
-    let backend = match backend {
-        Some(b) => b,
-        None => return Vec::new(),
-    };
-    if advertise.is_none() {
-        return Vec::new();
-    }
-
-    let all_models = match backend.list_models().await {
-        Ok(m) => m,
-        Err(e) => {
-            warn!("Failed to query model backend: {e}");
-            return Vec::new();
-        }
-    };
-
-    let result = match advertise {
-        AdvertiseModels::All(_) => all_models,
-        AdvertiseModels::List(names) => all_models
-            .into_iter()
-            .filter(|m| names.iter().any(|n| n == &m.name))
-            .collect(),
-        AdvertiseModels::None(_) => Vec::new(),
-    };
-
-    if !result.is_empty() {
-        let names: Vec<&str> = result.iter().map(|m| m.name.as_str()).collect();
-        info!(count = result.len(), models = ?names, "Advertising models on the network");
-    }
-
-    result
-}
-
-/// Parse a model request, check permissions, and generate a request ID.
-///
-/// Returns `Ok((ModelRequest, request_id))` on success, or `Err(error_bytes)`
-/// suitable for sending back to the peer.
-async fn validate_model_request(
-    request_bytes: &[u8],
-    peer: &str,
-    store: &PermissionStore,
-) -> std::result::Result<(clawshake_core::models::ModelRequest, String), Vec<u8>> {
-    use clawshake_core::identity::AgentId;
-    use clawshake_core::models::ModelRequest;
-    use clawshake_core::permissions::Decision;
-
-    let req: ModelRequest = match serde_json::from_slice(request_bytes) {
-        Ok(r) => r,
-        Err(e) => {
-            warn!(%peer, "Failed to parse model request: {e}");
-            return Err(serde_json::to_vec(&serde_json::json!({
-                "error": {
-                    "message": format!("Invalid model request: {e}"),
-                    "type": "invalid_request_error",
-                }
-            }))
-            .unwrap_or_default());
-        }
-    };
-
-    let agent_id = AgentId::P2p(peer.to_string());
-    match store.check(&agent_id, &req.model).await {
-        Decision::Allow => {
-            info!(model = %req.model, %peer, "Model access granted");
-        }
-        _ => {
-            warn!(model = %req.model, %peer, "Model access denied");
-            return Err(serde_json::to_vec(&serde_json::json!({
-                "error": {
-                    "message": format!(
-                        "Permission denied: peer '{}' is not allowed to use model '{}'. \
-                         Grant access with: clawshake permissions allow p2p:{} {}",
-                        peer, req.model, peer, req.model
-                    ),
-                    "type": "permission_denied",
-                }
-            }))
-            .unwrap_or_default());
-        }
-    }
-
-    let request_id = format!(
-        "p2p-{}-{}",
-        peer.chars().take(8).collect::<String>(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0)
-    );
-
-    Ok((req, request_id))
-}
-
-/// Handle an inbound model completion request from a peer.
-///
-/// Parses the request bytes as a `ModelRequest`, runs the completion against
-/// the local model backend, collects all streamed chunks into a single
-/// non-streaming OpenAI-compatible response, and returns the response bytes.
-async fn handle_model_request(
-    backend: &ModelBackend,
-    request_bytes: &[u8],
-    peer: &str,
-    store: &PermissionStore,
-) -> Vec<u8> {
-    use futures::StreamExt;
-
-    let (req, request_id) = match validate_model_request(request_bytes, peer, store).await {
-        Ok(v) => v,
-        Err(bytes) => return bytes,
-    };
-
-    // Run the completion
-    let stream = match backend.complete(&request_id, &req).await {
-        Ok(s) => s,
-        Err(e) => {
-            warn!(%peer, "Model completion failed: {e}");
-            return serde_json::to_vec(&serde_json::json!({
-                "error": {
-                    "message": format!("Model backend error: {e}"),
-                    "type": "server_error",
-                }
-            }))
-            .unwrap_or_default();
-        }
-    };
-
-    // Collect all streamed chunks into a single response.
-    // Each Chunk.data is an OpenAI streaming delta — we extract the content
-    // text from each and concatenate.
-    let mut content = String::new();
-    let mut usage = None;
-    let mut finish_reason = None;
-
-    tokio::pin!(stream);
-    while let Some(frame) = stream.next().await {
-        match frame {
-            clawshake_core::stream::StreamFrame::Chunk { data, .. } => {
-                // Extract content from OpenAI delta format:
-                // { "choices": [{ "delta": { "content": "..." }, "finish_reason": "stop" }] }
-                if let Some(choices) = data.get("choices").and_then(|c| c.as_array()) {
-                    for choice in choices {
-                        if let Some(text) = choice
-                            .get("delta")
-                            .and_then(|d| d.get("content"))
-                            .and_then(|c| c.as_str())
-                        {
-                            content.push_str(text);
-                        }
-                        if let Some(reason) = choice.get("finish_reason").and_then(|r| r.as_str()) {
-                            finish_reason = Some(reason.to_string());
-                        }
-                    }
-                }
-            }
-            clawshake_core::stream::StreamFrame::Done { meta, .. } => {
-                usage = meta;
-            }
-            clawshake_core::stream::StreamFrame::Error { message, .. } => {
-                warn!(%peer, "Model stream error: {message}");
-                return serde_json::to_vec(&serde_json::json!({
-                    "error": {
-                        "message": message,
-                        "type": "server_error",
-                    }
-                }))
-                .unwrap_or_default();
-            }
-        }
-    }
-
-    // Build a non-streaming OpenAI-compatible response.
-    let mut response = serde_json::json!({
-        "id": request_id,
-        "object": "chat.completion",
-        "model": req.model,
-        "choices": [{
-            "index": 0,
-            "message": {
-                "role": "assistant",
-                "content": content,
-            },
-            "finish_reason": finish_reason.unwrap_or_else(|| "stop".to_string()),
-        }],
-    });
-
-    if let Some(u) = usage {
-        response["usage"] = u;
-    }
-
-    info!(model = %req.model, %peer, content_len = content.len(), "Model completion done");
-
-    serde_json::to_vec(&response).unwrap_or_default()
-}
-
-// ---------------------------------------------------------------------------
-// libp2p-stream model streaming helpers
-// ---------------------------------------------------------------------------
-
-/// Handle an inbound model stream from a remote peer.
-///
-/// Reads the `ModelRequest` from the stream, runs the completion against the
-/// local model backend, and writes each `StreamFrame` back as it's produced.
-/// The remote proxy reads these frames and forwards them as SSE events to
-/// the HTTP client — giving true token-by-token streaming.
-async fn handle_inbound_model_stream(
-    backend: &ModelBackend,
-    mut stream: libp2p::swarm::Stream,
-    peer: &str,
-    store: &PermissionStore,
-) -> Result<()> {
-    use clawshake_core::stream::StreamFrame;
-    use futures::io::AsyncWriteExt;
-
-    // Read the request (length-prefixed).
-    let request_bytes = codec::read_framed(&mut stream)
-        .await
-        .context("reading model request from stream")?;
-
-    let (req, request_id) = match validate_model_request(&request_bytes, peer, store).await {
-        Ok(v) => v,
-        Err(deny_bytes) => {
-            // Permission denied / parse error — send as a StreamFrame::Error.
-            let err = StreamFrame::error("denied", String::from_utf8_lossy(&deny_bytes), Some(-32001));
-            codec::write_framed(&mut stream, &err.to_bytes()).await?;
-            stream.close().await?;
-            return Ok(());
-        }
-    };
-
-    // Run the completion — returns a stream of StreamFrames.
-    let frame_stream = match backend.complete(&request_id, &req).await {
-        Ok(s) => s,
-        Err(e) => {
-            let err = StreamFrame::error(&request_id, format!("Backend error: {e}"), Some(-32603));
-            codec::write_framed(&mut stream, &err.to_bytes()).await?;
-            stream.close().await?;
-            return Ok(());
-        }
-    };
-
-    // Forward each frame from the backend to the remote peer.
-    tokio::pin!(frame_stream);
-    while let Some(frame) = futures::StreamExt::next(&mut frame_stream).await {
-        let bytes = frame.to_bytes();
-        if codec::write_framed(&mut stream, &bytes).await.is_err() {
-            warn!(%peer, "Stream write failed — peer disconnected?");
-            return Ok(());
-        }
-    }
-
-    stream.close().await?;
-    info!(model = %req.model, %peer, "Model stream completed");
-    Ok(())
-}
-
-/// Drive an outbound model stream: open a bidirectional stream to the peer,
-/// write the request, and read `StreamFrame`s back, forwarding each through
-/// the mpsc channel to the proxy's SSE response.
-async fn drive_outbound_model_stream(
-    control: &mut libp2p_stream::Control,
-    peer: PeerId,
-    protocol: StreamProtocol,
-    request: &[u8],
-    frame_tx: mpsc::Sender<Result<Vec<u8>, String>>,
-) -> Result<()> {
-    use futures::io::AsyncWriteExt;
-
-    info!(%peer, "Opening model stream");
-
-    let mut stream = control
-        .open_stream(peer, protocol)
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to open model stream to {peer}: {e}"))?;
-
-    // Write the request (length-prefixed).
-    codec::write_framed(&mut stream, request)
-        .await
-        .context("writing model request to stream")?;
-
-    // Read frames until the stream is closed or a Done/Error frame arrives.
-    loop {
-        match codec::read_framed(&mut stream).await {
-            Ok(frame_bytes) => {
-                // Check if this is a terminal frame (Done or Error)
-                let is_terminal = matches!(
-                    clawshake_core::stream::StreamFrame::from_bytes(&frame_bytes),
-                    Ok(clawshake_core::stream::StreamFrame::Done { .. })
-                        | Ok(clawshake_core::stream::StreamFrame::Error { .. })
-                );
-
-                if frame_tx.send(Ok(frame_bytes)).await.is_err() {
-                    warn!(%peer, "Frame receiver dropped — client disconnected?");
-                    break;
-                }
-
-                if is_terminal {
-                    break;
-                }
-            }
-            Err(e) => {
-                // EOF = stream closed by peer (normal after Done frame).
-                if e.kind() == std::io::ErrorKind::UnexpectedEof {
-                    break;
-                }
-                let _ = frame_tx.send(Err(format!("Stream read error: {e}"))).await;
-                break;
-            }
-        }
-    }
-
-    let _ = stream.close().await;
-    info!(%peer, "Model stream finished");
     Ok(())
 }

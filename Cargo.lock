@@ -507,11 +507,9 @@ dependencies = [
  "clawshake-core",
  "clawshake-tools",
  "dirs",
- "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",
- "which",
 ]
 
 [[package]]

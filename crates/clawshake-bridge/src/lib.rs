@@ -9,4 +9,4 @@ pub(crate) mod codec;
 pub mod p2p;
 pub mod proxy;
 pub mod stream;
-pub mod watcher;
+pub(crate) mod watcher;
