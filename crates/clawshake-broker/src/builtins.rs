@@ -144,9 +144,7 @@ fn codemode_tools() -> Vec<Tool> {
             description: "Execute a JavaScript script that can call any available tool as an \
                 async function. Use describe_tools first to discover the JS API. Intermediate \
                 results stay in the JS runtime and only console.log() output is returned. This \
-                is dramatically more token-efficient for multi-step workflows. \
-                Tools are pre-loaded under their category namespace — e.g. network_peers \
-                becomes network.peers, filesystem_read_file becomes filesystem.read_file."
+                is dramatically more token-efficient for multi-step workflows."
                 .into(),
             input_schema: InputSchema {
                 r#type: "object".into(),

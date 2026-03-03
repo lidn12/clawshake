@@ -125,24 +125,8 @@ fn generate_shim(port: u16, tools: &[LoadedTool]) -> CachedShim {
     for source in &sources {
         let group = &by_source[**source];
 
-        // Compute JS function names (strip source prefix) for both summary and shim.
-        let fn_names: Vec<String> = group
-            .iter()
-            .map(|lt| {
-                let fn_name = lt
-                    .tool
-                    .name
-                    .strip_prefix(&format!("{}_", source))
-                    .unwrap_or(&lt.tool.name);
-                safe_js_ident(fn_name)
-            })
-            .collect();
-
-        // Category summary line — show JS dot-notation names so agents can call them directly.
-        let names_preview: Vec<String> = fn_names
-            .iter()
-            .map(|fn_name| format!("{}.{}", source, fn_name))
-            .collect();
+        // Category summary line — show flat MCP names so agents know exactly what to call.
+        let names_preview: Vec<String> = group.iter().map(|lt| lt.tool.name.clone()).collect();
         writeln!(
             categories,
             "- {} ({} tools): {}",
@@ -152,20 +136,17 @@ fn generate_shim(port: u16, tools: &[LoadedTool]) -> CachedShim {
         )
         .unwrap();
 
-        // JS object with tool functions
-        writeln!(js, "const {} = {{", safe_js_ident(source)).unwrap();
-        for (lt, fn_name) in group.iter().zip(fn_names.iter()) {
-            // JSDoc comment
-            writeln!(js, "  /** {} */", lt.tool.description.replace("*/", "* /")).unwrap();
-
+        // Flat const declaration per tool — JS name == MCP name, no translation.
+        for lt in group.iter() {
+            writeln!(js, "/** {} */", lt.tool.description.replace("*/", "* /")).unwrap();
             writeln!(
                 js,
-                "  {}: (args) => _call('{}', args),",
-                fn_name, lt.tool.name
+                "const {} = (args) => _call('{}', args);",
+                safe_js_ident(&lt.tool.name),
+                lt.tool.name
             )
             .unwrap();
         }
-        writeln!(js, "}};").unwrap();
         writeln!(js).unwrap();
     }
 
@@ -222,33 +203,25 @@ fn generate_filtered_shim(tools: &[LoadedTool], query: &str) -> String {
 
     for source in &sources {
         let group = &by_source[**source];
-        writeln!(js, "const {} = {{", safe_js_ident(source)).unwrap();
         for lt in group {
             // Build param hints from inputSchema
             let param_hint = param_hint_from_schema(&lt.tool.input_schema);
             writeln!(
                 js,
-                "  /** {} @param {{{}}} args */",
+                "/** {} @param {{{}}} args */",
                 lt.tool.description.replace("*/", "* /"),
                 param_hint
             )
             .unwrap();
 
-            let fn_name = lt
-                .tool
-                .name
-                .strip_prefix(&format!("{}_", source))
-                .unwrap_or(&lt.tool.name);
-
             writeln!(
                 js,
-                "  {}: (args) => _call('{}', args),",
-                safe_js_ident(fn_name),
+                "const {} = (args) => _call('{}', args);",
+                safe_js_ident(&lt.tool.name),
                 lt.tool.name
             )
             .unwrap();
         }
-        writeln!(js, "}};").unwrap();
         writeln!(js).unwrap();
     }
 
