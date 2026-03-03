@@ -331,13 +331,22 @@ pub async fn invoke_run_code(
 
     debug!(script_len = combined.len(), "run_code: spawning node");
 
-    let mut child = Command::new("node")
+    // Resolve the node executable path explicitly so that the broker can find
+    // it even when run as a child process of VS Code (which may have a
+    // stripped PATH that doesn't include the user's Node.js install dir).
+    let node_exe = which::which("node")
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| "node".to_string());
+
+    let mut child = Command::new(&node_exe)
         .arg("-") // read from stdin
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .map_err(|e| anyhow::anyhow!("Failed to spawn node: {e}. Is Node.js installed?"))?;
+        .map_err(|e| {
+            anyhow::anyhow!("Failed to spawn node ({node_exe}): {e}. Is Node.js installed?")
+        })?;
 
     // Write script to stdin then close it.
     if let Some(mut stdin) = child.stdin.take() {
