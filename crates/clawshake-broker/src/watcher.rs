@@ -71,6 +71,22 @@ impl ManifestRegistry {
         }
     }
 
+    /// Register a single built-in tool directly (no manifest file on disk).
+    ///
+    /// Built-in tools are invisible to the file watcher — they can only be
+    /// replaced by another `register_builtin` call.
+    pub fn register_builtin(&self, tool: Tool, source: &str) {
+        let mut map = self.inner.write().expect("registry lock");
+        let key = tool.name.clone();
+        map.insert(
+            key,
+            LoadedTool {
+                tool,
+                source: source.to_string(),
+            },
+        );
+    }
+
     /// Remove all tools that came from a specific source (on manifest removal/rename).
     pub fn unload_source(&self, source: &str) {
         let mut map = self.inner.write().expect("registry lock");

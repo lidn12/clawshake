@@ -136,8 +136,8 @@ fn format_age(updated_at: u64) -> String {
 /// appear in the listing.  Falls back to a static manifest scan when the
 /// snapshot file doesn't exist (broker has never run).
 ///
-/// The caller is responsible for seeding any built-in manifests before
-/// calling this function (e.g. the unified binary seeds `network.json`).
+/// Built-in tools (events, codemode, network) are registered in-memory
+/// by the broker at startup — they appear in the snapshot automatically.
 pub async fn list_tools(manifests_dir: &Path, db_path: &Path, json: bool) -> Result<()> {
     let permissions = PermissionStore::open(db_path).await?;
 
@@ -226,7 +226,7 @@ pub async fn list_tools(manifests_dir: &Path, db_path: &Path, json: bool) -> Res
 /// MCP-server-sourced tools are counted correctly.  Falls back to a static
 /// manifest scan when the snapshot doesn't exist.
 ///
-/// The caller is responsible for seeding any built-in manifests first.
+/// Built-in tools appear in the snapshot automatically from the running broker.
 /// Used by the unified `clawshake` binary via `clawshake_broker::cli::tool_counts`.
 #[allow(dead_code)]
 pub async fn tool_counts(manifests_dir: &Path, db_path: &Path) -> (usize, usize) {

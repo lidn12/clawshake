@@ -155,13 +155,11 @@ async fn main() -> Result<()> {
 
         Command::Tools { action } => {
             let manifests_dir = clawshake_dir.join("manifests");
-            builtins::seed(&manifests_dir, false)?;
             clawshake_broker::cli::run_tools_action(&action, &manifests_dir, &db_path).await?;
         }
 
         Command::Status { json } => {
             let manifests_dir = clawshake_dir.join("manifests");
-            builtins::seed(&manifests_dir, false)?;
             let (total, published) =
                 clawshake_broker::cli::tool_counts(&manifests_dir, &db_path).await;
             clawshake_bridge::cli::show_status(json, Some((total, published))).await?;
@@ -189,8 +187,12 @@ async fn main() -> Result<()> {
                     clawshake_broker::cli::detect_code_mode(code_mode);
                 let shim_cache = ShimCache::new();
 
-                builtins::seed(&manifests_dir, has_node)?;
                 let registry = watcher::ManifestRegistry::new();
+                // Register built-in tools in-memory (no JSON files on disk).
+                // The bridge will be started below, so network tools will be
+                // available once IPC is up. Register them eagerly since we
+                // know the bridge will be available in unified mode.
+                builtins::register(&registry, has_node, true);
 
                 let event_queue = clawshake_broker::event_queue::EventQueue::new();
                 let (sse_tx, sse_rx) = tokio::sync::mpsc::channel::<()>(4);

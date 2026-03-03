@@ -45,6 +45,11 @@ enum Command {
         /// through run_code scripts.  Requires Node.js on PATH.
         #[arg(long, default_value_t = false)]
         code_mode: bool,
+
+        /// Skip network tool registration even if the bridge daemon is running.
+        /// Useful for purely local operation.
+        #[arg(long, default_value_t = false)]
+        local: bool,
     },
 
     /// List all tools registered with the broker.
@@ -85,11 +90,20 @@ async fn main() -> Result<()> {
             cli::run_tools_action(&action, &manifests_dir, &db_path).await?;
         }
 
-        Command::Run { port, code_mode } => {
+        Command::Run {
+            port,
+            code_mode,
+            local,
+        } => {
             let (_has_node, code_mode_active) = cli::detect_code_mode(code_mode);
 
-            // Seed built-in manifests (network.json, and optionally codemode.json).
-            builtins::seed(&manifests_dir, code_mode_active)?;
+            // Detect bridge daemon (unless --local).
+            let bridge_available = if local {
+                info!("--local flag set, skipping network tools");
+                false
+            } else {
+                builtins::detect_bridge().await
+            };
 
             // Open permission store.
             let permissions = PermissionStore::open(&db_path).await?;
@@ -102,6 +116,9 @@ async fn main() -> Result<()> {
 
             // Load manifests and start file watcher.
             let registry = watcher::ManifestRegistry::new();
+
+            // Register built-in tools directly in the registry (no JSON files).
+            builtins::register(&registry, code_mode_active, bridge_available);
 
             let (sse_tx, sse_rx) = tokio::sync::mpsc::channel::<()>(4);
             let servers = watcher::start(

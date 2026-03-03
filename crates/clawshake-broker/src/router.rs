@@ -74,6 +74,15 @@ pub async fn dispatch(
                 "'{tool_name}' can only be called through the MCP server, \
                  not via POST /invoke"
             ),
+            // Network tools — dispatch via IPC to the bridge daemon.
+            name if name.starts_with("network_") => {
+                let params = arguments.clone();
+                let resp = clawshake_tools::client::send_request(name, params)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("bridge IPC error: {e:#}"))?;
+                Ok(serde_json::to_string_pretty(&resp)
+                    .unwrap_or_else(|_| resp.to_string()))
+            }
             _ => anyhow::bail!(
                 "in-process tool '{tool_name}' has no registered handler in the router"
             ),

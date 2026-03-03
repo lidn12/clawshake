@@ -545,6 +545,7 @@ dependencies = [
  "axum",
  "clap",
  "clawshake-core",
+ "clawshake-tools",
  "dirs",
  "futures",
  "notify",

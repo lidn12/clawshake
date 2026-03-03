@@ -119,8 +119,10 @@ pub enum InvokeConfig {
         server_key: String,
     },
     /// An in-process tool handled directly by the broker router without
-    /// spawning a child process.  Serializes as `{"type":"in_process"}`.
-    /// Used for built-in tools like `emit`, `listen`, `run_code`, and
-    /// `describe_tools`.
+    /// spawning a child process.  Not serialised — constructed in Rust code
+    /// by `builtins::register()` at startup.
+    /// Used for built-in tools like `emit`, `listen`, `run_code`,
+    /// `describe_tools`, and all `network_*` tools.
+    #[serde(skip)]
     InProcess,
 }
