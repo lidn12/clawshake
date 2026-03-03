@@ -354,22 +354,22 @@ pub async fn start_bridge(
         (None, None, None)
     };
 
-    crate::p2p::run(
-        p2p_port,
-        p2p_args.boot_peers,
-        p2p_args.identity,
+    crate::p2p::run(crate::p2p::P2pConfig {
+        port: p2p_port,
+        boot_peers: p2p_args.boot_peers,
+        identity: p2p_args.identity,
         backend,
-        store,
-        table,
+        permissions: store,
+        peer_table: table,
         connected,
-        p2p_args.relay_server,
+        relay_server: p2p_args.relay_server,
         call_rx,
-        Some(reannounce_rx),
+        reannounce_rx: Some(reannounce_rx),
         dht_lookup_rx,
         model_backend,
         stream_call_rx,
         model_streaming_rx,
-    )
+    })
     .await
 }
 

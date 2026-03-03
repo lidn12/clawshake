@@ -33,10 +33,7 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use clawshake_core::{
-    permissions::PermissionStore,
-    protocol::{JsonRpcRequest, JsonRpcResponse},
-};
+use clawshake_core::protocol::{JsonRpcRequest, JsonRpcResponse};
 use futures::{Stream, StreamExt};
 use tokio::sync::{mpsc, RwLock};
 use tokio_stream::wrappers::UnboundedReceiverStream;
@@ -44,10 +41,8 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::{
-    event_queue::EventQueue,
-    invoke::codemode::ShimCache,
     mcp_server,
-    watcher::{ManifestRegistry, McpServerMap},
+    router::BrokerContext,
 };
 
 // ---------------------------------------------------------------------------
@@ -58,14 +53,8 @@ type Sessions = Arc<RwLock<HashMap<String, mpsc::UnboundedSender<String>>>>;
 
 #[derive(Clone)]
 struct AppState {
-    registry: ManifestRegistry,
-    permissions: PermissionStore,
+    ctx: BrokerContext,
     sessions: Sessions,
-    servers: McpServerMap,
-    shim_cache: ShimCache,
-    port: u16,
-    code_mode: bool,
-    event_queue: EventQueue,
 }
 
 // ---------------------------------------------------------------------------
@@ -75,24 +64,12 @@ struct AppState {
 /// Bind an MCP HTTP SSE server on `127.0.0.1:<port>` and serve forever.
 /// Bind an MCP HTTP SSE server on `127.0.0.1:<port>` and serve forever.
 pub async fn serve(
-    port: u16,
-    registry: ManifestRegistry,
-    permissions: PermissionStore,
-    servers: McpServerMap,
+    broker: BrokerContext,
     notify_rx: Option<tokio::sync::mpsc::Receiver<()>>,
-    shim_cache: ShimCache,
-    code_mode: bool,
-    event_queue: EventQueue,
 ) -> Result<()> {
     let state = AppState {
-        registry,
-        permissions,
         sessions: Arc::new(RwLock::new(HashMap::new())),
-        servers,
-        shim_cache,
-        port,
-        code_mode,
-        event_queue,
+        ctx: broker,
     };
 
     // When the manifest registry changes, broadcast notifications/tools/list_changed
@@ -117,6 +94,8 @@ pub async fn serve(
             }
         });
     }
+
+    let port = state.ctx.port;
 
     let app = Router::new()
         .route("/sse", get(sse_handler))
@@ -212,32 +191,16 @@ async fn messages_handler(
 
     debug!(session = %session_id, body = %body, "← POST /messages");
 
-    let registry = state.registry.clone();
-    let permissions = state.permissions.clone();
-    let servers = state.servers.clone();
-    let shim_cache = state.shim_cache.clone();
-    let port = state.port;
-    let code_mode = state.code_mode;
-    let event_queue = state.event_queue.clone();
+    let ctx = state.ctx.clone();
 
     tokio::spawn(async move {
+        let dispatch = ctx.as_dispatch();
         let response = match serde_json::from_str::<JsonRpcRequest>(&body) {
             Err(e) => {
                 let r = JsonRpcResponse::err(None, -32700, format!("Parse error: {e}"));
                 serde_json::to_string(&r).expect("JSON-RPC response serializes to string")
             }
-            Ok(req) => match mcp_server::handle(
-                &req,
-                &registry,
-                &permissions,
-                &servers,
-                &shim_cache,
-                port,
-                code_mode,
-                &event_queue,
-            )
-            .await
-            {
+            Ok(req) => match mcp_server::handle(&req, &dispatch).await {
                 Some(resp) => {
                     serde_json::to_string(&resp).expect("JSON-RPC response serializes to string")
                 }
@@ -263,21 +226,11 @@ async fn messages_handler(
 /// POSTs JSON-RPC to the server root and expects a JSON response body.
 async fn direct_handler(State(state): State<AppState>, body: String) -> impl IntoResponse {
     debug!(body = %body, "← POST /");
+    let ctx = state.ctx.as_dispatch();
     let response = match serde_json::from_str::<JsonRpcRequest>(&body) {
         Err(e) => JsonRpcResponse::err(None, -32700, format!("Parse error: {e}")),
         Ok(req) => {
-            match mcp_server::handle(
-                &req,
-                &state.registry,
-                &state.permissions,
-                &state.servers,
-                &state.shim_cache,
-                state.port,
-                state.code_mode,
-                &state.event_queue,
-            )
-            .await
-            {
+            match mcp_server::handle(&req, &ctx).await {
                 Some(resp) => resp,
                 // Notification — no response body; return empty 204.
                 None => {
@@ -302,11 +255,7 @@ async fn direct_handler(State(state): State<AppState>, body: String) -> impl Int
 /// Response: `{"result": "...", "is_error": false}`
 async fn invoke_handler(State(state): State<AppState>, body: String) -> axum::response::Response {
     debug!(body = %body, "← POST /invoke");
-    let ctx = crate::router::DispatchContext {
-        registry: &state.registry, servers: &state.servers,
-        event_queue: &state.event_queue, permissions: &state.permissions,
-        shim_cache: &state.shim_cache, port: state.port,
-    };
+    let ctx = state.ctx.as_dispatch();
     crate::router::dispatch_invoke(&body, &ctx).await
 }
 
@@ -343,7 +292,7 @@ async fn events_handler(State(state): State<AppState>, body: String) -> impl Int
     };
 
     let source = req.source.unwrap_or_else(|| "webhook".to_string());
-    let id = state.event_queue.push(&req.topic, &source, req.data).await;
+    let id = state.ctx.event_queue.push(&req.topic, &source, req.data).await;
 
     let resp = serde_json::json!({"ok": true, "id": id});
     debug!(resp = %resp, "→ POST /events");

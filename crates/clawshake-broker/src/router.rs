@@ -22,6 +22,52 @@ pub struct DispatchContext<'a> {
     pub permissions: &'a PermissionStore,
     pub shim_cache: &'a ShimCache,
     pub port: u16,
+    /// When true, `tools/list` hides individual tools and only shows
+    /// `run_code` + `describe_tools`.
+    pub code_mode: bool,
+}
+
+/// Owned version of [`DispatchContext`] used by server entry points
+/// (`serve_stdio`, `http_server::serve`) that need to own their state.
+#[derive(Clone)]
+pub struct BrokerContext {
+    pub registry: ManifestRegistry,
+    pub permissions: PermissionStore,
+    pub servers: McpServerMap,
+    pub event_queue: EventQueue,
+    pub shim_cache: ShimCache,
+    pub port: u16,
+    pub code_mode: bool,
+}
+
+impl BrokerContext {
+    /// Borrow as a [`DispatchContext`].
+    pub fn as_dispatch(&self) -> DispatchContext<'_> {
+        DispatchContext {
+            registry: &self.registry,
+            servers: &self.servers,
+            event_queue: &self.event_queue,
+            permissions: &self.permissions,
+            shim_cache: &self.shim_cache,
+            port: self.port,
+            code_mode: self.code_mode,
+        }
+    }
+}
+
+impl<'a> DispatchContext<'a> {
+    /// Clone all borrowed fields into an owned [`BrokerContext`].
+    pub fn to_owned(&self) -> BrokerContext {
+        BrokerContext {
+            registry: self.registry.clone(),
+            permissions: self.permissions.clone(),
+            servers: self.servers.clone(),
+            event_queue: self.event_queue.clone(),
+            shim_cache: self.shim_cache.clone(),
+            port: self.port,
+            code_mode: self.code_mode,
+        }
+    }
 }
 
 /// Parse and dispatch a `POST /invoke` body, returning an axum response.

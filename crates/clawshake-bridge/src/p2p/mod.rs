@@ -82,27 +82,46 @@ struct ClawshakeBehaviour {
 /// Default port used by relay/bootstrap nodes (stable so the address is predictable).
 pub const RELAY_DEFAULT_PORT: u16 = 7474;
 
+/// All state needed to start the P2P node.
+pub struct P2pConfig {
+    pub port: u16,
+    pub boot_peers: Vec<String>,
+    pub identity: Option<std::path::PathBuf>,
+    pub backend: Option<McpClient>,
+    pub permissions: Arc<PermissionStore>,
+    pub peer_table: Arc<PeerTable>,
+    pub connected: ConnectedPeers,
+    pub relay_server: bool,
+    pub call_rx: mpsc::Receiver<OutboundCall>,
+    pub reannounce_rx: Option<mpsc::Receiver<()>>,
+    pub dht_lookup_rx: mpsc::Receiver<DhtLookup>,
+    pub model_backend: Option<ModelBackend>,
+    pub stream_call_rx: Option<mpsc::Receiver<OutboundStreamCall>>,
+    pub model_streaming_rx: Option<mpsc::Receiver<OutboundModelStreamingCall>>,
+}
+
 // ---------------------------------------------------------------------------
 // Node entry point
 // ---------------------------------------------------------------------------
 
-#[allow(clippy::too_many_arguments)]
-pub async fn run(
-    p2p_port: u16,
-    boot_peers: Vec<String>,
-    identity: Option<std::path::PathBuf>,
-    backend: Option<McpClient>,
-    store: Arc<PermissionStore>,
-    table: Arc<PeerTable>,
-    connected: ConnectedPeers,
-    relay_server: bool,
-    mut call_rx: mpsc::Receiver<OutboundCall>,
-    reannounce_rx: Option<mpsc::Receiver<()>>,
-    mut dht_lookup_rx: mpsc::Receiver<DhtLookup>,
-    model_backend: Option<ModelBackend>,
-    mut stream_call_rx: Option<mpsc::Receiver<OutboundStreamCall>>,
-    mut model_streaming_rx: Option<mpsc::Receiver<OutboundModelStreamingCall>>,
-) -> Result<()> {
+pub async fn run(cfg: P2pConfig) -> Result<()> {
+    let P2pConfig {
+        port: p2p_port,
+        boot_peers,
+        identity,
+        backend,
+        permissions: store,
+        peer_table: table,
+        connected,
+        relay_server,
+        mut call_rx,
+        reannounce_rx,
+        mut dht_lookup_rx,
+        model_backend,
+        mut stream_call_rx,
+        mut model_streaming_rx,
+    } = cfg;
+
     let keypair = keypair::load_or_create_keypair(identity.as_deref())?;
     let local_peer_id = PeerId::from(&keypair.public());
     info!("Local peer ID: {local_peer_id}");

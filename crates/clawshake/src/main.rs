@@ -195,16 +195,20 @@ async fn main() -> Result<()> {
                 )?;
                 info!(tools = registry.tool_count(), "Broker ready on :{port}");
 
+                let broker = clawshake_broker::router::BrokerContext {
+                    registry,
+                    permissions,
+                    servers,
+                    event_queue,
+                    shim_cache,
+                    port,
+                    code_mode: code_mode_active,
+                };
+
                 tokio::spawn(async move {
                     if let Err(e) = clawshake_broker::http_server::serve(
-                        port,
-                        registry,
-                        permissions,
-                        servers,
+                        broker,
                         Some(sse_rx),
-                        shim_cache,
-                        code_mode,
-                        event_queue,
                     )
                     .await
                     {

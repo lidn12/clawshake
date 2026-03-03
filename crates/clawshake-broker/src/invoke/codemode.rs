@@ -13,12 +13,11 @@ use std::sync::{Arc, RwLock};
 
 use anyhow::{bail, Result};
 use axum::{extract::State, routing::post, Router};
-use clawshake_core::permissions::PermissionStore;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tracing::{debug, warn};
 
-use crate::watcher::{LoadedTool, ManifestRegistry, McpServerMap};
+use crate::watcher::{LoadedTool, ManifestRegistry};
 
 // ---------------------------------------------------------------------------
 // Shim cache
@@ -414,20 +413,6 @@ pub fn invoke_describe_tools(
 // Ephemeral invoke server (for stdio mode)
 // ---------------------------------------------------------------------------
 
-/// Shared state for the ephemeral invoke server.
-///
-/// Contains the same fields as `DispatchContext` but owned (cloneable)
-/// so it can be used as axum state.
-#[derive(Clone)]
-struct EphemeralState {
-    registry: ManifestRegistry,
-    permissions: PermissionStore,
-    servers: McpServerMap,
-    event_queue: crate::event_queue::EventQueue,
-    shim_cache: ShimCache,
-    port: u16,
-}
-
 /// Guard that shuts down the ephemeral server when dropped.
 pub struct EphemeralServerGuard {
     shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
@@ -450,14 +435,8 @@ async fn start_ephemeral_invoke_server(
     let listener = tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0u16))).await?;
     let port = listener.local_addr()?.port();
 
-    let state = EphemeralState {
-        registry: ctx.registry.clone(),
-        permissions: ctx.permissions.clone(),
-        servers: ctx.servers.clone(),
-        event_queue: ctx.event_queue.clone(),
-        shim_cache: ctx.shim_cache.clone(),
-        port,
-    };
+    let mut state = ctx.to_owned();
+    state.port = port;
 
     let app = Router::new()
         .route("/invoke", post(ephemeral_invoke_handler))
@@ -486,17 +465,10 @@ async fn start_ephemeral_invoke_server(
 }
 
 async fn ephemeral_invoke_handler(
-    State(state): State<EphemeralState>,
+    State(state): State<crate::router::BrokerContext>,
     body: String,
 ) -> axum::response::Response {
     debug!(body = %body, "← POST /invoke (ephemeral)");
-    let ctx = crate::router::DispatchContext {
-        registry: &state.registry,
-        servers: &state.servers,
-        event_queue: &state.event_queue,
-        permissions: &state.permissions,
-        shim_cache: &state.shim_cache,
-        port: state.port,
-    };
+    let ctx = state.as_dispatch();
     crate::router::dispatch_invoke(&body, &ctx).await
 }
