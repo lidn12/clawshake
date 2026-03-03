@@ -206,11 +206,7 @@ async fn main() -> Result<()> {
                 };
 
                 tokio::spawn(async move {
-                    if let Err(e) = clawshake_broker::http_server::serve(
-                        broker,
-                        Some(sse_rx),
-                    )
-                    .await
+                    if let Err(e) = clawshake_broker::http_server::serve(broker, Some(sse_rx)).await
                     {
                         tracing::error!("Broker HTTP server error: {e:#}");
                         std::process::exit(1);

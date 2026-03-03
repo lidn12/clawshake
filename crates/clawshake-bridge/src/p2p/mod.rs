@@ -7,7 +7,7 @@ use std::{
     time::Duration,
 };
 
-use crate::{announce, proxy, stream};
+use crate::{announce, codec, proxy, stream};
 use anyhow::{Context, Result};
 
 /// Read the local keypair from disk and return the derived `PeerId`.
@@ -313,79 +313,46 @@ pub async fn run(cfg: P2pConfig) -> Result<()> {
         .models;
 
     if let Some(ref b) = backend {
-        let backend_clone = b.clone();
-        let dht_tx_clone = dht_tx.clone();
-        let peer_id_clone = local_peer_id;
-        let addrs_clone = listen_addrs.clone();
-        let perms_clone = Arc::clone(&store);
-        let model_backend_clone = model_backend.clone();
-        let advertise_clone = models_config.advertise.clone();
+        let backend_ann = b.clone();
+        let dht_tx_ann = dht_tx.clone();
+        let peer_id_ann = local_peer_id;
+        let addrs_ann = listen_addrs.clone();
+        let perms_ann = Arc::clone(&store);
+        let model_backend_ann = model_backend.clone();
+        let advertise_ann = models_config.advertise.clone();
+        let mut reannounce_rx = reannounce_rx;
         tokio::spawn(async move {
             let mut tick = interval(Duration::from_secs(ANNOUNCE_INTERVAL));
             tick.tick().await; // burn the immediate first tick
             loop {
-                tick.tick().await;
-                let addrs = addr::dedup_announce_addrs(&addrs_clone);
-                let models = query_models(&model_backend_clone, &advertise_clone).await;
-                match announce::build_record(
-                    peer_id_clone,
-                    &addrs,
-                    &backend_clone,
-                    &perms_clone,
-                    models,
-                )
-                .await
-                {
-                    Ok(record) => {
-                        if dht_tx_clone.send(record).await.is_err() {
-                            break; // main loop exited
-                        }
-                    }
-                    Err(e) => warn!("Announce build failed: {e}"),
-                }
-            }
-        });
-
-        // Event-driven announce: re-publish immediately when:
-        //  - ExternalAddrConfirmed fires (main loop sends through announce_tx)
-        //  - External signal (manifest change, permission change, etc.)
-        let backend_event = b.clone();
-        let dht_tx_event = dht_tx.clone();
-        let addrs_event = listen_addrs.clone();
-        let perms_event = Arc::clone(&store);
-        let model_backend_event = model_backend.clone();
-        let advertise_event = models_config.advertise.clone();
-        let mut reannounce_rx = reannounce_rx;
-        tokio::spawn(async move {
-            loop {
-                // Wait for either signal.
-                let got = tokio::select! {
-                    v = announce_rx.recv() => v.is_some(),
+                // Wait for periodic tick, ExternalAddrConfirmed, or external signal.
+                tokio::select! {
+                    _ = tick.tick() => {}
+                    v = announce_rx.recv() => { if v.is_none() { break; } }
                     v = async {
                         match reannounce_rx.as_mut() {
                             Some(rx) => rx.recv().await,
                             None => std::future::pending().await,
                         }
-                    } => v.is_some(),
-                };
-                if !got {
-                    break;
+                    } => { if v.is_none() { break; } }
                 }
-                let addrs = addr::dedup_announce_addrs(&addrs_event);
-                let models = query_models(&model_backend_event, &advertise_event).await;
+                let addrs = addr::dedup_announce_addrs(&addrs_ann);
+                let models = query_models(&model_backend_ann, &advertise_ann).await;
                 match announce::build_record(
-                    local_peer_id,
+                    peer_id_ann,
                     &addrs,
-                    &backend_event,
-                    &perms_event,
+                    &backend_ann,
+                    &perms_ann,
                     models,
                 )
                 .await
                 {
                     Ok(record) => {
-                        let _ = dht_tx_event.send(record).await;
+                        if dht_tx_ann.send(record).await.is_err() {
+                            break; // main loop exited
+                        }
                     }
-                    Err(e) => warn!("Event-driven announce failed: {e}"),
+                    Err(e) => warn!("Announce build failed: {e}"),
                 }
             }
         });
@@ -613,7 +580,7 @@ pub async fn run(cfg: P2pConfig) -> Result<()> {
             Some(DhtLookup { peer_id, response_tx }) = dht_lookup_rx.recv() => {
                 match peer_id.parse::<PeerId>() {
                     Ok(pid) => {
-                        let key = kad::RecordKey::new(&pid.to_bytes());
+                        let key = announce::record_key(&pid);
                         let query_id = swarm.behaviour_mut().kademlia.get_record(key);
                         state.pending_dht_queries.insert(query_id, response_tx);
                     }
@@ -770,6 +737,66 @@ async fn query_models(
     result
 }
 
+/// Parse a model request, check permissions, and generate a request ID.
+///
+/// Returns `Ok((ModelRequest, request_id))` on success, or `Err(error_bytes)`
+/// suitable for sending back to the peer.
+async fn validate_model_request(
+    request_bytes: &[u8],
+    peer: &str,
+    store: &PermissionStore,
+) -> std::result::Result<(clawshake_core::models::ModelRequest, String), Vec<u8>> {
+    use clawshake_core::identity::AgentId;
+    use clawshake_core::models::ModelRequest;
+    use clawshake_core::permissions::Decision;
+
+    let req: ModelRequest = match serde_json::from_slice(request_bytes) {
+        Ok(r) => r,
+        Err(e) => {
+            warn!(%peer, "Failed to parse model request: {e}");
+            return Err(serde_json::to_vec(&serde_json::json!({
+                "error": {
+                    "message": format!("Invalid model request: {e}"),
+                    "type": "invalid_request_error",
+                }
+            }))
+            .unwrap_or_default());
+        }
+    };
+
+    let agent_id = AgentId::P2p(peer.to_string());
+    match store.check(&agent_id, &req.model).await {
+        Decision::Allow => {
+            info!(model = %req.model, %peer, "Model access granted");
+        }
+        _ => {
+            warn!(model = %req.model, %peer, "Model access denied");
+            return Err(serde_json::to_vec(&serde_json::json!({
+                "error": {
+                    "message": format!(
+                        "Permission denied: peer '{}' is not allowed to use model '{}'. \
+                         Grant access with: clawshake permissions allow p2p:{} {}",
+                        peer, req.model, peer, req.model
+                    ),
+                    "type": "permission_denied",
+                }
+            }))
+            .unwrap_or_default());
+        }
+    }
+
+    let request_id = format!(
+        "p2p-{}-{}",
+        peer.chars().take(8).collect::<String>(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0)
+    );
+
+    Ok((req, request_id))
+}
+
 /// Handle an inbound model completion request from a peer.
 ///
 /// Parses the request bytes as a `ModelRequest`, runs the completion against
@@ -781,61 +808,12 @@ async fn handle_model_request(
     peer: &str,
     store: &PermissionStore,
 ) -> Vec<u8> {
-    use clawshake_core::identity::AgentId;
-    use clawshake_core::models::ModelRequest;
-    use clawshake_core::permissions::Decision;
     use futures::StreamExt;
 
-    // Parse the request
-    let req: ModelRequest = match serde_json::from_slice(request_bytes) {
-        Ok(r) => r,
-        Err(e) => {
-            warn!(%peer, "Failed to parse model request: {e}");
-            return serde_json::to_vec(&serde_json::json!({
-                "error": {
-                    "message": format!("Invalid model request: {e}"),
-                    "type": "invalid_request_error",
-                }
-            }))
-            .unwrap_or_default();
-        }
+    let (req, request_id) = match validate_model_request(request_bytes, peer, store).await {
+        Ok(v) => v,
+        Err(bytes) => return bytes,
     };
-
-    // Permission check — reuse the same store as MCP tools.
-    // The model name is the "tool name" for permission purposes.
-    // Example: `clawshake permissions allow p2p:* qwen2.5:7b`
-    let agent_id = AgentId::P2p(peer.to_string());
-    match store.check(&agent_id, &req.model).await {
-        Decision::Allow => {
-            info!(model = %req.model, %peer, "Model access granted");
-        }
-        _ => {
-            warn!(model = %req.model, %peer, "Model access denied");
-            return serde_json::to_vec(&serde_json::json!({
-                "error": {
-                    "message": format!(
-                        "Permission denied: peer '{}' is not allowed to use model '{}'. \
-                         Grant access with: clawshake permissions allow p2p:{} {}",
-                        peer, req.model, peer, req.model
-                    ),
-                    "type": "permission_denied",
-                }
-            }))
-            .unwrap_or_default();
-        }
-    }
-
-    info!(model = %req.model, %peer, "Handling model completion request");
-
-    // Generate a request ID for tracking
-    let request_id = format!(
-        "p2p-{}-{}",
-        peer.chars().take(8).collect::<String>(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0)
-    );
 
     // Run the completion
     let stream = match backend.complete(&request_id, &req).await {
@@ -936,60 +914,31 @@ async fn handle_inbound_model_stream(
     peer: &str,
     store: &PermissionStore,
 ) -> Result<()> {
-    use clawshake_core::identity::AgentId;
-    use clawshake_core::models::ModelRequest;
-    use clawshake_core::permissions::Decision;
     use clawshake_core::stream::StreamFrame;
     use futures::io::AsyncWriteExt;
 
     // Read the request (length-prefixed).
-    let request_bytes = proxy::read_framed(&mut stream)
+    let request_bytes = codec::read_framed(&mut stream)
         .await
         .context("reading model request from stream")?;
 
-    let req: ModelRequest =
-        serde_json::from_slice(&request_bytes).context("parsing model request JSON")?;
-
-    info!(model = %req.model, %peer, "Inbound model stream");
-
-    // Permission check
-    let agent_id = AgentId::P2p(peer.to_string());
-    match store.check(&agent_id, &req.model).await {
-        Decision::Allow => {
-            info!(model = %req.model, %peer, "Model stream access granted");
-        }
-        _ => {
-            warn!(model = %req.model, %peer, "Model stream access denied");
-            let err = StreamFrame::error(
-                "denied",
-                format!(
-                    "Permission denied: peer '{}' is not allowed to use model '{}'. \
-                     Grant access with: clawshake permissions allow p2p:{} {}",
-                    peer, req.model, peer, req.model
-                ),
-                Some(-32001),
-            );
-            proxy::write_framed(&mut stream, &err.to_bytes()).await?;
+    let (req, request_id) = match validate_model_request(&request_bytes, peer, store).await {
+        Ok(v) => v,
+        Err(deny_bytes) => {
+            // Permission denied / parse error — send as a StreamFrame::Error.
+            let err = StreamFrame::error("denied", String::from_utf8_lossy(&deny_bytes), Some(-32001));
+            codec::write_framed(&mut stream, &err.to_bytes()).await?;
             stream.close().await?;
             return Ok(());
         }
-    }
-
-    let request_id = format!(
-        "p2p-{}-{}",
-        peer.chars().take(8).collect::<String>(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0)
-    );
+    };
 
     // Run the completion — returns a stream of StreamFrames.
     let frame_stream = match backend.complete(&request_id, &req).await {
         Ok(s) => s,
         Err(e) => {
             let err = StreamFrame::error(&request_id, format!("Backend error: {e}"), Some(-32603));
-            proxy::write_framed(&mut stream, &err.to_bytes()).await?;
+            codec::write_framed(&mut stream, &err.to_bytes()).await?;
             stream.close().await?;
             return Ok(());
         }
@@ -999,7 +948,7 @@ async fn handle_inbound_model_stream(
     tokio::pin!(frame_stream);
     while let Some(frame) = futures::StreamExt::next(&mut frame_stream).await {
         let bytes = frame.to_bytes();
-        if proxy::write_framed(&mut stream, &bytes).await.is_err() {
+        if codec::write_framed(&mut stream, &bytes).await.is_err() {
             warn!(%peer, "Stream write failed — peer disconnected?");
             return Ok(());
         }
@@ -1030,13 +979,13 @@ async fn drive_outbound_model_stream(
         .map_err(|e| anyhow::anyhow!("Failed to open model stream to {peer}: {e}"))?;
 
     // Write the request (length-prefixed).
-    proxy::write_framed(&mut stream, request)
+    codec::write_framed(&mut stream, request)
         .await
         .context("writing model request to stream")?;
 
     // Read frames until the stream is closed or a Done/Error frame arrives.
     loop {
-        match proxy::read_framed(&mut stream).await {
+        match codec::read_framed(&mut stream).await {
             Ok(frame_bytes) => {
                 // Check if this is a terminal frame (Done or Error)
                 let is_terminal = matches!(

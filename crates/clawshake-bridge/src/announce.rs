@@ -18,6 +18,11 @@ use tracing::info;
 
 use clawshake_core::mcp_client::McpClient;
 
+/// Build a `kad::RecordKey` for a peer's DHT announcement.
+pub fn record_key(peer_id: &PeerId) -> kad::RecordKey {
+    kad::RecordKey::new(&peer_id.to_bytes())
+}
+
 /// A single tool entry in the DHT announcement.
 /// Matches the MCP `tools/list` tool definition shape.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -145,7 +150,7 @@ pub async fn build_record(
     info!(tools = tool_count, models = model_count, peer = %peer_id, "Built DHT announcement");
 
     Ok(kad::Record {
-        key: kad::RecordKey::new(&peer_id.to_bytes()),
+        key: record_key(&peer_id),
         value: record.to_bytes(),
         publisher: Some(peer_id),
         expires: None,

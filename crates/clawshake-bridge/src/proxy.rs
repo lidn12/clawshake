@@ -11,14 +11,10 @@
 //! Wire format: each request and response is length-prefixed with a 4-byte
 //! big-endian u32 followed by that many bytes of UTF-8 JSON.
 
-use std::io;
-
-use async_trait::async_trait;
 use clawshake_core::{
     identity::AgentId,
     permissions::{Decision, PermissionStore},
 };
-use futures::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use libp2p::{
     request_response::{self, ProtocolSupport},
     PeerId, StreamProtocol,
@@ -28,104 +24,17 @@ use tracing::{info, warn};
 
 use clawshake_core::mcp_client::McpClient;
 
-// The maximum payload we'll accept from a remote peer (16 MiB).
-const MAX_PAYLOAD: u32 = 16 * 1024 * 1024;
-
-// ---------------------------------------------------------------------------
-// Codec — length-prefixed JSON bytes
-// ---------------------------------------------------------------------------
-
-#[derive(Clone, Default)]
-pub struct McpCodec;
-
-#[async_trait]
-impl request_response::Codec for McpCodec {
-    type Protocol = StreamProtocol;
-    type Request = Vec<u8>;
-    type Response = Vec<u8>;
-
-    async fn read_request<T>(
-        &mut self,
-        _protocol: &Self::Protocol,
-        io: &mut T,
-    ) -> io::Result<Self::Request>
-    where
-        T: AsyncRead + Unpin + Send,
-    {
-        read_framed(io).await
-    }
-
-    async fn read_response<T>(
-        &mut self,
-        _protocol: &Self::Protocol,
-        io: &mut T,
-    ) -> io::Result<Self::Response>
-    where
-        T: AsyncRead + Unpin + Send,
-    {
-        read_framed(io).await
-    }
-
-    async fn write_request<T>(
-        &mut self,
-        _protocol: &Self::Protocol,
-        io: &mut T,
-        req: Self::Request,
-    ) -> io::Result<()>
-    where
-        T: AsyncWrite + Unpin + Send,
-    {
-        write_framed(io, &req).await
-    }
-
-    async fn write_response<T>(
-        &mut self,
-        _protocol: &Self::Protocol,
-        io: &mut T,
-        res: Self::Response,
-    ) -> io::Result<()>
-    where
-        T: AsyncWrite + Unpin + Send,
-    {
-        write_framed(io, &res).await
-    }
-}
-
-pub(crate) async fn read_framed<T: AsyncRead + Unpin + Send>(io: &mut T) -> io::Result<Vec<u8>> {
-    let mut len_buf = [0u8; 4];
-    io.read_exact(&mut len_buf).await?;
-    let len = u32::from_be_bytes(len_buf);
-    if len > MAX_PAYLOAD {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("payload too large: {len} bytes"),
-        ));
-    }
-    let mut buf = vec![0u8; len as usize];
-    io.read_exact(&mut buf).await?;
-    Ok(buf)
-}
-
-pub(crate) async fn write_framed<T: AsyncWrite + Unpin + Send>(
-    io: &mut T,
-    data: &[u8],
-) -> io::Result<()> {
-    let len = (data.len() as u32).to_be_bytes();
-    io.write_all(&len).await?;
-    io.write_all(data).await?;
-    io.flush().await?;
-    Ok(())
-}
+use crate::codec::LengthPrefixedCodec;
 
 // ---------------------------------------------------------------------------
 // Behaviour type alias + constructor
 // ---------------------------------------------------------------------------
 
-pub type Behaviour = request_response::Behaviour<McpCodec>;
+pub type Behaviour = request_response::Behaviour<LengthPrefixedCodec>;
 pub type Event = request_response::Event<Vec<u8>, Vec<u8>>;
 
 pub fn new_behaviour() -> Behaviour {
-    request_response::Behaviour::<McpCodec>::new(
+    request_response::Behaviour::<LengthPrefixedCodec>::new(
         vec![(
             StreamProtocol::new("/clawshake/mcp/1.0.0"),
             ProtocolSupport::Full,

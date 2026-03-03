@@ -382,7 +382,7 @@ fn on_connection_established(
     // Only fetch DHT record on the *first* connection (DCUTR upgrades create
     // extra connections to the same peer; re-querying wastes bandwidth).
     if num_established.get() == 1 {
-        let key = kad::RecordKey::new(&peer_id.to_bytes());
+        let key = crate::announce::record_key(&peer_id);
         swarm.behaviour_mut().kademlia.get_record(key);
     }
 }
