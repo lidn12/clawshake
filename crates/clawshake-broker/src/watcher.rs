@@ -9,7 +9,7 @@ use std::{
 use tracing::{info, warn};
 
 use crate::event_queue::EventQueue;
-use crate::invoke::mcp::McpServer;
+use clawshake_core::mcp_client::McpClient;
 
 // ---------------------------------------------------------------------------
 // Registry
@@ -116,10 +116,10 @@ impl ManifestRegistry {
 // MCP server handle map
 // ---------------------------------------------------------------------------
 
-/// Thread-safe map of server_key (= source name / file stem) → running McpServer handle.
+/// Thread-safe map of server_key (= source name / file stem) → running McpClient handle.
 #[derive(Clone, Default)]
 pub struct McpServerMap {
-    inner: Arc<RwLock<HashMap<String, McpServer>>>,
+    inner: Arc<RwLock<HashMap<String, McpClient>>>,
 }
 
 impl McpServerMap {
@@ -127,12 +127,12 @@ impl McpServerMap {
         Self::default()
     }
 
-    pub fn insert(&self, key: &str, server: McpServer) {
+    pub fn insert(&self, key: &str, server: McpClient) {
         let mut map = self.inner.write().expect("mcp server map lock");
         map.insert(key.to_string(), server);
     }
 
-    pub fn get(&self, key: &str) -> Option<McpServer> {
+    pub fn get(&self, key: &str) -> Option<McpClient> {
         let map = self.inner.read().expect("mcp server map lock");
         map.get(key).cloned()
     }
@@ -328,15 +328,15 @@ fn load_file(
 }
 
 /// Connect to an MCP server based on the source config.
-async fn connect_mcp_source(source: &str, mcp: &McpSource) -> Result<McpServer> {
+async fn connect_mcp_source(source: &str, mcp: &McpSource) -> Result<McpClient> {
     match mcp {
         McpSource::Stdio { command, args } => {
             info!(source, command, "Spawning MCP stdio server");
-            McpServer::spawn_stdio(command, args).await
+            McpClient::spawn_stdio(command, args, "clawshake-broker").await
         }
         McpSource::Http { url } => {
             info!(source, url, "Connecting to MCP HTTP server");
-            Ok(McpServer::connect_http(url))
+            Ok(McpClient::connect_http(url))
         }
     }
 }

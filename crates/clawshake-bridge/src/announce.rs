@@ -10,7 +10,7 @@
 
 use anyhow::Result;
 use clawshake_core::models::ModelAnnounce;
-use clawshake_core::peer_table::{ModelSummary, PeerInfo, PeerSource, ToolSummary};
+use clawshake_core::peer_table::{PeerInfo, PeerSource, ToolSummary};
 use clawshake_core::permissions::PermissionStore;
 use libp2p::{kad, Multiaddr, PeerId};
 use serde::{Deserialize, Serialize};
@@ -66,12 +66,7 @@ impl AnnouncementRecord {
                 input_schema: Some(t.input_schema.clone()),
             })
             .collect();
-        let models: Vec<ModelSummary> = self
-            .models
-            .iter()
-            .cloned()
-            .map(ModelSummary::from)
-            .collect();
+        let models = self.models.clone();
         PeerInfo {
             peer_id: self.peer_id.clone(),
             addrs: self.addrs.clone(),

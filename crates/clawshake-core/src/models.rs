@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 /// A model entry in the DHT announcement record.
 ///
 /// Published alongside tools so peers can discover which models a node serves.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct ModelAnnounce {
     /// Model identifier as reported by the backend (e.g. `"llama3.1:70b"`).
     pub name: String,

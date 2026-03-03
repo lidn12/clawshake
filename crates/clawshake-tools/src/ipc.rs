@@ -34,13 +34,7 @@ use clawshake_core::{
     peer_table::PeerTable,
 };
 
-/// Named pipe path (Windows).
-#[cfg(windows)]
-const SOCKET_PATH: &str = r"\\.\pipe\clawshake-bridge";
-
-/// Unix domain socket path (Linux / macOS).
-#[cfg(not(windows))]
-const SOCKET_PATH: &str = "/tmp/clawshake-bridge.sock";
+use crate::SOCKET_PATH;
 
 // ---------------------------------------------------------------------------
 // Public entry point

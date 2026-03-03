@@ -1,12 +1,14 @@
 //! Invoke handlers for `listen` and `emit` event queue tools.
 
+use anyhow::Result;
+
 use crate::event_queue::EventQueue;
 use serde_json::{json, Value};
 
 /// Handle a `listen` tool call.
 ///
 /// Blocks until matching events arrive or timeout expires.
-pub async fn invoke_listen(arguments: &Value, event_queue: &EventQueue) -> Result<String, String> {
+pub async fn invoke_listen(arguments: &Value, event_queue: &EventQueue) -> Result<String> {
     let topics: Vec<String> = arguments
         .get("topics")
         .and_then(|v| v.as_array())
@@ -45,11 +47,11 @@ pub async fn invoke_listen(arguments: &Value, event_queue: &EventQueue) -> Resul
 ///
 /// Pushes an event into the local queue.  Remote delivery is the agent's
 /// responsibility via `network_call(peer_id, "emit", {topic, data})`.
-pub async fn invoke_emit(arguments: &Value, event_queue: &EventQueue) -> Result<String, String> {
+pub async fn invoke_emit(arguments: &Value, event_queue: &EventQueue) -> Result<String> {
     let topic = arguments
         .get("topic")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| "missing required field: topic".to_string())?;
+        .ok_or_else(|| anyhow::anyhow!("missing required field: topic"))?;
 
     let data = arguments.get("data").cloned().unwrap_or(Value::Null);
 

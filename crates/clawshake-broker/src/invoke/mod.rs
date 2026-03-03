@@ -3,7 +3,6 @@ pub mod codemode;
 pub mod deeplink;
 pub mod events;
 pub mod http;
-pub mod mcp;
 pub mod script;
 
 /// Replace every `{{key}}` in `template` with the matching value from `arguments`.

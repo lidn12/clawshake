@@ -14,3 +14,11 @@ pub mod client;
 pub mod ipc;
 pub mod network;
 pub mod schema;
+
+/// Named pipe path (Windows).
+#[cfg(windows)]
+pub const SOCKET_PATH: &str = r"\\.\pipe\clawshake-bridge";
+
+/// Unix domain socket path (Linux / macOS).
+#[cfg(not(windows))]
+pub const SOCKET_PATH: &str = "/tmp/clawshake-bridge.sock";

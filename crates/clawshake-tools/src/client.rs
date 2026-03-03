@@ -12,13 +12,7 @@ use anyhow::{Context, Result};
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-/// Named pipe path used on Windows.
-#[cfg(windows)]
-pub const SOCKET_PATH: &str = r"\\.\pipe\clawshake-bridge";
-
-/// Unix domain socket path used on Linux / macOS.
-#[cfg(not(windows))]
-pub const SOCKET_PATH: &str = "/tmp/clawshake-bridge.sock";
+use crate::SOCKET_PATH;
 
 /// Send a single `network_*` request to the bridge daemon and return the
 /// JSON response.

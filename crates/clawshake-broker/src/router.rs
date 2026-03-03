@@ -123,12 +123,8 @@ pub fn dispatch<'a>(
                 server.tools_call(tool_name, arguments).await
             }
             InvokeConfig::InProcess => match tool_name {
-                "emit" => invoke::events::invoke_emit(arguments, ctx.event_queue)
-                    .await
-                    .map_err(|e| anyhow::anyhow!(e)),
-                "listen" => invoke::events::invoke_listen(arguments, ctx.event_queue)
-                    .await
-                    .map_err(|e| anyhow::anyhow!(e)),
+                "emit" => invoke::events::invoke_emit(arguments, ctx.event_queue).await,
+                "listen" => invoke::events::invoke_listen(arguments, ctx.event_queue).await,
                 "run_code" => {
                     let script = arguments
                         .get("script")

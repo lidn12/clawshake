@@ -170,7 +170,7 @@ fn generate_shim(port: u16, tools: &[LoadedTool]) -> CachedShim {
 }
 
 /// Generate a filtered JS shim containing only tools matching the query.
-fn generate_filtered_shim(_port: u16, tools: &[LoadedTool], query: &str) -> String {
+fn generate_filtered_shim(tools: &[LoadedTool], query: &str) -> String {
     let query_lower = query.to_lowercase();
     let keywords: Vec<&str> = query_lower.split_whitespace().collect();
 
@@ -405,7 +405,7 @@ pub fn invoke_describe_tools(
         }
         Some(q) => {
             let tools = ctx.registry.all();
-            generate_filtered_shim(ctx.port, &tools, q)
+            generate_filtered_shim(&tools, q)
         }
     }
 }

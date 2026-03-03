@@ -228,7 +228,6 @@ pub async fn list_tools(manifests_dir: &Path, db_path: &Path, json: bool) -> Res
 ///
 /// Built-in tools appear in the snapshot automatically from the running broker.
 /// Used by the unified `clawshake` binary via `clawshake_broker::cli::tool_counts`.
-#[allow(dead_code)]
 pub async fn tool_counts(manifests_dir: &Path, db_path: &Path) -> (usize, usize) {
     let snapshot_path = manifests_dir
         .parent()
@@ -382,9 +381,11 @@ pub fn remove_manifest(name: &str, manifests_dir: &Path) -> Result<()> {
 
 /// Truncate a string to `max` chars, appending "…" if truncated.
 pub fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
+    let char_count = s.chars().count();
+    if char_count <= max {
         s.to_string()
     } else {
-        format!("{}…", &s[..max - 1])
+        let truncated: String = s.chars().take(max - 1).collect();
+        format!("{truncated}…")
     }
 }
