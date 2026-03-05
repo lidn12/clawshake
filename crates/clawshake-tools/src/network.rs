@@ -74,11 +74,10 @@ fn peers(table: &PeerTable) -> Value {
 
 /// Progressive tool discovery for a remote peer.
 ///
-/// Without `query`: returns a compact category summary grouped by name prefix,
-/// e.g. `"- weather (3 tools): weather.now, weather.forecast, weather.history"`.
+/// Without `query`: returns a flat list of the peer's published tool names.
 ///
 /// With `query`: returns matching tools with full name, description, and
-/// inputSchema — just enough to call them without requesting the full list.
+/// inputSchema — just enough to call them via network_call.
 fn tools<'a>(
     params: &'a Value,
     table: &'a PeerTable,

@@ -22,7 +22,7 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "network_tools",
-            "description": "Progressive tool discovery for a remote peer. Without a query, returns a compact category summary of the peer's published tools grouped by name prefix. With a query, returns matching tools with their full name, description, and inputSchema — just enough to call them via network_call.",
+            "description": "Progressive tool discovery for a remote peer. Without a query, returns a flat list of the peer's published tool names. With a query, returns matching tools with their full name, description, and inputSchema — just enough to call them via network_call.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -32,7 +32,7 @@ pub fn tool_definitions() -> Vec<Value> {
                     },
                     "query": {
                         "type": "string",
-                        "description": "Filter tools by name or description substring. Omit for a category summary."
+                        "description": "Filter tools by name or description substring. Omit for a flat name list."
                     }
                 },
                 "required": ["peer_id"]
@@ -78,7 +78,7 @@ pub fn tool_definitions() -> Vec<Value> {
                     },
                     "tool": {
                         "type": "string",
-                        "description": "Fully-qualified tool name to invoke on the remote peer (e.g. \"spotify.play\")"
+                        "description": "Tool name to invoke on the remote peer (e.g. \"read_file\")"
                     },
                     "arguments": {
                         "type": "object",
