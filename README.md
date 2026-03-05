@@ -215,6 +215,8 @@ The other saving comes from round trips. A multi-step workflow — list a direct
 
 Code mode is most effective for sessions with many tools loaded and workflows with more than one or two steps. For a single one-off call to a well-known tool it adds unnecessary overhead, so the tradeoff is workload-dependent.
 
+> **Security note:** `run_code` executes JavaScript in a Node.js process running as the same OS user as the broker. A peer with access to `run_code` has **equivalent access to a shell** — they can read files, spawn processes, and access the network directly from JavaScript, bypassing per-tool permission rules entirely. Only grant `run_code` access to peers you fully trust. If you need fine-grained tool-level access control for remote peers, do not use code mode on that node.
+
 > This approach was independently validated by [Anthropic](https://www.anthropic.com/engineering/code-execution-with-mcp) (measuring up to 98.7% token reduction on real workflows) and [Cloudflare](https://blog.cloudflare.com/code-mode/) ("LLMs are better at writing code to call MCP, than at calling MCP directly"). Clawshake's implementation follows the same pattern.
 
 ## Model proxy
