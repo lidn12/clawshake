@@ -99,40 +99,43 @@ impl AnnouncementRecord {
     }
 }
 
-/// Query the backend's `tools/list` and build a Kademlia record ready for
-/// `kad::Behaviour::put_record`.
+/// Build a Kademlia record for this node ready for `kad::Behaviour::put_record`.
 ///
-/// Only tools that are "network-exposed" (at least one remote agent pattern
-/// has `allow`) are included in the announcement.  Tools with no remote allow
-/// are omitted from the DHT — they remain available locally but are not
-/// discoverable by other peers.
+/// Always succeeds: when `backend` is `None` the record is published with an
+/// empty tool list, so the node's description and addresses are still visible
+/// to peers even on relay-only or no-backend configurations.
+///
+/// When a backend is present, only tools that are "network-exposed" (at least
+/// one remote agent pattern has `allow`) are included.  Tools with no remote
+/// allow are omitted — discoverable locally but not via the DHT.
 pub async fn build_record(
     peer_id: PeerId,
     listen_addrs: &[Multiaddr],
-    backend: &McpClient,
+    backend: Option<&McpClient>,
     permissions: &PermissionStore,
     models: Vec<ModelAnnounce>,
     description: Option<String>,
 ) -> Result<kad::Record> {
-    let raw_tools = backend.tools_list().await?;
-
     let mut tools: Vec<ToolAnnounce> = Vec::new();
-    for t in &raw_tools {
-        let name = match t["name"].as_str() {
-            Some(n) => n,
-            None => continue,
-        };
-        if !permissions.is_network_exposed(name).await {
-            continue;
+    if let Some(backend) = backend {
+        let raw_tools = backend.tools_list().await?;
+        for t in &raw_tools {
+            let name = match t["name"].as_str() {
+                Some(n) => n,
+                None => continue,
+            };
+            if !permissions.is_network_exposed(name).await {
+                continue;
+            }
+            tools.push(ToolAnnounce {
+                name: name.to_string(),
+                description: t["description"].as_str().unwrap_or("").to_string(),
+                input_schema: t
+                    .get("inputSchema")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!({ "type": "object" })),
+            });
         }
-        tools.push(ToolAnnounce {
-            name: name.to_string(),
-            description: t["description"].as_str().unwrap_or("").to_string(),
-            input_schema: t
-                .get("inputSchema")
-                .cloned()
-                .unwrap_or_else(|| serde_json::json!({ "type": "object" })),
-        });
     }
 
     let tool_count = tools.len();

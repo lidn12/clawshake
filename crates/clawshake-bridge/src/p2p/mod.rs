@@ -303,8 +303,10 @@ pub async fn run(cfg: P2pConfig) -> Result<()> {
     let (announce_tx, mut announce_rx) = mpsc::channel::<()>(4);
 
     // -- Announce task ------------------------------------------------------
-    // If a backend is configured, query its tools/list on startup and then
-    // every ANNOUNCE_INTERVAL seconds.
+    // Always runs: publishes the node's description, addresses, and (when a
+    // backend is configured) its tool and model list to the DHT.  Relay-only
+    // or no-backend nodes still announce so their description is visible to
+    // peers via network_peers.
     const ANNOUNCE_INTERVAL: u64 = 300; // 5 minutes
 
     // Load config for model advertise settings and node description.
@@ -312,8 +314,8 @@ pub async fn run(cfg: P2pConfig) -> Result<()> {
     let models_config = node_config.models;
     let node_description = node_config.network.description;
 
-    if let Some(ref b) = backend {
-        let backend_ann = b.clone();
+    {
+        let backend_ann = backend.clone();
         let dht_tx_ann = dht_tx.clone();
         let peer_id_ann = local_peer_id;
         let addrs_ann = listen_addrs.clone();
@@ -339,8 +341,15 @@ pub async fn run(cfg: P2pConfig) -> Result<()> {
                 }
                 let addrs = addr::dedup_announce_addrs(&addrs_ann);
                 let models = models::query_models(&model_backend_ann, &advertise_ann).await;
-                match announce::build_record(peer_id_ann, &addrs, &backend_ann, &perms_ann, models, description_ann.clone())
-                    .await
+                match announce::build_record(
+                    peer_id_ann,
+                    &addrs,
+                    backend_ann.as_ref(),
+                    &perms_ann,
+                    models,
+                    description_ann.clone(),
+                )
+                .await
                 {
                     Ok(record) => {
                         if dht_tx_ann.send(record).await.is_err() {
