@@ -52,10 +52,12 @@ pub enum ToolsAction {
 
 /// Detect Node.js on PATH and resolve the effective code-mode state.
 ///
-/// Returns `(has_node, code_mode_active)`.  `code_mode_active` is `true`
-/// when the code-mode tools (run_code / describe_tools) should be seeded,
-/// i.e. Node.js is available.  `code_mode_flag` is the CLI `--code-mode`
-/// toggle controlling tools/list filtering.
+/// Returns `(has_node, code_mode_active)`.
+/// - `has_node`: Node.js is on PATH.
+/// - `code_mode_active`: `--code-mode` was explicitly passed AND Node.js is available.
+///   Only when this is `true` are `run_code`/`describe_tools` registered and
+///   `tools/list` filtering applied.  Node.js detection alone is not enough —
+///   code execution must be explicitly opted into.
 pub fn detect_code_mode(code_mode_flag: bool) -> (bool, bool) {
     let has_node = which::which("node").is_ok();
     if code_mode_flag && !has_node {
@@ -70,15 +72,12 @@ pub fn detect_code_mode(code_mode_flag: bool) -> (bool, bool) {
             info!("Code mode enabled (Node.js detected)");
         } else {
             info!(
-                "Node.js detected — run_code and describe_tools available. \
-                 Use --code-mode to hide individual tools from tools/list."
+                "Node.js detected on PATH. \
+                 Pass --code-mode to enable run_code and describe_tools."
             );
         }
-        // Register code mode tools regardless of toggle — the toggle only
-        // controls tools/list filtering.
-        return (true, true);
     }
-    (false, false)
+    (has_node, code_mode_flag && has_node)
 }
 
 /// Dispatch a `ToolsAction`.
