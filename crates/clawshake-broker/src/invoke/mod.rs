@@ -95,3 +95,129 @@ pub(super) fn escape_applescript(s: &str) -> String {
     let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
     format!("\\\"{}\\\"", escaped)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn substitute_basic() {
+        assert_eq!(
+            substitute("echo {{name}}", &json!({"name": "world"})),
+            "echo world"
+        );
+    }
+
+    #[test]
+    fn substitute_multiple_params() {
+        assert_eq!(
+            substitute("{{a}} and {{b}}", &json!({"a": "1", "b": "2"})),
+            "1 and 2"
+        );
+    }
+
+    #[test]
+    fn substitute_missing_param_stripped() {
+        // Unresolved placeholder and its text are removed; a preceding plain
+        // space is NOT a separator so it stays, leaving a trailing space.
+        assert_eq!(substitute("hello {{name}}", &json!({})), "hello ");
+    }
+
+    #[test]
+    fn substitute_missing_with_separator() {
+        assert_eq!(substitute("--flag={{value}}", &json!({})), "--flag");
+        assert_eq!(substitute("--flag:{{value}}", &json!({})), "--flag");
+    }
+
+    #[test]
+    fn substitute_separator_kept_when_value_resolves() {
+        // The separator must NOT be stripped when the placeholder has a value.
+        // A bug that unconditionally strips the char before `{{...}}` would
+        // produce "--flagx" or "--flagalice" instead of the correct form.
+        assert_eq!(
+            substitute("--flag={{value}}", &json!({"value": "x"})),
+            "--flag=x"
+        );
+        assert_eq!(
+            substitute("--flag:{{value}}", &json!({"value": "alice"})),
+            "--flag:alice"
+        );
+        // Plain space before placeholder: space is not a separator, so it stays
+        // whether the value is present or absent.
+        assert_eq!(
+            substitute("prefix {{value}}", &json!({"value": "ok"})),
+            "prefix ok"
+        );
+    }
+
+    #[test]
+    fn substitute_explicit_empty_value_keeps_separator() {
+        // An explicitly-provided empty string is substituted in place
+        // (the placeholder is replaced with ""), so the separator is NOT
+        // stripped — that only happens for *unresolved* (missing) keys.
+        // A bug that stripped the separator unconditionally would produce
+        // "--flag" here instead of "--flag=".
+        assert_eq!(substitute("--flag={{val}}", &json!({"val": ""})), "--flag=");
+        // Plain positional arg: empty string stays, it is up to the caller
+        // (cli.rs) to drop empty args — not substitute's job.
+        assert_eq!(substitute("{{val}}", &json!({"val": ""})), "");
+    }
+
+    #[test]
+    fn substitute_non_string_value() {
+        assert_eq!(substitute("count={{n}}", &json!({"n": 42})), "count=42");
+        assert_eq!(substitute("flag={{b}}", &json!({"b": true})), "flag=true");
+    }
+
+    #[test]
+    fn substitute_escaped_powershell() {
+        // escape_powershell wraps in single quotes and doubles embedded quotes.
+        let result = substitute_escaped("{{msg}}", &json!({"msg": "it's here"}), escape_powershell);
+        assert_eq!(result, "'it''s here'");
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn substitute_escaped_shell() {
+        // escape_shell wraps in single quotes; metacharacters are neutralised.
+        let result = substitute_escaped(
+            "{{msg}}",
+            &json!({"msg": "hello world; rm -rf /"}),
+            escape_shell,
+        );
+        assert_eq!(result, "'hello world; rm -rf /'");
+    }
+
+    #[test]
+    fn substitute_partial_resolution_strips_separator_of_missing() {
+        // When only *some* placeholders in a template are resolved, the
+        // separator that precedes an *unresolved* placeholder is still
+        // stripped.  A naive implementation might leave ":{{b}}" or ":" in
+        // the output.
+        assert_eq!(
+            substitute("{{a}}:{{b}}", &json!({"a": "x"})),
+            "x",
+            "separator before unresolved {{b}} must be stripped"
+        );
+        // Both resolved → both separators kept.
+        assert_eq!(
+            substitute("{{a}}:{{b}}", &json!({"a": "x", "b": "y"})),
+            "x:y"
+        );
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn escape_shell_embedded_single_quote() {
+        // An embedded ' must survive round-trip via the '\'' idiom.
+        let escaped = escape_shell("it's");
+        assert_eq!(escaped, "'it'\\''s'");
+    }
+
+    #[test]
+    fn escape_powershell_embedded_single_quote() {
+        let escaped = escape_powershell("say 'hello'");
+        assert_eq!(escaped, "'say ''hello'''");
+    }
+}

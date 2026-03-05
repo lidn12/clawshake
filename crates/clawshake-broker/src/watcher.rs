@@ -608,3 +608,105 @@ fn handle_event(
     }
     changed
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clawshake_core::manifest::{InvokeConfig, Manifest, Tool};
+
+    fn make_tool(name: &str) -> Tool {
+        Tool {
+            name: name.to_string(),
+            description: format!("{name} description"),
+            input_schema: Default::default(),
+            requires: None,
+            invoke: InvokeConfig::InProcess,
+        }
+    }
+
+    fn make_manifest(tools: &[&str]) -> Manifest {
+        Manifest {
+            version: "1".to_string(),
+            tools: tools.iter().map(|n| make_tool(n)).collect(),
+            mcp: None,
+        }
+    }
+
+    #[test]
+    fn load_manifest_and_get() {
+        let registry = ManifestRegistry::new();
+        let m = make_manifest(&["tool1", "tool2"]);
+        registry.load_manifest("test", &m);
+
+        let lt = registry.get("tool1").unwrap();
+        assert_eq!(lt.tool.name, "tool1");
+        assert_eq!(lt.source, "test");
+        assert!(registry.get("tool2").is_some());
+    }
+
+    #[test]
+    fn load_manifest_does_not_clear_previous_tools() {
+        let registry = ManifestRegistry::new();
+        registry.load_manifest("test", &make_manifest(&["A"]));
+        registry.load_manifest("test", &make_manifest(&["B"]));
+        // A is still present — load_manifest is additive, not replacing.
+        assert!(registry.get("A").is_some());
+        assert!(registry.get("B").is_some());
+    }
+
+    #[test]
+    fn unload_source() {
+        let registry = ManifestRegistry::new();
+        registry.load_manifest("test", &make_manifest(&["tool1", "tool2"]));
+        registry.unload_source("test");
+        assert!(registry.get("tool1").is_none());
+        assert!(registry.get("tool2").is_none());
+        assert_eq!(registry.tool_count(), 0);
+    }
+
+    #[test]
+    fn unload_source_does_not_affect_other_sources() {
+        let registry = ManifestRegistry::new();
+        registry.load_manifest("source1", &make_manifest(&["A"]));
+        registry.load_manifest("source2", &make_manifest(&["B"]));
+        registry.unload_source("source1");
+        assert!(registry.get("A").is_none());
+        assert!(registry.get("B").is_some());
+    }
+
+    #[test]
+    fn register_builtin() {
+        let registry = ManifestRegistry::new();
+        registry.register_builtin(make_tool("emit"), "events");
+        let lt = registry.get("emit").unwrap();
+        assert_eq!(lt.tool.name, "emit");
+        assert_eq!(lt.source, "events");
+    }
+
+    #[test]
+    fn all_returns_sorted_by_name() {
+        let registry = ManifestRegistry::new();
+        registry.load_manifest("src", &make_manifest(&["z_tool", "a_tool", "m_tool"]));
+        let all = registry.all();
+        let names: Vec<&str> = all.iter().map(|lt| lt.tool.name.as_str()).collect();
+        assert_eq!(names, ["a_tool", "m_tool", "z_tool"]);
+    }
+
+    #[test]
+    fn load_mcp_tools_sets_invoke_config() {
+        let registry = ManifestRegistry::new();
+        let tools = vec![make_tool("read"), make_tool("write")];
+        registry.load_mcp_tools("fs", "fs_key", tools);
+
+        for name in &["read", "write"] {
+            let lt = registry.get(name).unwrap();
+            match &lt.tool.invoke {
+                InvokeConfig::Mcp { server_key } => {
+                    assert_eq!(server_key, "fs_key");
+                }
+                other => panic!("expected Mcp invoke, got {other:?}"),
+            }
+            assert_eq!(lt.source, "fs");
+        }
+    }
+}

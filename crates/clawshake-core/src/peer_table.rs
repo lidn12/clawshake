@@ -87,3 +87,71 @@ impl PeerTable {
         self.len() == 0
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_peer(id: &str, tool_count: usize) -> PeerInfo {
+        PeerInfo {
+            peer_id: id.to_string(),
+            addrs: vec!["/ip4/127.0.0.1/tcp/7474".to_string()],
+            tools: (0..tool_count)
+                .map(|i| ToolSummary {
+                    name: format!("tool_{i}"),
+                    description: String::new(),
+                    input_schema: None,
+                })
+                .collect(),
+            models: vec![],
+            source: PeerSource::Libp2p,
+            last_seen: 0,
+            raw_record: None,
+        }
+    }
+
+    #[test]
+    fn upsert_and_get() {
+        let table = PeerTable::new();
+        table.upsert(make_peer("peer1", 2));
+        let info = table.get("peer1").unwrap();
+        assert_eq!(info.peer_id, "peer1");
+        assert_eq!(info.tools.len(), 2);
+        assert_eq!(info.addrs, ["/ip4/127.0.0.1/tcp/7474"]);
+    }
+
+    #[test]
+    fn upsert_replaces() {
+        let table = PeerTable::new();
+        table.upsert(make_peer("peer1", 1));
+        table.upsert(make_peer("peer1", 3));
+        assert_eq!(table.get("peer1").unwrap().tools.len(), 3);
+    }
+
+    #[test]
+    fn remove() {
+        let table = PeerTable::new();
+        table.upsert(make_peer("peer1", 1));
+        table.remove("peer1");
+        assert!(table.get("peer1").is_none());
+    }
+
+    #[test]
+    fn all_returns_all_peers() {
+        let table = PeerTable::new();
+        table.upsert(make_peer("a", 0));
+        table.upsert(make_peer("b", 0));
+        table.upsert(make_peer("c", 0));
+        assert_eq!(table.all().len(), 3);
+    }
+
+    #[test]
+    fn len_and_is_empty() {
+        let table = PeerTable::new();
+        assert!(table.is_empty());
+        assert_eq!(table.len(), 0);
+        table.upsert(make_peer("peer1", 0));
+        assert!(!table.is_empty());
+        assert_eq!(table.len(), 1);
+    }
+}

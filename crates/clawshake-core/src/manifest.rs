@@ -61,7 +61,7 @@ pub struct Tool {
 ///   "required": ["query"]
 /// }
 /// ```
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InputSchema {
     /// Always "object" for MCP tools.
     #[serde(default = "default_object_type")]
@@ -73,6 +73,16 @@ pub struct InputSchema {
     /// Names of required properties.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub required: Vec<String>,
+}
+
+impl Default for InputSchema {
+    fn default() -> Self {
+        Self {
+            r#type: default_object_type(),
+            properties: HashMap::new(),
+            required: Vec::new(),
+        }
+    }
 }
 
 fn default_object_type() -> String {
@@ -125,4 +135,128 @@ pub enum InvokeConfig {
     /// `describe_tools`, and all `network_*` tools.
     #[serde(skip)]
     InProcess,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_static_manifest() {
+        let json = r#"{"version":"1","tools":[{"name":"test_tool","description":"A test","inputSchema":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]},"invoke":{"type":"cli","command":"echo","args":["{{query}}"]}}]}"#;
+        let m: Manifest = serde_json::from_str(json).unwrap();
+        assert_eq!(m.version, "1");
+        assert_eq!(m.tools.len(), 1);
+        let tool = &m.tools[0];
+        assert_eq!(tool.name, "test_tool");
+        assert_eq!(tool.description, "A test");
+        assert!(tool.input_schema.properties.contains_key("query"));
+        assert_eq!(tool.input_schema.required, vec!["query"]);
+        match &tool.invoke {
+            InvokeConfig::Cli {
+                command,
+                args,
+                shell,
+            } => {
+                assert_eq!(command, "echo");
+                assert_eq!(args, &["{{query}}"]);
+                assert!(!shell);
+            }
+            other => panic!("expected Cli, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_mcp_source_stdio() {
+        let json = r#"{"version":"1","mcp":{"transport":"stdio","command":"npx","args":["-y","some-server"]}}"#;
+        let m: Manifest = serde_json::from_str(json).unwrap();
+        assert!(m.tools.is_empty());
+        match m.mcp.as_ref().unwrap() {
+            McpSource::Stdio { command, args } => {
+                assert_eq!(command, "npx");
+                assert_eq!(args, &["-y", "some-server"]);
+            }
+            other => panic!("expected Stdio, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_mcp_source_http() {
+        let json =
+            r#"{"version":"1","mcp":{"transport":"http","url":"http://localhost:3000/sse"}}"#;
+        let m: Manifest = serde_json::from_str(json).unwrap();
+        match m.mcp.as_ref().unwrap() {
+            McpSource::Http { url } => assert_eq!(url, "http://localhost:3000/sse"),
+            other => panic!("expected Http, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_all_invoke_types() {
+        let json = r#"{"version":"1","tools":[
+            {"name":"a","description":"","invoke":{"type":"cli","command":"echo"}},
+            {"name":"b","description":"","invoke":{"type":"http","url":"https://example.com"}},
+            {"name":"c","description":"","invoke":{"type":"deeplink","template":"myapp://{{q}}"}},
+            {"name":"d","description":"","invoke":{"type":"apple_script","script":"tell app\"X\""}},
+            {"name":"e","description":"","invoke":{"type":"power_shell","script":"Write-Output hi"}}
+        ]}"#;
+        let m: Manifest = serde_json::from_str(json).unwrap();
+        assert_eq!(m.tools.len(), 5);
+        assert!(matches!(m.tools[0].invoke, InvokeConfig::Cli { .. }));
+        assert!(matches!(m.tools[1].invoke, InvokeConfig::Http { .. }));
+        assert!(matches!(m.tools[2].invoke, InvokeConfig::Deeplink { .. }));
+        assert!(matches!(
+            m.tools[3].invoke,
+            InvokeConfig::AppleScript { .. }
+        ));
+        assert!(matches!(m.tools[4].invoke, InvokeConfig::PowerShell { .. }));
+    }
+
+    #[test]
+    fn parse_http_invoke_with_headers() {
+        let json = r#"{"version":"1","tools":[{"name":"x","description":"",
+            "invoke":{"type":"http","url":"https://api.example.com/{{action}}",
+            "method":"DELETE","headers":{"Authorization":"Bearer token123"}}}]}"#;
+        let m: Manifest = serde_json::from_str(json).unwrap();
+        match &m.tools[0].invoke {
+            InvokeConfig::Http {
+                method, headers, ..
+            } => {
+                assert_eq!(method.as_deref(), Some("DELETE"));
+                assert_eq!(
+                    headers.get("Authorization").map(|s| s.as_str()),
+                    Some("Bearer token123")
+                );
+            }
+            other => panic!("expected Http, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn input_schema_defaults() {
+        let json = r#"{"version":"1","tools":[{"name":"t","description":"","invoke":{"type":"cli","command":"x"}}]}"#;
+        let m: Manifest = serde_json::from_str(json).unwrap();
+        let schema = &m.tools[0].input_schema;
+        assert_eq!(schema.r#type, "object");
+        assert!(schema.properties.is_empty());
+        assert!(schema.required.is_empty());
+    }
+
+    #[test]
+    fn parse_cli_shell_flag() {
+        let with_shell = r#"{"version":"1","tools":[{"name":"t","description":"","invoke":{"type":"cli","command":"x","shell":true}}]}"#;
+        let without_shell = r#"{"version":"1","tools":[{"name":"t","description":"","invoke":{"type":"cli","command":"x"}}]}"#;
+
+        let m1: Manifest = serde_json::from_str(with_shell).unwrap();
+        let m2: Manifest = serde_json::from_str(without_shell).unwrap();
+
+        match &m1.tools[0].invoke {
+            InvokeConfig::Cli { shell, .. } => assert!(shell),
+            _ => panic!("expected Cli"),
+        }
+        match &m2.tools[0].invoke {
+            InvokeConfig::Cli { shell, .. } => assert!(!shell),
+            _ => panic!("expected Cli"),
+        }
+    }
 }

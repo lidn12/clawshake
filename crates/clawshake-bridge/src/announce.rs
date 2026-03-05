@@ -156,3 +156,95 @@ pub async fn build_record(
         expires: None,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clawshake_core::peer_table::PeerSource;
+
+    fn make_record() -> AnnouncementRecord {
+        AnnouncementRecord {
+            v: 2,
+            peer_id: "12D3KooWTestPeer".to_string(),
+            tools: vec![
+                ToolAnnounce {
+                    name: "tool_a".to_string(),
+                    description: "First tool".to_string(),
+                    input_schema: serde_json::json!({"type": "object"}),
+                },
+                ToolAnnounce {
+                    name: "tool_b".to_string(),
+                    description: "Second tool".to_string(),
+                    input_schema: serde_json::json!({"type": "object", "properties": {"q": {"type": "string"}}}),
+                },
+            ],
+            models: vec![ModelAnnounce {
+                name: "llama3".to_string(),
+                context_length: Some(8192),
+                params: Some("8B".to_string()),
+            }],
+            addrs: vec![
+                "/ip4/1.2.3.4/tcp/7474".to_string(),
+                "/ip4/5.6.7.8/tcp/7474".to_string(),
+            ],
+            ts: 1_700_000_000,
+        }
+    }
+
+    #[test]
+    fn announcement_round_trip() {
+        let original = make_record();
+        let bytes = original.to_bytes();
+        let decoded = AnnouncementRecord::from_bytes(&bytes).unwrap();
+
+        assert_eq!(decoded.v, original.v);
+        assert_eq!(decoded.peer_id, original.peer_id);
+        assert_eq!(decoded.tools.len(), 2);
+        assert_eq!(decoded.tools[0].name, "tool_a");
+        assert_eq!(decoded.tools[1].name, "tool_b");
+        assert_eq!(decoded.models.len(), 1);
+        assert_eq!(decoded.models[0].name, "llama3");
+        assert_eq!(decoded.addrs, original.addrs);
+        assert_eq!(decoded.ts, original.ts);
+    }
+
+    #[test]
+    fn announcement_to_peer_info() {
+        let record = make_record();
+        let info = record.to_peer_info();
+
+        assert_eq!(info.peer_id, "12D3KooWTestPeer");
+        assert_eq!(info.addrs.len(), 2);
+        assert_eq!(info.tools.len(), 2);
+        assert_eq!(info.tools[0].name, "tool_a");
+        assert_eq!(info.tools[0].description, "First tool");
+        assert!(info.tools[1].input_schema.is_some());
+        assert_eq!(info.models.len(), 1);
+        assert_eq!(info.models[0].name, "llama3");
+        assert_eq!(info.source, PeerSource::Libp2p);
+        assert_eq!(info.last_seen, 1_700_000_000);
+
+        // raw_record must be Some and round-trip back to the original peer_id.
+        // If to_value silently failed or serialised the wrong struct, this fails.
+        let raw = info.raw_record.as_ref().expect("raw_record must be Some");
+        assert_eq!(
+            raw["peer_id"].as_str(),
+            Some("12D3KooWTestPeer"),
+            "raw_record must contain the serialised peer_id"
+        );
+        assert_eq!(
+            raw["tools"][0]["name"].as_str(),
+            Some("tool_a"),
+            "raw_record tools must preserve tool order and names"
+        );
+    }
+
+    #[test]
+    fn v1_record_without_models() {
+        // Version-1 records have no "models" field — serde default must give empty vec.
+        let json = r#"{"v":1,"peer_id":"testpeer","tools":[],"addrs":[],"ts":0}"#;
+        let record: AnnouncementRecord = serde_json::from_str(json).unwrap();
+        assert_eq!(record.v, 1);
+        assert!(record.models.is_empty(), "v1 record must default models to []");
+    }
+}

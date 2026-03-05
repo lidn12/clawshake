@@ -25,12 +25,12 @@ use crate::watcher::{LoadedTool, ManifestRegistry};
 
 /// Cached shim: full JS source + a compact category summary string.
 #[derive(Debug, Clone)]
-struct CachedShim {
+pub(crate) struct CachedShim {
     /// Full JS source with all tool functions and the `_call` helper.
-    full_js: String,
+    pub(crate) full_js: String,
     /// Compact category summary for `describe_tools` with no query.
     /// e.g. "- mail (3 tools): send, search, read\n"
-    categories: String,
+    pub(crate) categories: String,
 }
 
 /// Thread-safe shim cache.  Regenerated whenever the manifest registry changes.
@@ -74,7 +74,7 @@ impl ShimCache {
 // ---------------------------------------------------------------------------
 
 /// Generate the full JS shim and category summary from the loaded tools.
-fn generate_shim(port: u16, tools: &[LoadedTool]) -> CachedShim {
+pub(crate) fn generate_shim(port: u16, tools: &[LoadedTool]) -> CachedShim {
     // Group tools by source.
     let mut by_source: HashMap<&str, Vec<&LoadedTool>> = HashMap::new();
     for lt in tools {
@@ -451,4 +451,275 @@ async fn ephemeral_invoke_handler(
     debug!(body = %body, "← POST /invoke (ephemeral)");
     let ctx = state.as_dispatch();
     crate::router::dispatch_invoke(&body, &ctx).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clawshake_core::manifest::{InvokeConfig, Tool};
+
+    use crate::watcher::{LoadedTool, ManifestRegistry, McpServerMap};
+
+    fn make_loaded_tool(name: &str, source: &str, description: &str) -> LoadedTool {
+        LoadedTool {
+            tool: Tool {
+                name: name.to_string(),
+                description: description.to_string(),
+                input_schema: Default::default(),
+                requires: None,
+                invoke: InvokeConfig::InProcess,
+            },
+            source: source.to_string(),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // generate_shim
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn shim_contains_call_helper() {
+        let tools = vec![make_loaded_tool("some_tool", "misc", "does stuff")];
+        let shim = generate_shim(7474, &tools);
+        assert!(
+            shim.full_js.contains("async function _call(name, args)"),
+            "shim must define _call: {}",
+            shim.full_js
+        );
+        assert!(shim.full_js.contains("fetch"), "shim must use fetch");
+    }
+
+    #[test]
+    fn shim_flat_function_names() {
+        let tools = vec![
+            make_loaded_tool("network_peers", "network", "list peers"),
+            make_loaded_tool("network_ping", "network", "ping a peer"),
+        ];
+        let shim = generate_shim(7474, &tools);
+        assert!(
+            shim.full_js
+                .contains("const network_peers = (args) => _call('network_peers', args);"),
+            "flat const declaration expected:\n{}",
+            shim.full_js
+        );
+        assert!(
+            shim.full_js
+                .contains("const network_ping = (args) => _call('network_ping', args);"),
+            "flat const declaration expected:\n{}",
+            shim.full_js
+        );
+        assert!(
+            !shim.full_js.contains("const network = {"),
+            "must NOT use namespace objects:\n{}",
+            shim.full_js
+        );
+    }
+
+    #[test]
+    fn shim_category_summary_flat_names() {
+        let tools = vec![
+            make_loaded_tool("network_peers", "network", "list peers"),
+            make_loaded_tool("network_ping", "network", "ping a peer"),
+        ];
+        let shim = generate_shim(7474, &tools);
+        assert!(
+            shim.categories.contains("network (2 tools)"),
+            "categories must list tool count:\n{}",
+            shim.categories
+        );
+        // The category line should reference the flat MCP names.
+        assert!(
+            shim.categories.contains("network_peers"),
+            "categories must show flat tool names:\n{}",
+            shim.categories
+        );
+        // Must NOT use dot-notation like "network.peers".
+        assert!(
+            !shim.categories.contains("network."),
+            "categories must not use dot-notation:\n{}",
+            shim.categories
+        );
+    }
+
+    #[test]
+    fn shim_skips_codemode_tools() {
+        let tools = vec![
+            make_loaded_tool("run_code", "codemode", "run JS"),
+            make_loaded_tool("real_tool", "my_source", "a real tool"),
+        ];
+        let shim = generate_shim(7474, &tools);
+        assert!(
+            !shim.full_js.contains("run_code"),
+            "codemode tools must be skipped:\n{}",
+            shim.full_js
+        );
+        assert!(
+            shim.full_js.contains("real_tool"),
+            "other tools must be included:\n{}",
+            shim.full_js
+        );
+    }
+
+    #[test]
+    fn shim_safe_js_ident() {
+        // Hyphens in tool names must be replaced with underscores in the JS ident,
+        // but the _call invocation must use the original MCP name.
+        let tools = vec![make_loaded_tool("my-tool", "src", "hyphenated")];
+        let shim = generate_shim(7474, &tools);
+        assert!(
+            shim.full_js.contains("const my_tool ="),
+            "hyphen must become underscore in JS ident:\n{}",
+            shim.full_js
+        );
+        assert!(
+            shim.full_js.contains("_call('my-tool'"),
+            "original MCP name must be preserved in _call:\n{}",
+            shim.full_js
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // invoke_describe_tools — uses DispatchContext (async, needs PermissionStore)
+    // -----------------------------------------------------------------------
+
+    async fn make_ctx_with_tools(
+        tools: Vec<LoadedTool>,
+    ) -> (
+        ManifestRegistry,
+        McpServerMap,
+        crate::event_queue::EventQueue,
+        ShimCache,
+    ) {
+        let registry = ManifestRegistry::new();
+        for lt in tools {
+            registry.register_builtin(lt.tool, &lt.source);
+        }
+        let servers = McpServerMap::new();
+        let event_queue = crate::event_queue::EventQueue::new();
+        let shim_cache = ShimCache::new();
+        (registry, servers, event_queue, shim_cache)
+    }
+
+    #[tokio::test]
+    async fn describe_tools_no_query_returns_categories() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let perms = clawshake_core::permissions::PermissionStore::open(file.path())
+            .await
+            .unwrap();
+
+        let tools = vec![
+            make_loaded_tool("mail_send", "mail", "Send mail"),
+            make_loaded_tool("notes_create", "notes", "Create note"),
+        ];
+        let (registry, servers, event_queue, shim_cache) = make_ctx_with_tools(tools).await;
+
+        let ctx = crate::router::DispatchContext {
+            registry: &registry,
+            servers: &servers,
+            event_queue: &event_queue,
+            permissions: &perms,
+            shim_cache: &shim_cache,
+            port: 7474,
+            code_mode: false,
+        };
+
+        let output = crate::invoke::codemode::invoke_describe_tools(None, &ctx);
+        assert!(
+            output.contains("mail"),
+            "should list mail category:\n{output}"
+        );
+        assert!(
+            output.contains("notes"),
+            "should list notes category:\n{output}"
+        );
+    }
+
+    #[tokio::test]
+    async fn describe_tools_with_query_returns_filtered_js() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let perms = clawshake_core::permissions::PermissionStore::open(file.path())
+            .await
+            .unwrap();
+
+        // Build network_peers with a concrete InputSchema so param_hint_from_schema
+        // has something to emit.  The test then asserts the specific field name
+        // appears — a bug that returned the wrong property name or skipped it would
+        // fail despite @param still being present.
+        let mut props = std::collections::HashMap::new();
+        props.insert("peer_id".to_string(), serde_json::json!({"type": "string"}));
+        let schema = clawshake_core::manifest::InputSchema {
+            r#type: "object".to_string(),
+            properties: props,
+            required: vec!["peer_id".to_string()],
+        };
+        let network_tool = LoadedTool {
+            tool: clawshake_core::manifest::Tool {
+                name: "network_peers".to_string(),
+                description: "List peers".to_string(),
+                input_schema: schema,
+                requires: None,
+                invoke: clawshake_core::manifest::InvokeConfig::InProcess,
+            },
+            source: "network".to_string(),
+        };
+
+        let tools = vec![
+            network_tool,
+            make_loaded_tool("mail_send", "mail", "Send mail"),
+        ];
+        let (registry, servers, event_queue, shim_cache) = make_ctx_with_tools(tools).await;
+
+        let ctx = crate::router::DispatchContext {
+            registry: &registry,
+            servers: &servers,
+            event_queue: &event_queue,
+            permissions: &perms,
+            shim_cache: &shim_cache,
+            port: 7474,
+            code_mode: false,
+        };
+
+        let output = crate::invoke::codemode::invoke_describe_tools(Some("network"), &ctx);
+        assert!(
+            output.contains("network_peers"),
+            "network tool expected:\n{output}"
+        );
+        assert!(
+            !output.contains("mail_send"),
+            "mail tool must be filtered out:\n{output}"
+        );
+        // Assert the specific property name emitted by param_hint_from_schema,
+        // not just the bare @param keyword.
+        assert!(
+            output.contains("peer_id"),
+            "@param hint must include the 'peer_id' property name:\n{output}"
+        );
+    }
+
+    #[tokio::test]
+    async fn describe_tools_no_match_returns_message() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let perms = clawshake_core::permissions::PermissionStore::open(file.path())
+            .await
+            .unwrap();
+
+        let tools = vec![make_loaded_tool("mail_send", "mail", "Send mail")];
+        let (registry, servers, event_queue, shim_cache) = make_ctx_with_tools(tools).await;
+
+        let ctx = crate::router::DispatchContext {
+            registry: &registry,
+            servers: &servers,
+            event_queue: &event_queue,
+            permissions: &perms,
+            shim_cache: &shim_cache,
+            port: 7474,
+            code_mode: false,
+        };
+
+        let output = crate::invoke::codemode::invoke_describe_tools(Some("nonexistent"), &ctx);
+        assert!(
+            output.contains("No tools matching"),
+            "expected 'No tools matching' message:\n{output}"
+        );
+    }
 }

@@ -25,3 +25,31 @@ impl std::fmt::Display for AgentId {
         write!(f, "{}", self.as_str())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn agent_id_as_str() {
+        assert_eq!(AgentId::Local.as_str(), "local");
+        assert_eq!(AgentId::P2p("abc".into()).as_str(), "p2p:abc");
+        assert_eq!(AgentId::Tailscale("mynode".into()).as_str(), "tailscale:mynode");
+    }
+
+    #[test]
+    fn agent_id_display() {
+        assert_eq!(format!("{}", AgentId::Local), "local");
+        assert_eq!(format!("{}", AgentId::P2p("abc".into())), "p2p:abc");
+        assert_eq!(format!("{}", AgentId::Tailscale("mynode".into())), "tailscale:mynode");
+    }
+
+    #[test]
+    fn agent_id_equality() {
+        assert_eq!(AgentId::Local, AgentId::Local);
+        assert_ne!(AgentId::P2p("a".into()), AgentId::P2p("b".into()));
+        assert_ne!(AgentId::P2p("a".into()), AgentId::Local);
+        assert_eq!(AgentId::P2p("x".into()), AgentId::P2p("x".into()));
+        assert_ne!(AgentId::Tailscale("n".into()), AgentId::Local);
+    }
+}

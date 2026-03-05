@@ -164,3 +164,84 @@ pub fn load(path: Option<&Path>) -> Result<Config> {
     info!(?path, "Loaded config");
     Ok(config)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_config() {
+        let c = Config::default();
+        assert!(c.network.bootstrap.is_empty());
+        assert!(c.models.endpoint.is_none());
+        assert_eq!(c.models.proxy_port, 11435);
+        assert!(c.models.advertise.is_none());
+    }
+
+    #[test]
+    fn parse_full_config() {
+        let toml = r#"
+[network]
+bootstrap = ["/ip4/1.2.3.4/tcp/7474/p2p/12D3KooWabc"]
+
+[models]
+endpoint = "http://127.0.0.1:11434"
+advertise = "all"
+proxy_port = 12345
+"#;
+        let c: Config = toml::from_str(toml).unwrap();
+        assert_eq!(
+            c.network.bootstrap,
+            ["/ip4/1.2.3.4/tcp/7474/p2p/12D3KooWabc"]
+        );
+        assert_eq!(c.models.endpoint.as_deref(), Some("http://127.0.0.1:11434"));
+        // Use a non-default value so the assertion fails if TOML parsing is
+        // silently skipping the key and returning the default (11435) instead.
+        assert_eq!(c.models.proxy_port, 12345);
+        assert!(matches!(c.models.advertise, AdvertiseModels::All(_)));
+    }
+
+    #[test]
+    fn parse_advertise_list() {
+        let toml = r#"
+[models]
+endpoint = "http://localhost:11434"
+advertise = ["llama3", "codellama"]
+"#;
+        let c: Config = toml::from_str(toml).unwrap();
+        match &c.models.advertise {
+            AdvertiseModels::List(names) => {
+                assert_eq!(names, &["llama3", "codellama"]);
+            }
+            other => panic!("expected List, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_advertise_none() {
+        let toml = r#"
+[models]
+endpoint = "http://localhost:11434"
+advertise = "none"
+"#;
+        let c: Config = toml::from_str(toml).unwrap();
+        assert!(matches!(c.models.advertise, AdvertiseModels::None(_)));
+    }
+
+    #[test]
+    fn parse_minimal_config() {
+        let c: Config = toml::from_str("").unwrap();
+        assert!(c.network.bootstrap.is_empty());
+        assert!(c.models.endpoint.is_none());
+        // proxy_port default must be 11435; a change to the Default impl
+        // would silently break the model proxy without this assertion.
+        assert_eq!(
+            c.models.proxy_port, 11435,
+            "default proxy_port must be 11435"
+        );
+        assert!(
+            c.models.advertise.is_none(),
+            "default advertise must be None"
+        );
+    }
+}

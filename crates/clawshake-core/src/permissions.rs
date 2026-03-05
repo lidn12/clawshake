@@ -250,3 +250,294 @@ impl PermissionStore {
         matches!(result, Ok(Some(row)) if row.try_get::<&str, _>("decision").unwrap_or("deny") == "allow")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+
+    async fn open_temp_store() -> (PermissionStore, NamedTempFile) {
+        let file = NamedTempFile::new().expect("tempfile");
+        let store = PermissionStore::open(file.path())
+            .await
+            .expect("open store");
+        (store, file)
+    }
+
+    #[tokio::test]
+    async fn waterfall_exact_agent_exact_tool() {
+        let (store, _f) = open_temp_store().await;
+        store
+            .set("local", "read_file", Decision::Allow)
+            .await
+            .unwrap();
+        assert_eq!(
+            store.check(&AgentId::Local, "read_file").await,
+            Decision::Allow
+        );
+    }
+
+    #[tokio::test]
+    async fn waterfall_exact_agent_wildcard_tool() {
+        let (store, _f) = open_temp_store().await;
+        store.set("local", "*", Decision::Allow).await.unwrap();
+        assert_eq!(
+            store.check(&AgentId::Local, "any_tool").await,
+            Decision::Allow
+        );
+    }
+
+    #[tokio::test]
+    async fn waterfall_wildcard_agent_exact_tool() {
+        let (store, _f) = open_temp_store().await;
+        store
+            .set("p2p:*", "read_file", Decision::Allow)
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .check(&AgentId::P2p("12D3KooWxxxx".into()), "read_file")
+                .await,
+            Decision::Allow
+        );
+    }
+
+    #[tokio::test]
+    async fn waterfall_wildcard_agent_wildcard_tool() {
+        let (store, _f) = open_temp_store().await;
+        store.set("p2p:*", "*", Decision::Deny).await.unwrap();
+        assert_eq!(
+            store
+                .check(&AgentId::P2p("12D3KooWxxxx".into()), "any_tool")
+                .await,
+            Decision::Deny
+        );
+    }
+
+    #[tokio::test]
+    async fn waterfall_specificity_order() {
+        let (store, _f) = open_temp_store().await;
+        // Blanket allow for all p2p tools.
+        store.set("p2p:*", "*", Decision::Allow).await.unwrap();
+        // Specific deny for network_call overrides the blanket allow.
+        store
+            .set("p2p:*", "network_call", Decision::Deny)
+            .await
+            .unwrap();
+
+        let peer = AgentId::P2p("12D3KooWxxxx".into());
+        assert_eq!(
+            store.check(&peer, "network_call").await,
+            Decision::Deny,
+            "exact tool rule must beat wildcard tool rule"
+        );
+        assert_eq!(
+            store.check(&peer, "read_file").await,
+            Decision::Allow,
+            "wildcard still applies for tools without a specific rule"
+        );
+    }
+
+    #[tokio::test]
+    async fn waterfall_exact_agent_beats_wildcard_agent() {
+        // Tests the agent-level dimension of the waterfall:
+        // a rule for the exact peer ID must beat a rule for "p2p:*".
+        // If the ORDER BY agent priority were wrong, the wildcard deny would win.
+        let (store, _f) = open_temp_store().await;
+        let peer_id = "12D3KooWspecific";
+        let exact_agent = format!("p2p:{peer_id}");
+
+        // Blanket deny for all p2p agents.
+        store.set("p2p:*", "*", Decision::Deny).await.unwrap();
+        // Specific allow for just this one peer.
+        store.set(&exact_agent, "*", Decision::Allow).await.unwrap();
+
+        assert_eq!(
+            store.check(&AgentId::P2p(peer_id.into()), "any_tool").await,
+            Decision::Allow,
+            "exact agent rule must beat wildcard agent rule"
+        );
+        // A different peer still gets the wildcard deny.
+        assert_eq!(
+            store
+                .check(&AgentId::P2p("12D3KooWother".into()), "any_tool")
+                .await,
+            Decision::Deny,
+            "wildcard deny must still apply to other peers"
+        );
+    }
+
+    #[tokio::test]
+    async fn waterfall_no_match_local_defaults_to_ask() {
+        let (store, _f) = open_temp_store().await;
+        assert_eq!(store.check(&AgentId::Local, "foo").await, Decision::Ask);
+    }
+
+    #[tokio::test]
+    async fn waterfall_no_match_p2p_defaults_to_deny() {
+        let (store, _f) = open_temp_store().await;
+        assert_eq!(
+            store.check(&AgentId::P2p("x".into()), "foo").await,
+            Decision::Deny
+        );
+    }
+
+    #[tokio::test]
+    async fn waterfall_no_match_tailscale_defaults_to_deny() {
+        let (store, _f) = open_temp_store().await;
+        assert_eq!(
+            store.check(&AgentId::Tailscale("node".into()), "foo").await,
+            Decision::Deny
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_decision_string_defaults_to_deny() {
+        let file = NamedTempFile::new().expect("tempfile");
+        // Build a table without the CHECK constraint so we can insert an
+        // invalid decision value, then verify the store treats it as Deny.
+        let url = format!(
+            "sqlite://{}?mode=rwc",
+            file.path().to_string_lossy().replace('\\', "/")
+        );
+        let raw = SqlitePool::connect(&url).await.unwrap();
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS permissions (
+                agent_id   TEXT NOT NULL,
+                tool_name  TEXT NOT NULL,
+                decision   TEXT NOT NULL,
+                granted_at INTEGER,
+                PRIMARY KEY (agent_id, tool_name)
+            )",
+        )
+        .execute(&raw)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO permissions (agent_id, tool_name, decision) \
+             VALUES ('local', 'badtool', 'invalid')",
+        )
+        .execute(&raw)
+        .await
+        .unwrap();
+        raw.close().await;
+
+        // Now open via PermissionStore — the table already exists, so CREATE
+        // TABLE IF NOT EXISTS is a no-op and the bad row survives.
+        let store = PermissionStore::open(file.path()).await.unwrap();
+        assert_eq!(
+            store.check(&AgentId::Local, "badtool").await,
+            Decision::Deny,
+            "unrecognised decision strings must fail-closed to Deny"
+        );
+    }
+
+    #[tokio::test]
+    async fn set_and_remove() {
+        let (store, _f) = open_temp_store().await;
+        store.set("local", "foo", Decision::Allow).await.unwrap();
+        assert_eq!(store.check(&AgentId::Local, "foo").await, Decision::Allow);
+        store.remove("local", "foo").await.unwrap();
+        // Local default is Ask when no rule exists.
+        assert_eq!(store.check(&AgentId::Local, "foo").await, Decision::Ask);
+    }
+
+    #[tokio::test]
+    async fn remove_p2p_rule_falls_back_to_deny() {
+        // P2P and Local have *different* fallback defaults (Deny vs Ask).
+        // Removing the only P2P rule must reveal Deny, not Ask.
+        let (store, _f) = open_temp_store().await;
+        let peer = AgentId::P2p("somepeer".into());
+        store.set("p2p:*", "foo", Decision::Allow).await.unwrap();
+        assert_eq!(store.check(&peer, "foo").await, Decision::Allow);
+        store.remove("p2p:*", "foo").await.unwrap();
+        assert_eq!(
+            store.check(&peer, "foo").await,
+            Decision::Deny,
+            "P2P default after removal must be Deny, not Ask"
+        );
+    }
+
+    #[tokio::test]
+    async fn set_replaces_existing() {
+        let (store, _f) = open_temp_store().await;
+        store.set("local", "foo", Decision::Allow).await.unwrap();
+        store.set("local", "foo", Decision::Deny).await.unwrap();
+        assert_eq!(store.check(&AgentId::Local, "foo").await, Decision::Deny);
+    }
+
+    #[tokio::test]
+    async fn list_returns_all_rows() {
+        let (store, _f) = open_temp_store().await;
+        store.set("local", "alpha", Decision::Allow).await.unwrap();
+        store.set("local", "beta", Decision::Deny).await.unwrap();
+        store.set("p2p:*", "*", Decision::Deny).await.unwrap();
+        let rows = store.list().await.unwrap();
+        assert_eq!(rows.len(), 3);
+        // ORDER BY agent_id, tool_name: "local" < "p2p:*", and within local
+        // "alpha" < "beta".  If the ORDER BY were dropped this would fail.
+        assert_eq!(rows[0].agent_id, "local");
+        assert_eq!(rows[0].tool_name, "alpha");
+        assert_eq!(rows[1].agent_id, "local");
+        assert_eq!(rows[1].tool_name, "beta");
+        assert_eq!(rows[2].agent_id, "p2p:*");
+        assert_eq!(rows[2].tool_name, "*");
+    }
+
+    #[tokio::test]
+    async fn seed_p2p_deny_default() {
+        let (store, _f) = open_temp_store().await;
+        store.seed_p2p_deny_default().await.unwrap();
+        assert_eq!(
+            store
+                .check(&AgentId::P2p("anypeer".into()), "anything")
+                .await,
+            Decision::Deny
+        );
+        // Second call must not error (INSERT OR IGNORE).
+        store.seed_p2p_deny_default().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn is_network_exposed_empty_db_returns_false() {
+        // Immediately after install there are no rules at all.  The function
+        // must return false (not exposed) rather than panicking or returning
+        // true by accident.
+        let (store, _f) = open_temp_store().await;
+        assert!(
+            !store.is_network_exposed("read_file").await,
+            "empty permission DB must not expose any tool to the network"
+        );
+    }
+
+    #[tokio::test]
+    async fn is_network_exposed_reflects_p2p_wildcard_rules() {
+        let (store, _f) = open_temp_store().await;
+        // Blanket allow → read_file is exposed.
+        store.set("p2p:*", "*", Decision::Allow).await.unwrap();
+        assert!(store.is_network_exposed("read_file").await);
+
+        // Specific deny for network_call → not exposed.
+        store
+            .set("p2p:*", "network_call", Decision::Deny)
+            .await
+            .unwrap();
+        assert!(!store.is_network_exposed("network_call").await);
+
+        // read_file still exposed via wildcard.
+        assert!(store.is_network_exposed("read_file").await);
+    }
+
+    #[test]
+    fn decision_display_roundtrip() {
+        assert_eq!(Decision::Allow.to_string(), "allow");
+        assert_eq!(Decision::Deny.to_string(), "deny");
+        assert_eq!(Decision::Ask.to_string(), "ask");
+
+        assert_eq!(Decision::from_db("allow"), Decision::Allow);
+        assert_eq!(Decision::from_db("deny"), Decision::Deny);
+        assert_eq!(Decision::from_db("ask"), Decision::Ask);
+        // Unknown value falls back to Deny.
+        assert_eq!(Decision::from_db("unknown"), Decision::Deny);
+    }
+}

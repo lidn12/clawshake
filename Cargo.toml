@@ -78,6 +78,9 @@ which = "7"
 # Stream utilities
 futures = "0.3"
 async-stream = "0.3"
+
+# Testing utilities
+tempfile = "3"
 bytes = "1"
 
 # HTTP server (broker SSE transport)

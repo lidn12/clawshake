@@ -32,3 +32,6 @@ libp2p-stream = { workspace = true }
 dirs = { workspace = true }
 futures = { workspace = true }
 notify = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

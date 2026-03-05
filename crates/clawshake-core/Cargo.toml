@@ -16,3 +16,6 @@ tracing = { workspace = true }
 reqwest = { workspace = true }
 sqlx = { workspace = true }
 dirs = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

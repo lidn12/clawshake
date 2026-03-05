@@ -96,3 +96,53 @@ pub async fn invoke(
         )
     }
 }
+
+// On Windows `echo` is a CMD built-in, so all CLI integration tests that
+// spawn it are skipped.  The substitution + filtering logic they exercise is
+// independently covered by the pure-Rust tests in invoke/mod.rs.
+#[cfg(all(test, not(windows)))]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn cli_drops_empty_args() {
+        // When {{name}} has no match the substituted arg is ""; it should be dropped.
+        let out = invoke("echo", &["{{name}}".to_string()], false, &json!({}))
+            .await
+            .unwrap();
+        assert_eq!(out.trim(), "");
+    }
+
+    #[tokio::test]
+    async fn cli_drops_flag_with_empty_value() {
+        // --name is a flag; its value arg is empty → both should be dropped.
+        // Only "hello" remains.
+        let out = invoke(
+            "echo",
+            &[
+                "--name".to_string(),
+                "{{name}}".to_string(),
+                "hello".to_string(),
+            ],
+            false,
+            &json!({}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.trim(), "hello");
+    }
+
+    #[tokio::test]
+    async fn cli_preserves_args_with_values() {
+        let out = invoke(
+            "echo",
+            &["--name".to_string(), "{{name}}".to_string()],
+            false,
+            &json!({"name": "Alice"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.trim(), "--name Alice");
+    }
+}
