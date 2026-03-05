@@ -139,10 +139,9 @@ fn tools<'a>(
                 // Flat list of tool names — no grouping heuristics.
                 let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
                 let summary = format!(
-                    "Peer {} has {} tool(s): {}\n\nUse network_tools with a query to see full schemas for specific tools.",
+                    "Peer {} has {} tool(s). Use network_tools with a query to see full schemas for specific tools.",
                     peer_id,
                     names.len(),
-                    names.join(", ")
                 );
                 json!({ "peer_id": peer_id, "tools": names, "description": summary })
             }
