@@ -125,6 +125,16 @@ async fn main() -> Result<()> {
             if port.is_some() {
                 http_server::serve(broker, Some(sse_rx)).await?;
             } else {
+                // In stdio mode there is no HTTP notification loop, so
+                // drain the channel here to invalidate the JS shim cache
+                // whenever manifests change.
+                let sc = broker.shim_cache.clone();
+                tokio::spawn(async move {
+                    let mut rx = sse_rx;
+                    while rx.recv().await.is_some() {
+                        sc.invalidate();
+                    }
+                });
                 mcp_server::serve_stdio(broker).await?;
             }
         }

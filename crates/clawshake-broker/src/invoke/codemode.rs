@@ -45,7 +45,6 @@ impl ShimCache {
     }
 
     /// Invalidate the cache so the next request regenerates the shim.
-    #[allow(dead_code)] // Will be wired to watcher change events.
     pub fn invalidate(&self) {
         let mut cache = self.inner.write().expect("shim cache lock");
         *cache = None;

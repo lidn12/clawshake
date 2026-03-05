@@ -40,10 +40,7 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-use crate::{
-    mcp_server,
-    router::BrokerContext,
-};
+use crate::{mcp_server, router::BrokerContext};
 
 // ---------------------------------------------------------------------------
 // Shared state
@@ -76,6 +73,7 @@ pub async fn serve(
     // to every open SSE session so clients refresh their tool list immediately.
     if let Some(mut rx) = notify_rx {
         let sessions = state.sessions.clone();
+        let shim_cache = state.ctx.shim_cache.clone();
         tokio::spawn(async move {
             let msg = serde_json::json!({
                 "jsonrpc": "2.0",
@@ -83,6 +81,7 @@ pub async fn serve(
             })
             .to_string();
             while rx.recv().await.is_some() {
+                shim_cache.invalidate();
                 let sessions = sessions.read().await;
                 let count = sessions.len();
                 for tx in sessions.values() {
@@ -292,7 +291,11 @@ async fn events_handler(State(state): State<AppState>, body: String) -> impl Int
     };
 
     let source = req.source.unwrap_or_else(|| "webhook".to_string());
-    let id = state.ctx.event_queue.push(&req.topic, &source, req.data).await;
+    let id = state
+        .ctx
+        .event_queue
+        .push(&req.topic, &source, req.data)
+        .await;
 
     let resp = serde_json::json!({"ok": true, "id": id});
     debug!(resp = %resp, "→ POST /events");
