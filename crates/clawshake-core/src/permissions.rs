@@ -227,27 +227,51 @@ impl PermissionStore {
 
     /// Check whether a tool should be published to the DHT.
     ///
-    /// Runs the same specificity waterfall as `check()` for the representative
-    /// agent `p2p:*` (the wildcard that covers all remote P2P peers):
-    ///   1. `(p2p:*, exact tool)` — most specific
-    ///   2. `(p2p:*, *)` — wildcard tool
-    ///   3. No match → Deny (default for P2P)
+    /// Returns `true` if at least one P2P agent — either the class wildcard
+    /// `p2p:*` or any specific peer `p2p:<id>` — has an effective `Allow`
+    /// decision for `tool_name`.
     ///
-    /// This means `deny p2p:* network_call` correctly overrides a blanket
-    /// `allow p2p:* *` and the tool is not published to the DHT.
+    /// Specificity rule (per agent): an exact tool rule beats a wildcard `*`
+    /// rule for the **same** agent.
+    ///
+    /// Examples:
+    ///   • `allow p2p:* *`                        → exposed
+    ///   • `deny  p2p:* *`                        → **not** exposed
+    ///   • `deny  p2p:* *` + `allow p2p:<id> *`  → exposed (specific peer has access)
+    ///   • `allow p2p:* *` + `deny p2p:* tool`   → **not** exposed (exact deny wins)
+    ///   • `deny  p2p:* *` + `allow p2p:<id> *`
+    ///     + `deny p2p:<id> tool`                → **not** exposed (exact deny overrides)
     pub async fn is_network_exposed(&self, tool_name: &str) -> bool {
+        // A tool is exposed when ANY p2p agent (wildcard or specific) would
+        // be allowed to call it under the specificity waterfall.
+        //
+        // Case 1 — explicit exact-tool allow for any p2p agent (wins over any * rule).
+        // Case 2 — wildcard allow for any p2p agent, not overridden by an
+        //          exact-tool deny for that same agent.
         let result = sqlx::query(
-            "SELECT decision FROM permissions
-             WHERE agent_id = 'p2p:*'
-               AND tool_name IN (?1, '*')
-             ORDER BY CASE tool_name WHEN ?1 THEN 0 ELSE 1 END
-             LIMIT 1",
+            "SELECT 1 FROM (
+                SELECT 1 FROM permissions
+                WHERE agent_id LIKE 'p2p:%'
+                  AND tool_name = ?1
+                  AND decision = 'allow'
+                UNION ALL
+                SELECT 1 FROM permissions pa
+                WHERE pa.agent_id LIKE 'p2p:%'
+                  AND pa.tool_name = '*'
+                  AND pa.decision = 'allow'
+                  AND NOT EXISTS (
+                    SELECT 1 FROM permissions pd
+                    WHERE pd.agent_id = pa.agent_id
+                      AND pd.tool_name = ?1
+                      AND pd.decision = 'deny'
+                  )
+             ) LIMIT 1",
         )
         .bind(tool_name)
         .fetch_optional(&self.db)
         .await;
 
-        matches!(result, Ok(Some(row)) if row.try_get::<&str, _>("decision").unwrap_or("deny") == "allow")
+        matches!(result, Ok(Some(_)))
     }
 }
 
@@ -525,6 +549,53 @@ mod tests {
         assert!(!store.is_network_exposed("network_call").await);
 
         // read_file still exposed via wildcard.
+        assert!(store.is_network_exposed("read_file").await);
+    }
+
+    #[tokio::test]
+    async fn is_network_exposed_specific_peer_wildcard_allow() {
+        let (store, _f) = open_temp_store().await;
+        // Default deny for all peers, but a specific peer has blanket access.
+        store.set("p2p:*", "*", Decision::Deny).await.unwrap();
+        store
+            .set("p2p:12D3KooWxxxx", "*", Decision::Allow)
+            .await
+            .unwrap();
+        // Tool should be exposed because at least one peer can call it.
+        assert!(store.is_network_exposed("read_file").await);
+        assert!(store.is_network_exposed("write_file").await);
+    }
+
+    #[tokio::test]
+    async fn is_network_exposed_specific_peer_exact_allow() {
+        let (store, _f) = open_temp_store().await;
+        // Default deny for all peers, but a specific peer has an exact allow.
+        store.set("p2p:*", "*", Decision::Deny).await.unwrap();
+        store
+            .set("p2p:12D3KooWxxxx", "read_file", Decision::Allow)
+            .await
+            .unwrap();
+        assert!(store.is_network_exposed("read_file").await);
+        // Other tools are still not exposed.
+        assert!(!store.is_network_exposed("write_file").await);
+    }
+
+    #[tokio::test]
+    async fn is_network_exposed_specific_peer_exact_deny_overrides_wildcard() {
+        let (store, _f) = open_temp_store().await;
+        // Specific peer has blanket allow but an exact deny for one tool.
+        store.set("p2p:*", "*", Decision::Deny).await.unwrap();
+        store
+            .set("p2p:12D3KooWxxxx", "*", Decision::Allow)
+            .await
+            .unwrap();
+        store
+            .set("p2p:12D3KooWxxxx", "network_call", Decision::Deny)
+            .await
+            .unwrap();
+        // network_call is not callable by any peer → not exposed.
+        assert!(!store.is_network_exposed("network_call").await);
+        // read_file is still allowed via the specific peer's wildcard.
         assert!(store.is_network_exposed("read_file").await);
     }
 
