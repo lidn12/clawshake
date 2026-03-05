@@ -477,6 +477,13 @@ pub fn start(
         "Manifest registry loaded"
     );
 
+    // Always write the snapshot after the initial scan so that built-in tools
+    // (registered before this function is called) appear in `clawshake tools
+    // list` even when no manifests loaded successfully.
+    if let Some(ref sp) = snapshot_path {
+        write_registry_snapshot(sp, &registry);
+    }
+
     // Background watcher.
     let (tx, rx) = std::sync::mpsc::channel::<notify::Result<Event>>();
     let mut watcher = notify::recommended_watcher(tx)?;
