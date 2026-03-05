@@ -42,14 +42,12 @@ cd clawshake
 cargo build --release
 ```
 
-The build produces several binaries. Add them to your PATH:
+The build produces a unified binary. Add it to your PATH:
 
 ```bash
-# Copy all binaries to a directory on your PATH, e.g.
-cp target/release/clawshake target/release/clawshake-tools ~/.local/bin/
+# Copy the binary to a directory on your PATH, e.g.
+cp target/release/clawshake ~/.local/bin/
 ```
-
-`clawshake-tools` **must be on PATH** — the broker shells out to it for the six `network_*` tools. Without it, network discovery and remote invocation won't work.
 
 Start the node:
 
@@ -170,9 +168,13 @@ The permission waterfall (first match wins):
 
 Local callers (same machine) are auto-allowed. Remote callers must be explicitly granted access.
 
-## Network tools
+## Built-in tools
 
-Every clawshake node exposes six built-in tools for peer discovery and cross-machine invocation:
+Every clawshake node exposes a set of built-in tools that are always available — no manifest needed.
+
+### Network
+
+Seven tools for peer discovery, cross-machine invocation, and model discovery:
 
 | Tool | What it does |
 |------|-------------|
@@ -182,8 +184,29 @@ Every clawshake node exposes six built-in tools for peer discovery and cross-mac
 | `network_ping` | Check if a peer is connected |
 | `network_call` | Invoke a tool on a remote peer |
 | `network_record` | Fetch a peer's raw DHT announcement |
+| `network_models` | List AI models available on the network (local + remote peers) |
 
-These are regular MCP tools — your agent can use them to discover and call tools on other machines without any manual setup.
+### Events
+
+Two tools for local publish-subscribe messaging between tools and agents:
+
+| Tool | What it does |
+|------|-------------|
+| `emit` | Push an event to the local event queue with a topic and payload |
+| `listen` | Block until events matching given topics arrive; supports cursor-based resumption |
+
+Events are local to the node. To send events to a remote peer, use `network_call(peer_id, "emit", {topic, data})`.
+
+### Code mode
+
+When the broker starts with `--code-mode`, two additional meta-tools replace the full tool list (see [Code mode](#code-mode) below):
+
+| Tool | What it does |
+|------|-------------|
+| `describe_tools` | List tool categories or search for specific tool signatures |
+| `run_code` | Execute a JavaScript snippet with all tools pre-loaded as async functions |
+
+All built-in tools are regular MCP tools — your agent can use them within its normal reasoning loop without any manual setup.
 
 ## Code mode
 
