@@ -137,6 +137,25 @@ fn tools<'a>(
                 }
             }
             None => {
+                // Detect code-mode peers: they expose only run_code + describe_tools.
+                let tool_names: std::collections::BTreeSet<&str> =
+                    tools.iter().map(|t| t.name.as_str()).collect();
+                let is_code_mode = tool_names.len() == 2
+                    && tool_names.contains("run_code")
+                    && tool_names.contains("describe_tools");
+
+                if is_code_mode {
+                    let summary = format!(
+                        "Peer {} runs in code-mode. To interact with it:\n\
+                         1. Discover its tools: network_call(peer_id, tool=\"describe_tools\", arguments={{}})\n\
+                         2. Execute on it:       network_call(peer_id, tool=\"run_code\", arguments={{\"script\": \"...\"}})\n\n\
+                         The script can call any of the peer's tools as async JS functions (e.g. `await read_file({{path: \"/tmp/foo\"}})`). \
+                         Use describe_tools first to see available functions.",
+                        peer_id
+                    );
+                    return json!({ "peer_id": peer_id, "code_mode": true, "description": summary });
+                }
+
                 // Summary mode: group by dot-prefix (e.g. "spotify.play" → "spotify").
                 // Tools without a dot prefix use the full name as their group.
                 let mut groups: std::collections::BTreeMap<String, Vec<String>> =
