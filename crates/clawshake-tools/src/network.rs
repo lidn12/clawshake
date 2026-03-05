@@ -58,11 +58,15 @@ fn peers(table: &PeerTable) -> Value {
         .all()
         .into_iter()
         .map(|p| {
-            json!({
+            let mut obj = json!({
                 "peer_id":   p.peer_id,
                 "addrs":     p.addrs,
                 "last_seen": p.last_seen,
-            })
+            });
+            if let Some(ref desc) = p.description {
+                obj["description"] = json!(desc);
+            }
+            obj
         })
         .collect();
     json!({ "peers": list })

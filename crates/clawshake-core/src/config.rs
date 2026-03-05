@@ -8,6 +8,7 @@
 //!
 //! ```toml
 //! [network]
+//! description = "work laptop"
 //! bootstrap = [
 //!   "/ip4/43.143.33.106/tcp/7474/p2p/12D3KooWDi1ntKAkUYpHfijLNExUTsirFyofnkEB3yjC8P3EGcY5",
 //!   "/ip4/43.143.33.106/udp/7474/quic-v1/p2p/12D3KooWDi1ntKAkUYpHfijLNExUTsirFyofnkEB3yjC8P3EGcY5",
@@ -32,6 +33,11 @@ pub struct Config {
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct NetworkConfig {
+    /// Human-readable description of this node, e.g. "work laptop" or
+    /// "build server in the closet".  Included in DHT announcements so
+    /// remote agents can identify which peer is which.
+    pub description: Option<String>,
+
     /// Bootstrap peer multiaddrs to dial on startup.
     ///
     /// When empty (or absent), the node operates in local-only mode — peers

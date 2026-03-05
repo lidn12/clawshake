@@ -307,10 +307,10 @@ pub async fn run(cfg: P2pConfig) -> Result<()> {
     // every ANNOUNCE_INTERVAL seconds.
     const ANNOUNCE_INTERVAL: u64 = 300; // 5 minutes
 
-    // Load config for model advertise settings.
-    let models_config = clawshake_core::config::load(None)
-        .unwrap_or_default()
-        .models;
+    // Load config for model advertise settings and node description.
+    let node_config = clawshake_core::config::load(None).unwrap_or_default();
+    let models_config = node_config.models;
+    let node_description = node_config.network.description;
 
     if let Some(ref b) = backend {
         let backend_ann = b.clone();
@@ -320,6 +320,7 @@ pub async fn run(cfg: P2pConfig) -> Result<()> {
         let perms_ann = Arc::clone(&store);
         let model_backend_ann = model_backend.clone();
         let advertise_ann = models_config.advertise.clone();
+        let description_ann = node_description.clone();
         let mut reannounce_rx = reannounce_rx;
         tokio::spawn(async move {
             let mut tick = interval(Duration::from_secs(ANNOUNCE_INTERVAL));
@@ -338,7 +339,7 @@ pub async fn run(cfg: P2pConfig) -> Result<()> {
                 }
                 let addrs = addr::dedup_announce_addrs(&addrs_ann);
                 let models = models::query_models(&model_backend_ann, &advertise_ann).await;
-                match announce::build_record(peer_id_ann, &addrs, &backend_ann, &perms_ann, models)
+                match announce::build_record(peer_id_ann, &addrs, &backend_ann, &perms_ann, models, description_ann.clone())
                     .await
                 {
                     Ok(record) => {

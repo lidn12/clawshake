@@ -31,6 +31,7 @@ The value is a **UTF-8 encoded JSON object** with the following fields:
     { "name": "tool_name", "description": "Human-readable description", "inputSchema": { "type": "object", "properties": { ... } } },
     ...
   ],
+  "description": "work laptop",
   "addrs": [
     "/ip4/<relay-ip>/tcp/<port>/p2p/<relay-peer-id>/p2p-circuit/p2p/12D3KooW..."
   ],
@@ -153,6 +154,7 @@ From the live test network (February 2026):
       "inputSchema": { "type": "object", "properties": { "path": { "type": "string" } }, "required": ["path"] }
     }
   ],
+  "description": "work laptop",
   "addrs": [
     "/ip4/43.143.33.106/tcp/7474/p2p/12D3KooWDi1ntKAkUYpHfijLNExUTsirFyofnkEB3yjC8P3EGcY5/p2p-circuit/p2p/12D3KooWHZq8jRUBzS8ArgQFhzg5M9NXAfDL3vcimLxgQtsFFyyC",
     "/ip4/43.143.33.106/udp/7474/quic-v1/p2p/12D3KooWDi1ntKAkUYpHfijLNExUTsirFyofnkEB3yjC8P3EGcY5/p2p-circuit/p2p/12D3KooWHZq8jRUBzS8ArgQFhzg5M9NXAfDL3vcimLxgQtsFFyyC"
@@ -160,6 +162,3 @@ From the live test network (February 2026):
   "ts": 1772084902
 }
 ```
-
-Backend: `npx @modelcontextprotocol/server-filesystem ~/shared`
-Relay: `12D3KooWDi1ntKAkUYpHfijLNExUTsirFyofnkEB3yjC8P3EGcY5` at `43.143.33.106:7474`

@@ -25,6 +25,9 @@ pub struct ToolSummary {
 #[derive(Debug, Clone)]
 pub struct PeerInfo {
     pub peer_id: String,
+    /// Human-readable description of the peer, e.g. "work laptop".
+    /// `None` when the remote node hasn't set a description in config.
+    pub description: Option<String>,
     /// Human-readable multiaddrs, e.g. "/ip4/192.168.1.5/tcp/7474"
     pub addrs: Vec<String>,
     /// Tools this peer has announced (name + description).
@@ -95,6 +98,7 @@ mod tests {
     fn make_peer(id: &str, tool_count: usize) -> PeerInfo {
         PeerInfo {
             peer_id: id.to_string(),
+            description: None,
             addrs: vec!["/ip4/127.0.0.1/tcp/7474".to_string()],
             tools: (0..tool_count)
                 .map(|i| ToolSummary {

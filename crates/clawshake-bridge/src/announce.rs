@@ -53,6 +53,10 @@ pub struct AnnouncementRecord {
     /// Added in schema v2; `#[serde(default)]` ensures v1 records parse fine.
     #[serde(default)]
     pub models: Vec<ModelAnnounce>,
+    /// Human-readable description of this node, e.g. "work laptop".
+    /// Added in schema v2; older records without this field parse as `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     /// Listen multiaddrs for direct connections.
     pub addrs: Vec<String>,
     /// Unix timestamp (seconds) when this record was built.
@@ -74,6 +78,7 @@ impl AnnouncementRecord {
         let models = self.models.clone();
         PeerInfo {
             peer_id: self.peer_id.clone(),
+            description: self.description.clone(),
             addrs: self.addrs.clone(),
             tools,
             models,
@@ -107,6 +112,7 @@ pub async fn build_record(
     backend: &McpClient,
     permissions: &PermissionStore,
     models: Vec<ModelAnnounce>,
+    description: Option<String>,
 ) -> Result<kad::Record> {
     let raw_tools = backend.tools_list().await?;
 
@@ -143,6 +149,7 @@ pub async fn build_record(
         peer_id: peer_id.to_string(),
         tools,
         models,
+        description,
         addrs: listen_addrs.iter().map(|a| a.to_string()).collect(),
         ts,
     };
@@ -183,6 +190,7 @@ mod tests {
                 context_length: Some(8192),
                 params: Some("8B".to_string()),
             }],
+            description: Some("Test desktop".to_string()),
             addrs: vec![
                 "/ip4/1.2.3.4/tcp/7474".to_string(),
                 "/ip4/5.6.7.8/tcp/7474".to_string(),
@@ -206,6 +214,7 @@ mod tests {
         assert_eq!(decoded.models[0].name, "llama3");
         assert_eq!(decoded.addrs, original.addrs);
         assert_eq!(decoded.ts, original.ts);
+        assert_eq!(decoded.description, Some("Test desktop".to_string()));
     }
 
     #[test]
@@ -214,6 +223,7 @@ mod tests {
         let info = record.to_peer_info();
 
         assert_eq!(info.peer_id, "12D3KooWTestPeer");
+        assert_eq!(info.description, Some("Test desktop".to_string()));
         assert_eq!(info.addrs.len(), 2);
         assert_eq!(info.tools.len(), 2);
         assert_eq!(info.tools[0].name, "tool_a");
@@ -245,6 +255,13 @@ mod tests {
         let json = r#"{"v":1,"peer_id":"testpeer","tools":[],"addrs":[],"ts":0}"#;
         let record: AnnouncementRecord = serde_json::from_str(json).unwrap();
         assert_eq!(record.v, 1);
-        assert!(record.models.is_empty(), "v1 record must default models to []");
+        assert!(
+            record.models.is_empty(),
+            "v1 record must default models to []"
+        );
+        assert!(
+            record.description.is_none(),
+            "v1 record must default description to None"
+        );
     }
 }
