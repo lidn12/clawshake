@@ -137,6 +137,13 @@ pub enum InvokeConfig {
     InProcess,
 }
 
+impl InvokeConfig {
+    /// Returns `true` for built-in tools handled in-process by the broker.
+    pub fn is_in_process(&self) -> bool {
+        matches!(self, InvokeConfig::InProcess)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

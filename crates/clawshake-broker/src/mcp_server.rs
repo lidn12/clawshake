@@ -99,10 +99,10 @@ pub(crate) async fn handle(
             let defs: Vec<McpToolDef> = all_tools
                 .into_iter()
                 .filter(|lt| {
-                    // In code mode (--code-mode), hide individual tools from
-                    // the listing — only show run_code + describe_tools.
-                    // The hidden tools are still callable by name via run_code.
-                    if ctx.code_mode && lt.source != "codemode" {
+                    // In code mode, hide manifest/MCP-backed tools — only
+                    // show built-in (InProcess) tools.  Manifest tools are
+                    // still callable by name via run_code.
+                    if ctx.code_mode && !lt.tool.invoke.is_in_process() {
                         return false;
                     }
                     true
