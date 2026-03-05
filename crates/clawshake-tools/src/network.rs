@@ -137,59 +137,15 @@ fn tools<'a>(
                 }
             }
             None => {
-                // Detect code-mode peers: they expose only run_code + describe_tools.
-                let tool_names: std::collections::BTreeSet<&str> =
-                    tools.iter().map(|t| t.name.as_str()).collect();
-                let is_code_mode = tool_names.len() == 2
-                    && tool_names.contains("run_code")
-                    && tool_names.contains("describe_tools");
-
-                if is_code_mode {
-                    let summary = format!(
-                        "Peer {} runs in code-mode. To interact with it:\n\
-                         1. Discover its tools: network_call(peer_id, tool=\"describe_tools\", arguments={{}})\n\
-                         2. Execute on it:       network_call(peer_id, tool=\"run_code\", arguments={{\"script\": \"...\"}})\n\n\
-                         The script can call any of the peer's tools as async JS functions (e.g. `await read_file({{path: \"/tmp/foo\"}})`). \
-                         Use describe_tools first to see available functions.",
-                        peer_id
-                    );
-                    return json!({ "peer_id": peer_id, "code_mode": true, "description": summary });
-                }
-
-                // Summary mode: group by dot-prefix (e.g. "spotify.play" → "spotify").
-                // Tools without a dot prefix use the full name as their group.
-                let mut groups: std::collections::BTreeMap<String, Vec<String>> =
-                    std::collections::BTreeMap::new();
-                for t in tools {
-                    let prefix = if let Some(pos) = t.name.find('.') {
-                        t.name[..pos].to_string()
-                    } else {
-                        t.name.clone()
-                    };
-                    groups.entry(prefix).or_default().push(t.name.clone());
-                }
-                let lines: Vec<String> = groups
-                    .iter()
-                    .map(|(prefix, names)| {
-                        let preview: Vec<&str> = names.iter().take(4).map(|s| s.as_str()).collect();
-                        let suffix = if names.len() > 4 { ", ..." } else { "" };
-                        format!(
-                            "- {} ({} tool{}): {}{}",
-                            prefix,
-                            names.len(),
-                            if names.len() == 1 { "" } else { "s" },
-                            preview.join(", "),
-                            suffix
-                        )
-                    })
-                    .collect();
+                // Flat list of tool names — no grouping heuristics.
+                let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
                 let summary = format!(
-                    "Peer {} has {} tool(s):\n{}\n\nCall network_tools with a query to see full schemas for specific tools.",
+                    "Peer {} has {} tool(s): {}\n\nUse network_tools with a query to see full schemas for specific tools.",
                     peer_id,
-                    tools.len(),
-                    lines.join("\n")
+                    names.len(),
+                    names.join(", ")
                 );
-                json!({ "peer_id": peer_id, "description": summary })
+                json!({ "peer_id": peer_id, "tools": names, "description": summary })
             }
         }
     }
