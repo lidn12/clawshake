@@ -70,7 +70,8 @@ fn event_tools() -> Vec<Tool> {
                 of events and a cursor for resumption. Use this to wait for filesystem changes, \
                 peer messages, webhook deliveries, or any other event. Call with no topics to \
                 receive all events. The cursor enables efficient polling — pass the returned \
-                cursor as 'after' in the next call to only receive new events."
+                cursor as 'after' in the next call to only receive new events. \
+                Omitting 'after' defaults to HEAD, so only events emitted after this call are returned."
                 .into(),
             input_schema: InputSchema {
                 r#type: "object".into(),
@@ -87,14 +88,14 @@ fn event_tools() -> Vec<Tool> {
                         "timeout_secs".into(),
                         json!({
                             "type": "number",
-                            "description": "Max seconds to wait. 0 = block indefinitely. Default: 30"
+                            "description": "Max seconds to wait. 0 = block indefinitely. Default: 0"
                         }),
                     ),
                     (
                         "after".into(),
                         json!({
                             "type": "number",
-                            "description": "Cursor (event ID). Only return events with id > after. Default: 0 (all buffered events)."
+                            "description": "Cursor (event ID). Only return events with id > after. Omit to start from now (no history replay). Pass 0 to replay all buffered events."
                         }),
                     ),
                 ]

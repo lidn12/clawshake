@@ -22,9 +22,14 @@ pub async fn invoke_listen(arguments: &Value, event_queue: &EventQueue) -> Resul
     let timeout_secs: f64 = arguments
         .get("timeout_secs")
         .and_then(|v| v.as_f64())
-        .unwrap_or(30.0);
+        .unwrap_or(0.0);
 
-    let after: u64 = arguments.get("after").and_then(|v| v.as_u64()).unwrap_or(0);
+    // If `after` is omitted, default to HEAD so the agent only receives
+    // events pushed *after* this call (no history replay).
+    let after: u64 = match arguments.get("after").and_then(|v| v.as_u64()) {
+        Some(explicit) => explicit,
+        None => event_queue.cursor().await,
+    };
 
     let timeout = if timeout_secs <= 0.0 {
         None // block indefinitely
