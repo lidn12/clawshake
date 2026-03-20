@@ -25,6 +25,25 @@ pub fn register(registry: &ManifestRegistry, code_mode: bool, bridge_available: 
         registry.register_builtin(tool, "events");
     }
 
+    // -- General-purpose tools (always available) --
+    for tool in general_tools() {
+        info!(name = %tool.name, "Registered built-in tool");
+        registry.register_builtin(tool, "general");
+    }
+
+    // -- Spawn tool (always available) --
+    {
+        let tool = spawn_tool();
+        info!(name = %tool.name, "Registered built-in tool");
+        registry.register_builtin(tool, "general");
+    }
+
+    // -- Cron tools (always available) --
+    for tool in cron_tools() {
+        info!(name = %tool.name, "Registered built-in tool");
+        registry.register_builtin(tool, "cron");
+    }
+
     // -- Code-mode tools --
     if code_mode {
         for tool in codemode_tools() {
@@ -209,4 +228,80 @@ fn network_tools() -> Vec<Tool> {
             })
         })
         .collect()
+}
+
+/// Convert the shell tool definition into a `Tool` struct.
+/// Dispatched in-process (no IPC) by the router.
+fn general_tools() -> Vec<Tool> {
+    let val = clawshake_tools::schema::shell_tool_definition();
+    let name = val
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("shell")
+        .to_string();
+    let description = val
+        .get("description")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let schema_val = val.get("inputSchema").cloned().unwrap_or(json!({
+        "type": "object",
+        "properties": {}
+    }));
+    let input_schema: InputSchema = serde_json::from_value(schema_val).unwrap_or_default();
+    vec![Tool {
+        name,
+        description,
+        input_schema,
+        requires: None,
+        invoke: InvokeConfig::InProcess,
+    }]
+}
+
+/// Convert cron tool definitions into `Tool` structs.
+/// These are dispatched in-process to the [`CronScheduler`](crate::invoke::cron::CronScheduler).
+fn cron_tools() -> Vec<Tool> {
+    crate::invoke::cron::cron_tool_definitions()
+        .into_iter()
+        .filter_map(|val| {
+            let name = val.get("name")?.as_str()?.to_string();
+            let description = val.get("description")?.as_str()?.to_string();
+            let schema_val = val.get("inputSchema").cloned().unwrap_or(json!({
+                "type": "object",
+                "properties": {}
+            }));
+            let input_schema: InputSchema = serde_json::from_value(schema_val).unwrap_or_default();
+            Some(Tool {
+                name,
+                description,
+                input_schema,
+                requires: None,
+                invoke: InvokeConfig::InProcess,
+            })
+        })
+        .collect()
+}
+
+/// Build the `spawn` tool from its schema definition.
+fn spawn_tool() -> Tool {
+    let val = crate::invoke::spawn::spawn_tool_definition();
+    let name = val.get("name").unwrap().as_str().unwrap().to_string();
+    let description = val
+        .get("description")
+        .unwrap()
+        .as_str()
+        .unwrap()
+        .to_string();
+    let schema_val = val.get("inputSchema").cloned().unwrap_or(json!({
+        "type": "object",
+        "properties": {}
+    }));
+    let input_schema: InputSchema = serde_json::from_value(schema_val).unwrap_or_default();
+    Tool {
+        name,
+        description,
+        input_schema,
+        requires: None,
+        invoke: InvokeConfig::InProcess,
+    }
 }

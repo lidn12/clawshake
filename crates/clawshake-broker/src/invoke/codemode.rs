@@ -618,6 +618,7 @@ mod tests {
             event_queue: &event_queue,
             permissions: &perms,
             shim_cache: &shim_cache,
+            cron: &crate::invoke::cron::CronScheduler::new(),
             port: 7474,
             code_mode: false,
         };
@@ -674,6 +675,7 @@ mod tests {
             event_queue: &event_queue,
             permissions: &perms,
             shim_cache: &shim_cache,
+            cron: &crate::invoke::cron::CronScheduler::new(),
             port: 7474,
             code_mode: false,
         };
@@ -711,6 +713,7 @@ mod tests {
             event_queue: &event_queue,
             permissions: &perms,
             shim_cache: &shim_cache,
+            cron: &crate::invoke::cron::CronScheduler::new(),
             port: 7474,
             code_mode: false,
         };

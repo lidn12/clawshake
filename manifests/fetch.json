@@ -1,0 +1,12 @@
+{
+    "version": "1.0",
+    "description": "Anthropic's MCP fetch server — retrieve and convert web pages to Markdown for agent consumption.",
+    "mcp": {
+        "transport": "stdio",
+        "command": "npx",
+        "args": [
+            "-y",
+            "@modelcontextprotocol/server-fetch"
+        ]
+    }
+}

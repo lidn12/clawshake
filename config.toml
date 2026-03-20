@@ -65,3 +65,38 @@
 # Default: 11435 (deliberately one above Ollama's 11434 to avoid collision)
 #
 # proxy_port = 11435
+
+# ──────────────────────────────────────────────────────────────────────
+
+[tools]
+
+# Built-in tool settings.
+#
+# The shell tool (cron_* and spawn are also always registered) runs
+# commands in a non-interactive shell (cmd on Windows, sh on Unix).
+# Dangerous patterns (rm -rf /, mkfs, shutdown, etc.) are blocked by a
+# built-in deny list. Output is truncated at max_output_bytes.
+#
+# For web search / web fetch, use the Brave and Anthropic manifest entries
+# in your manifests directory instead of built-in tools.
+
+# ── Shell tool ──────────────────────────────────────────────────────────
+
+# [tools.shell]
+
+# Extra patterns to block in addition to the built-in deny list.
+# Checked as case-insensitive substrings.
+#
+# blocked_patterns = ["deploy --force", "DROP TABLE"]
+
+# Default timeout for shell commands in seconds. Agents can override this
+# per-call up to a hard maximum of 300 seconds.
+# Default: 30
+#
+# default_timeout_secs = 30
+
+# Maximum combined stdout+stderr returned to the agent (in bytes).
+# Output beyond this limit is truncated with a notice.
+# Default: 1048576 (1 MB)
+#
+# max_output_bytes = 1048576

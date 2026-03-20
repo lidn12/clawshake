@@ -228,6 +228,7 @@ async fn main() -> Result<()> {
                     servers,
                     event_queue,
                     shim_cache,
+                    cron: clawshake_broker::invoke::cron::CronScheduler::new(),
                     port,
                     code_mode: code_mode_active,
                 };

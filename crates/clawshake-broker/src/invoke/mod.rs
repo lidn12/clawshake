@@ -1,9 +1,11 @@
 pub mod cli;
 pub mod codemode;
+pub mod cron;
 pub mod deeplink;
 pub mod events;
 pub mod http;
 pub mod script;
+pub mod spawn;
 
 /// Replace every `{{key}}` in `template` with the matching value from `arguments`.
 /// Unresolved placeholders (and any immediately preceding `:` or `=` separator)

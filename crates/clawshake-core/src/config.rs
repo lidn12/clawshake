@@ -27,6 +27,54 @@ use tracing::{debug, info};
 pub struct Config {
     pub network: NetworkConfig,
     pub models: ModelsConfig,
+    pub tools: ToolsConfig,
+}
+
+/// Tool-related settings.
+///
+/// # Example
+///
+/// ```toml
+/// [tools.shell]
+/// blocked_patterns = ["rm -rf /", "mkfs", "shutdown"]
+/// default_timeout_secs = 30
+/// max_output_bytes = 1048576
+/// ```
+#[derive(Debug, Deserialize)]
+#[serde(default)]
+pub struct ToolsConfig {
+    /// Shell tool settings.
+    pub shell: ShellConfig,
+}
+
+impl Default for ToolsConfig {
+    fn default() -> Self {
+        Self {
+            shell: ShellConfig::default(),
+        }
+    }
+}
+
+/// Shell tool configuration.
+#[derive(Debug, Deserialize)]
+#[serde(default)]
+pub struct ShellConfig {
+    /// Additional blocked command patterns (appended to the built-in list).
+    pub blocked_patterns: Vec<String>,
+    /// Default timeout in seconds.
+    pub default_timeout_secs: u64,
+    /// Maximum output size in bytes before truncation.
+    pub max_output_bytes: usize,
+}
+
+impl Default for ShellConfig {
+    fn default() -> Self {
+        Self {
+            blocked_patterns: vec![],
+            default_timeout_secs: 30,
+            max_output_bytes: 1_048_576,
+        }
+    }
 }
 
 /// Network-related settings.
@@ -249,5 +297,23 @@ advertise = "none"
             c.models.advertise.is_none(),
             "default advertise must be None"
         );
+        // Tools defaults.
+        assert_eq!(c.tools.shell.default_timeout_secs, 30);
+        assert_eq!(c.tools.shell.max_output_bytes, 1_048_576);
+        assert!(c.tools.shell.blocked_patterns.is_empty());
+    }
+
+    #[test]
+    fn parse_tools_config() {
+        let toml = r#"
+[tools.shell]
+blocked_patterns = ["custom_danger"]
+default_timeout_secs = 60
+max_output_bytes = 2097152
+"#;
+        let c: Config = toml::from_str(toml).unwrap();
+        assert_eq!(c.tools.shell.blocked_patterns, ["custom_danger"]);
+        assert_eq!(c.tools.shell.default_timeout_secs, 60);
+        assert_eq!(c.tools.shell.max_output_bytes, 2_097_152);
     }
 }

@@ -1,9 +1,7 @@
-//! MCP tool schema definitions for the `network_*` tools.
+//! MCP tool schema definitions for built-in tools.
 //!
-//! These are the canonical schemas for all six built-in P2P tools.  The bridge
-//! daemon serves them to inbound P2P callers; any Rust MCP host (broker, etc.)
-//! can call [`tool_definitions`] to inject them into its own `tools/list`
-//! response.
+//! - [`tool_definitions`] — network (`network_*`) tools served by the bridge.
+//! - [`shell_tool_definition`] — the `shell` tool handled in-process by the broker.
 
 use serde_json::{json, Value};
 
@@ -116,4 +114,30 @@ pub fn tool_definitions() -> Vec<Value> {
             }
         }),
     ]
+}
+
+/// Returns the MCP tool schema for the `shell` tool.
+pub fn shell_tool_definition() -> Value {
+    json!({
+        "name": "shell",
+        "description": "Execute a shell command and return stdout/stderr. Commands run in a non-interactive shell (cmd on Windows, sh on Unix). Dangerous commands (rm -rf /, mkfs, shutdown, etc.) are blocked by a safety guard. Output is truncated at 1 MB.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": "The shell command to execute."
+                },
+                "workdir": {
+                    "type": "string",
+                    "description": "Working directory. Defaults to user home."
+                },
+                "timeout_secs": {
+                    "type": "number",
+                    "description": "Timeout in seconds (1–300). Default: 30."
+                }
+            },
+            "required": ["command"]
+        }
+    })
 }

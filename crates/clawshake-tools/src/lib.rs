@@ -1,19 +1,19 @@
-//! `clawshake-tools` — portable `network_*` tool layer for the Clawshake network.
+//! `clawshake-tools` — portable tool layer for the Clawshake broker.
 //!
 //! This crate provides:
-//! - [`schema`] — MCP tool schema definitions for all `network_*` tools.
-//!   Importable by any Rust MCP host (broker, etc.) to inject network tools
-//!   into their `tools/list` response without duplicating the schema.
+//! - [`schema`] — MCP tool schema definitions for `network_*` and `shell`.
+//!   Importable by any Rust MCP host (broker, etc.) to inject tools into their
+//!   `tools/list` response without duplicating the schema.
+//! - [`shell`] — in-process shell execution with safety guards.
 //! - [`client`] — async socket client that talks to the running
-//!   `clawshake-bridge` daemon.  Used both by the CLI binary (each invocation
-//!   is a short-lived process) and by Rust MCP hosts that want in-process
-//!   request dispatch without spawning a subprocess.
+//!   `clawshake-bridge` daemon.
 
 pub mod cli;
 pub mod client;
 pub mod ipc;
 pub mod network;
 pub mod schema;
+pub mod shell;
 
 /// Named pipe path (Windows).
 #[cfg(windows)]

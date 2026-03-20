@@ -619,6 +619,7 @@ dependencies = [
  "anyhow",
  "clap",
  "clawshake-core",
+ "dirs",
  "serde_json",
  "tokio",
  "tracing",

@@ -11,6 +11,7 @@ use crate::{
     event_queue::EventQueue,
     invoke,
     invoke::codemode::ShimCache,
+    invoke::cron::CronScheduler,
     watcher::{ManifestRegistry, McpServerMap},
 };
 
@@ -21,6 +22,7 @@ pub struct DispatchContext<'a> {
     pub event_queue: &'a EventQueue,
     pub permissions: &'a PermissionStore,
     pub shim_cache: &'a ShimCache,
+    pub cron: &'a CronScheduler,
     pub port: u16,
     /// When true, `tools/list` hides individual tools and only shows
     /// `run_code` + `describe_tools`.
@@ -36,6 +38,7 @@ pub struct BrokerContext {
     pub servers: McpServerMap,
     pub event_queue: EventQueue,
     pub shim_cache: ShimCache,
+    pub cron: CronScheduler,
     pub port: u16,
     pub code_mode: bool,
 }
@@ -49,6 +52,7 @@ impl BrokerContext {
             event_queue: &self.event_queue,
             permissions: &self.permissions,
             shim_cache: &self.shim_cache,
+            cron: &self.cron,
             port: self.port,
             code_mode: self.code_mode,
         }
@@ -64,6 +68,7 @@ impl<'a> DispatchContext<'a> {
             servers: self.servers.clone(),
             event_queue: self.event_queue.clone(),
             shim_cache: self.shim_cache.clone(),
+            cron: self.cron.clone(),
             port: self.port,
             code_mode: self.code_mode,
         }
@@ -190,6 +195,14 @@ pub fn dispatch<'a>(
                         .map_err(|e| anyhow::anyhow!("bridge IPC error: {e:#}"))?;
                     Ok(serde_json::to_string_pretty(&resp).unwrap_or_else(|_| resp.to_string()))
                 }
+                // General-purpose tools — dispatch in-process.
+                "shell" => clawshake_tools::shell::handle(arguments).await,
+                // Spawn — async wrapper for any tool call.
+                "spawn" => invoke::spawn::handle(arguments, ctx).await,
+                // Cron tools — dispatch to the scheduler.
+                "cron_add" => ctx.cron.handle_add(arguments, ctx.event_queue).await,
+                "cron_list" => ctx.cron.handle_list(arguments).await,
+                "cron_remove" => ctx.cron.handle_remove(arguments).await,
                 _ => anyhow::bail!(
                     "in-process tool '{tool_name}' has no registered handler in the router"
                 ),

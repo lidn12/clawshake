@@ -142,7 +142,9 @@ Manifests can also define tools directly with different invoke types:
 
 The `mcp` type is special: instead of defining tools inline, you point it at any existing MCP server process (stdio or SSE). Clawshake spawns it, discovers its tools, and re-exposes them over the P2P network — so a remote agent can call tools from the [Playwright MCP](https://github.com/microsoft/playwright-mcp), the [filesystem server](https://github.com/modelcontextprotocol/servers), or any of the 18,000+ servers in the MCP ecosystem, without those servers knowing anything about P2P.
 
-See [manifests/](manifests/) for ready-made examples (Spotify, Calendar, Mail, Safari, Finder, Messages, Notes, Reminders, Contacts, Apple Music, system controls, and more).
+See [manifests/](manifests/) for ready-made examples including Spotify, Calendar, Mail, Safari, Finder, Messages, Notes, Reminders, Contacts, Apple Music, system controls, [Brave Search](manifests/brave-search.json), [web fetch](manifests/fetch.json), Playwright, Home Assistant, VS Code, and more.
+
+Web search and web fetch are intentionally manifest-based rather than built-in — [Brave](https://github.com/modelcontextprotocol/servers/tree/main/src/brave-search) and [Anthropic](https://github.com/modelcontextprotocol/servers/tree/main/src/fetch) maintain production-quality MCP servers for exactly these tools. Using their servers means you get upstream fixes, rate-limit handling, and feature additions for free. To use them, copy the manifest to `~/.clawshake/manifests/` and set your `BRAVE_API_KEY` environment variable (Brave Search only).
 
 ## Permissions
 
@@ -199,7 +201,31 @@ Events are local to the node. To send events to a remote peer, use `network_call
 
 See [Chat](#chat) for a ready-made interactive channel built on these two tools.
 
+### Shell
+
+One tool for running arbitrary commands in a non-interactive shell:
+
+| Tool | What it does |
+|------|-------------|
+| `shell` | Run a command in `cmd /C` (Windows) or `sh -c` (Unix). Dangerous patterns (format, shutdown, etc.) are blocked by a built-in deny list. Output is truncated at 1 MB. |
+
+The shell tool is operator-sanctioned: the node owner controls the deny list via `[tools.shell]` in `config.toml`. It is not the same as giving an agent free shell access — the deny list and output cap apply to every call.
+
+### Scheduling and async
+
+Three cron tools and one async wrapper:
+
+| Tool | What it does |
+|------|-------------|
+| `cron_add` | Schedule a tool call on a recurring interval (minimum 5 s). Returns a `job_id`; fires `cron.fired` events each time it triggers. |
+| `cron_list` | List all active cron jobs on this node. |
+| `cron_remove` | Cancel a scheduled job by `job_id`. |
+| `spawn` | Wrap **any** tool call in a background task. Returns a `task_id` immediately and emits a `task.done` or `task.failed` event when the call finishes. |
+
+`spawn` composes with the rest of the tool set — `spawn({ tool: "shell", arguments: {...} })` runs a shell command without blocking the agent, `spawn({ tool: "network_call", ... })` makes a remote call fire-and-forget, and so on.
+
 ### Code mode
+
 
 When the broker starts with `--code-mode`, two additional meta-tools replace the full tool list (see [Code mode](#code-mode) below):
 

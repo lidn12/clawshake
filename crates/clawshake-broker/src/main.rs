@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use clawshake_broker::{builtins, cli, http_server, mcp_server, router, watcher};
+use clawshake_broker::{builtins, cli, http_server, invoke, mcp_server, router, watcher};
 use clawshake_core::permissions::PermissionStore;
 use tracing::info;
 
@@ -118,6 +118,7 @@ async fn main() -> Result<()> {
                 servers,
                 event_queue,
                 shim_cache,
+                cron: invoke::cron::CronScheduler::new(),
                 port: effective_port,
                 code_mode: code_mode_active,
             };

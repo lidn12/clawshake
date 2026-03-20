@@ -1,0 +1,15 @@
+{
+    "version": "1.0",
+    "description": "Brave Search MCP server — web search via the Brave Search API. Requires a BRAVE_API_KEY environment variable (get a free key at https://brave.com/search/api/).",
+    "mcp": {
+        "transport": "stdio",
+        "command": "npx",
+        "args": [
+            "-y",
+            "@modelcontextprotocol/server-brave-search"
+        ],
+        "env": {
+            "BRAVE_API_KEY": "${BRAVE_API_KEY}"
+        }
+    }
+}
