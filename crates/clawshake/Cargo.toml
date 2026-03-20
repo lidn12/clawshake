@@ -11,10 +11,11 @@ name = "clawshake"
 path = "src/main.rs"
 
 [dependencies]
-clawshake-core  = { workspace = true }
-clawshake-tools = { workspace = true }
-clawshake-bridge = { path = "../clawshake-bridge" }
-clawshake-broker = { path = "../clawshake-broker" }
+clawshake-core     = { workspace = true }
+clawshake-tools    = { workspace = true }
+clawshake-channels = { workspace = true }
+clawshake-bridge   = { path = "../clawshake-bridge" }
+clawshake-broker   = { path = "../clawshake-broker" }
 
 tokio             = { workspace = true }
 clap              = { workspace = true }

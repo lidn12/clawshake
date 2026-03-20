@@ -13,6 +13,8 @@
 //!
 //! ```text
 //! clawshake run [flags]               # start unified node
+//! clawshake chat [--port N]           # interactive REPL with an agent
+//! clawshake chat --peer <id>          # remote REPL via P2P
 //! clawshake status [--json]           # peer ID, running state, stats
 //! clawshake permissions allow|deny|remove|list ...
 //! clawshake network peers|tools|search|ping|call|record ...
@@ -115,6 +117,26 @@ enum Command {
         #[command(subcommand)]
         action: clawshake_broker::cli::ToolsAction,
     },
+
+    /// Interactive chat with an agent via the event queue.
+    ///
+    /// Sends user input as `channel.cli` events and displays
+    /// `channel.cli.response` events from the agent.
+    ///
+    /// Examples:
+    ///   clawshake chat                     # local, broker on default port
+    ///   clawshake chat --port 8080         # local, custom port
+    ///   clawshake chat --peer 12D3KooW...  # remote via P2P
+    Chat {
+        /// Broker HTTP port (default 7475). Ignored when --peer is set.
+        #[arg(long, default_value_t = 7475, value_name = "PORT")]
+        port: u16,
+
+        /// Chat with an agent on a remote peer instead of the local broker.
+        /// Requires a running bridge daemon.
+        #[arg(long, value_name = "PEER_ID")]
+        peer: Option<String>,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -151,6 +173,11 @@ async fn main() -> Result<()> {
         Command::Network { cmd } => {
             run_network_cmd(&cmd).await?;
         }
+
+        Command::Chat { port, peer } => match peer {
+            Some(peer_id) => clawshake_channels::cli_repl::run_remote(&peer_id).await?,
+            None => clawshake_channels::cli_repl::run_local(port).await?,
+        },
 
         Command::Tools { action } => {
             let manifests_dir = clawshake_dir.join("manifests");

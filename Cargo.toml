@@ -6,6 +6,7 @@ members = [
     "crates/clawshake-tools",
     "crates/clawshake-broker",
     "crates/clawshake-models",
+    "crates/clawshake-channels",
     "crates/clawshake",
 ]
 
@@ -92,6 +93,7 @@ uuid = { version = "1", features = ["v4"] }
 clawshake-core = { path = "crates/clawshake-core" }
 clawshake-tools = { path = "crates/clawshake-tools" }
 clawshake-models = { path = "crates/clawshake-models" }
+clawshake-channels = { path = "crates/clawshake-channels" }
 
 [profile.dist]
 inherits = "release"

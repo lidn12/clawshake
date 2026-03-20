@@ -504,6 +504,7 @@ dependencies = [
  "clap",
  "clawshake-bridge",
  "clawshake-broker",
+ "clawshake-channels",
  "clawshake-core",
  "clawshake-tools",
  "dirs",
@@ -560,6 +561,21 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "which",
+]
+
+[[package]]
+name = "clawshake-channels"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clawshake-core",
+ "clawshake-tools",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

@@ -197,6 +197,8 @@ Two tools for local publish-subscribe messaging between tools and agents:
 
 Events are local to the node. To send events to a remote peer, use `network_call(peer_id, "emit", {topic, data})`.
 
+See [Chat](#chat) for a ready-made interactive channel built on these two tools.
+
 ### Code mode
 
 When the broker starts with `--code-mode`, two additional meta-tools replace the full tool list (see [Code mode](#code-mode) below):
@@ -241,6 +243,39 @@ Code mode is most effective for sessions with many tools loaded and workflows wi
 > **Security note:** `run_code` executes JavaScript in a Node.js process running as the same OS user as the broker. A peer with access to `run_code` has **equivalent access to a shell** — they can read files, spawn processes, and access the network directly from JavaScript, bypassing per-tool permission rules entirely. Only grant `run_code` access to peers you fully trust. If you need fine-grained tool-level access control for remote peers, do not use code mode on that node.
 
 > This approach was independently validated by [Anthropic](https://www.anthropic.com/engineering/code-execution-with-mcp) (measuring up to 98.7% token reduction on real workflows) and [Cloudflare](https://blog.cloudflare.com/code-mode/) ("LLMs are better at writing code to call MCP, than at calling MCP directly"). Clawshake's implementation follows the same pattern.
+
+## Chat
+
+`clawshake chat` is an interactive REPL that connects you to any agent running on the network. User input is delivered as `channel.cli` events; agent replies arrive as `channel.cli.response` events. Both directions use the existing `emit`/`listen` tools — no new protocol.
+
+**Local** — talk to an agent running on this machine:
+
+```bash
+clawshake chat
+clawshake chat --port 8080   # if the broker is not on the default port
+```
+
+**Remote** — talk to an agent on another peer over P2P:
+
+```bash
+clawshake chat --peer 12D3KooW...
+```
+
+Remote mode routes through `network_call(peer_id, "emit/listen")` — no extra setup beyond the peer granting you access:
+
+```bash
+# On the remote machine, allow the caller to deliver messages
+clawshake permissions allow --agent "p2p:<your_peer_id>" --tool "emit"
+clawshake permissions allow --agent "p2p:<your_peer_id>" --tool "listen"
+```
+
+**Agent-side contract** — an agent that wants to receive chat input should call:
+
+```
+listen(topics: ["channel"], timeout_secs: 0)  →  emit("channel.cli.response", {text, session_id})
+```
+
+The `session_id` in the payload correlates turns when multiple sessions run concurrently. The agent echoes it back unchanged; the REPL filters on it.
 
 ## Model proxy
 
@@ -293,12 +328,13 @@ Both streaming (`stream: true`, SSE) and non-streaming requests are supported. S
 
 ```
 crates/
-  clawshake/          Unified binary — runs broker + bridge in one process
-  clawshake-broker/   MCP server, manifest loading, permission checks
-  clawshake-bridge/   libp2p swarm — Kademlia, relay, mDNS, QUIC/TCP
-  clawshake-core/     Shared types — identity, permissions, protocol, config
-  clawshake-models/   Model proxy — OpenAI-compatible HTTP server + P2P streaming backend
-  clawshake-tools/    Network tools + IPC between broker and bridge
+  clawshake/           Unified binary — runs broker + bridge in one process
+  clawshake-broker/    MCP server, manifest loading, permission checks
+  clawshake-bridge/    libp2p swarm — Kademlia, relay, mDNS, QUIC/TCP
+  clawshake-core/      Shared types — identity, permissions, protocol, config
+  clawshake-models/    Model proxy — OpenAI-compatible HTTP server + P2P streaming backend
+  clawshake-tools/     Network tools + IPC between broker and bridge
+  clawshake-channels/  Interactive I/O channels — CLI REPL (chat), future: web, Slack
 ```
 
 **P2P stack:** libp2p 0.56 with Kademlia DHT, mDNS, relay + DCUtR (hole punching), QUIC and TCP transports, Noise encryption, and libp2p-stream for real-time bidirectional streaming.
@@ -336,15 +372,18 @@ A reference config with the public relay address is included at [config.toml](co
 ## CLI reference
 
 ```
-clawshake run                     Start the daemon (broker + bridge)
-clawshake run --code-mode         Start in code mode (run_code + describe_tools only)
-clawshake status [--json]         Show node identity and peer count
-clawshake tools list [--json]     List registered tools
-clawshake tools add <file>        Install a manifest
-clawshake tools remove <name>     Remove a manifest
-clawshake tools validate <file>   Validate a manifest file
-clawshake permissions <subcommand>  Manage access rules
-clawshake network <subcommand>    Peer discovery and remote invocation
+clawshake run                        Start the daemon (broker + bridge)
+clawshake run --code-mode            Start in code mode (run_code + describe_tools only)
+clawshake chat                       Interactive REPL with a local agent
+clawshake chat --port <N>            Same, but broker is on a non-default port
+clawshake chat --peer <peer_id>      Interactive REPL with a remote agent via P2P
+clawshake status [--json]            Show node identity and peer count
+clawshake tools list [--json]        List registered tools
+clawshake tools add <file>           Install a manifest
+clawshake tools remove <name>        Remove a manifest
+clawshake tools validate <file>      Validate a manifest file
+clawshake permissions <subcommand>   Manage access rules
+clawshake network <subcommand>       Peer discovery and remote invocation
 ```
 
 ## License
