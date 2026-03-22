@@ -13,8 +13,8 @@
 //!
 //! | Topic                    | Direction     | Payload shape                        |
 //! |--------------------------|---------------|--------------------------------------|
-//! | `channel.cli`            | user → agent  | `{ "text": "...", "session_id": "..." }` |
-//! | `channel.cli.response`   | agent → user  | `{ "text": "...", "session_id": "..." }` |
+//! | `channel.cli`            | user → agent  | `{ "text": "..." }` |
+//! | `channel.cli.response`   | agent → user  | `{ "text": "..." }` |
 
 pub mod cli_repl;
 

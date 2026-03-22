@@ -26,16 +26,13 @@ use tracing::debug;
 pub async fn run_local(port: u16) -> Result<()> {
     let base_url = format!("http://127.0.0.1:{port}");
     let client = reqwest::Client::new();
-    let session_id = uuid::Uuid::new_v4().to_string();
 
     eprintln!("Connected to broker on port {port}");
-    eprintln!("Session {session_id}");
     eprintln!("Type a message and press Enter. Type \"exit\" to quit.\n");
 
     // Obtain the initial cursor so we only see responses emitted after now.
     let cursor = local_get_cursor(&client, &base_url).await?;
     repl_loop(
-        session_id,
         cursor,
         |emit_args| {
             let client = client.clone();
@@ -56,10 +53,8 @@ pub async fn run_local(port: u16) -> Result<()> {
 /// Run the CLI REPL in remote mode, routing through `network_call` to a peer.
 pub async fn run_remote(peer_id: &str) -> Result<()> {
     let peer_id = peer_id.to_string();
-    let session_id = uuid::Uuid::new_v4().to_string();
 
     eprintln!("Connected to remote peer {peer_id}");
-    eprintln!("Session {session_id}");
     eprintln!("Type a message and press Enter. Type \"exit\" to quit.\n");
 
     // Obtain the initial cursor from the remote peer.
@@ -67,7 +62,6 @@ pub async fn run_remote(peer_id: &str) -> Result<()> {
     let peer_emit = peer_id.clone();
     let peer_listen = peer_id.clone();
     repl_loop(
-        session_id,
         cursor,
         move |emit_args| {
             let peer = peer_emit.clone();
@@ -90,12 +84,7 @@ pub async fn run_remote(peer_id: &str) -> Result<()> {
 /// - `do_listen(arguments)` — calls the `listen` tool
 ///
 /// Both return the JSON string result from the tool call.
-async fn repl_loop<FE, FL>(
-    session_id: String,
-    mut cursor: u64,
-    do_emit: FE,
-    do_listen: FL,
-) -> Result<()>
+async fn repl_loop<FE, FL>(mut cursor: u64, do_emit: FE, do_listen: FL) -> Result<()>
 where
     FE: Fn(Value) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String>> + Send>>
         + Send
@@ -130,7 +119,6 @@ where
             "topic": crate::TOPIC_CLI,
             "data": {
                 "text": text,
-                "session_id": session_id,
             }
         });
         let emit_result = do_emit(emit_args).await;
@@ -156,24 +144,18 @@ where
                             cursor = c;
                         }
 
-                        // Print matching responses.
+                        // Print responses.
                         let mut found = false;
                         if let Some(events) = parsed.get("events").and_then(|v| v.as_array()) {
                             for event in events {
                                 let data = event.get("data").unwrap_or(&Value::Null);
-                                let ev_session = data
-                                    .get("session_id")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("");
-                                if ev_session == session_id {
-                                    if let Some(response_text) =
-                                        data.get("text").and_then(|v| v.as_str())
-                                    {
-                                        stdout.write_all(response_text.as_bytes()).await?;
-                                        stdout.write_all(b"\n\n").await?;
-                                        stdout.flush().await?;
-                                        found = true;
-                                    }
+                                if let Some(response_text) =
+                                    data.get("text").and_then(|v| v.as_str())
+                                {
+                                    stdout.write_all(response_text.as_bytes()).await?;
+                                    stdout.write_all(b"\n\n").await?;
+                                    stdout.flush().await?;
+                                    found = true;
                                 }
                             }
                         }
