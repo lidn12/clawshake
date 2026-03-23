@@ -1,6 +1,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use clawshake_broker::{builtins, cli, http_server, invoke, mcp_server, router, watcher};
+use clawshake_core::config as core_config;
 use clawshake_core::permissions::PermissionStore;
 use tracing::info;
 
@@ -110,6 +111,17 @@ async fn main() -> Result<()> {
             )?;
             info!(tools = registry.tool_count(), "Broker ready");
 
+            // ── Memory subsystem ────────────────────────────────────────
+            let config = core_config::load(None)?;
+            let memory = if config.memory.enabled {
+                let mem_ctx = invoke::memory::build_memory_context(&clawshake_dir, &config.memory);
+                invoke::memory::start_watcher(&clawshake_dir, &config.memory);
+                Some(mem_ctx)
+            } else {
+                info!("Memory subsystem disabled");
+                None
+            };
+
             // stdio mode has no HTTP port for /invoke callbacks.
             let effective_port = port.unwrap_or(0);
             let broker = router::BrokerContext {
@@ -121,6 +133,7 @@ async fn main() -> Result<()> {
                 cron: invoke::cron::CronScheduler::new(),
                 port: effective_port,
                 code_mode: code_mode_active,
+                memory,
             };
 
             if port.is_some() {

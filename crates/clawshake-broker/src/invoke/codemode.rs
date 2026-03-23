@@ -469,6 +469,7 @@ mod tests {
                 invoke: InvokeConfig::InProcess,
             },
             source: source.to_string(),
+            hidden: false,
         }
     }
 
@@ -621,6 +622,7 @@ mod tests {
             cron: &crate::invoke::cron::CronScheduler::new(),
             port: 7474,
             code_mode: false,
+            memory: None,
         };
 
         let output = crate::invoke::codemode::invoke_describe_tools(None, &ctx);
@@ -661,6 +663,7 @@ mod tests {
                 invoke: clawshake_core::manifest::InvokeConfig::InProcess,
             },
             source: "network".to_string(),
+            hidden: false,
         };
 
         let tools = vec![
@@ -678,6 +681,7 @@ mod tests {
             cron: &crate::invoke::cron::CronScheduler::new(),
             port: 7474,
             code_mode: false,
+            memory: None,
         };
 
         let output = crate::invoke::codemode::invoke_describe_tools(Some("network"), &ctx);
@@ -716,6 +720,7 @@ mod tests {
             cron: &crate::invoke::cron::CronScheduler::new(),
             port: 7474,
             code_mode: false,
+            memory: None,
         };
 
         let output = crate::invoke::codemode::invoke_describe_tools(Some("nonexistent"), &ctx);

@@ -7,6 +7,8 @@ members = [
     "crates/clawshake-broker",
     "crates/clawshake-models",
     "crates/clawshake-channels",
+    "crates/clawshake-memory",
+    "crates/clawshake-sandbox",
     "crates/clawshake",
 ]
 
@@ -84,16 +86,30 @@ async-stream = "0.3"
 tempfile = "3"
 bytes = "1"
 
+# Memory subsystem (clawshake-memory)
+rusqlite = { version = "0.38", features = ["bundled", "vtab"] }
+fastembed = "5"
+sqlite-vec = "0.1.6"
+sha2 = "0.10"
+hex = "0.4"
+serde_yaml = "0.9"
+chrono = { version = "0.4", features = ["serde"] }
+
 # HTTP server (broker SSE transport)
 axum = "0.7"
 tokio-stream = "0.1"
 uuid = { version = "1", features = ["v4"] }
 
+# Unix process / namespace utilities (Linux + macOS)
+nix = { version = "0.29", features = ["process", "mount", "sched", "signal", "user", "fs", "unistd"] }
+
 # Internal crates
 clawshake-core = { path = "crates/clawshake-core" }
+clawshake-sandbox = { path = "crates/clawshake-sandbox" }
 clawshake-tools = { path = "crates/clawshake-tools" }
 clawshake-models = { path = "crates/clawshake-models" }
 clawshake-channels = { path = "crates/clawshake-channels" }
+clawshake-memory = { path = "crates/clawshake-memory" }
 
 [profile.dist]
 inherits = "release"

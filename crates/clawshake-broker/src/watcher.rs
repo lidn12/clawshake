@@ -23,6 +23,10 @@ use clawshake_core::mcp_client::McpClient;
 pub struct LoadedTool {
     pub tool: Tool,
     pub source: String,
+    /// When true, the tool is callable via `tools/call` but excluded from
+    /// the `tools/list` response.  Used for infrastructure tools that the
+    /// agent runtime calls directly (e.g. `memory_append`).
+    pub hidden: bool,
 }
 
 /// Thread-safe map of tool name → loaded tool.
@@ -47,6 +51,7 @@ impl ManifestRegistry {
                 LoadedTool {
                     tool: tool.clone(),
                     source: source.to_string(),
+                    hidden: false,
                 },
             );
         }
@@ -66,6 +71,7 @@ impl ManifestRegistry {
                 LoadedTool {
                     tool,
                     source: source.to_string(),
+                    hidden: false,
                 },
             );
         }
@@ -75,7 +81,17 @@ impl ManifestRegistry {
     ///
     /// Built-in tools are invisible to the file watcher — they can only be
     /// replaced by another `register_builtin` call.
+    /// Register a single built-in tool directly (no manifest file on disk).
+    ///
+    /// Built-in tools are invisible to the file watcher — they can only be
+    /// replaced by another `register_builtin` call.
     pub fn register_builtin(&self, tool: Tool, source: &str) {
+        self.register_builtin_hidden(tool, source, false);
+    }
+
+    /// Like [`register_builtin`] but marks the tool as hidden — callable
+    /// via `tools/call` but excluded from the `tools/list` response.
+    pub fn register_builtin_hidden(&self, tool: Tool, source: &str, hidden: bool) {
         let mut map = self.inner.write().expect("registry lock");
         let key = tool.name.clone();
         map.insert(
@@ -83,6 +99,7 @@ impl ManifestRegistry {
             LoadedTool {
                 tool,
                 source: source.to_string(),
+                hidden,
             },
         );
     }

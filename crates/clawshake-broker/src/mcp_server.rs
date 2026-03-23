@@ -99,6 +99,10 @@ pub(crate) async fn handle(
             let defs: Vec<McpToolDef> = all_tools
                 .into_iter()
                 .filter(|lt| {
+                    // Hidden tools are callable but excluded from tools/list.
+                    if lt.hidden {
+                        return false;
+                    }
                     // In code mode, hide manifest/MCP-backed tools — only
                     // show built-in (InProcess) tools.  Manifest tools are
                     // still callable by name via run_code.

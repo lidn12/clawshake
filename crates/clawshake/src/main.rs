@@ -28,6 +28,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use clawshake_bridge::cli::{run_permissions_action, McpArgs, P2pArgs, PermissionsAction};
 use clawshake_core::{
+    config as core_config,
     mcp_client::{HttpClient, McpClient},
     permissions::PermissionStore,
 };
@@ -222,6 +223,23 @@ async fn main() -> Result<()> {
                 )?;
                 info!(tools = registry.tool_count(), "Broker ready on :{port}");
 
+                // ── Memory subsystem ────────────────────────────────────
+                let config = core_config::load(None)?;
+                let memory = if config.memory.enabled {
+                    let mem_ctx = clawshake_broker::invoke::memory::build_memory_context(
+                        &clawshake_dir,
+                        &config.memory,
+                    );
+                    clawshake_broker::invoke::memory::start_watcher(
+                        &clawshake_dir,
+                        &config.memory,
+                    );
+                    Some(mem_ctx)
+                } else {
+                    info!("Memory subsystem disabled");
+                    None
+                };
+
                 let broker = clawshake_broker::router::BrokerContext {
                     registry,
                     permissions,
@@ -231,6 +249,7 @@ async fn main() -> Result<()> {
                     cron: clawshake_broker::invoke::cron::CronScheduler::new(),
                     port,
                     code_mode: code_mode_active,
+                    memory,
                 };
 
                 tokio::spawn(async move {
