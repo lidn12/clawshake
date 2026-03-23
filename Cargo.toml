@@ -7,6 +7,7 @@ members = [
     "crates/clawshake-broker",
     "crates/clawshake-models",
     "crates/clawshake-channels",
+    "crates/clawshake-sandbox",
     "crates/clawshake",
 ]
 
@@ -84,15 +85,19 @@ async-stream = "0.3"
 tempfile = "3"
 bytes = "1"
 
+# Unix: namespace / mount / signal utilities (Linux + macOS)
+nix = { version = "0.29", features = ["process", "mount", "sched", "signal", "user", "fs"] }
+
 # HTTP server (broker SSE transport)
 axum = "0.7"
 tokio-stream = "0.1"
 uuid = { version = "1", features = ["v4"] }
 
 # Internal crates
-clawshake-core = { path = "crates/clawshake-core" }
-clawshake-tools = { path = "crates/clawshake-tools" }
-clawshake-models = { path = "crates/clawshake-models" }
+clawshake-core    = { path = "crates/clawshake-core" }
+clawshake-sandbox = { path = "crates/clawshake-sandbox" }
+clawshake-tools   = { path = "crates/clawshake-tools" }
+clawshake-models  = { path = "crates/clawshake-models" }
 clawshake-channels = { path = "crates/clawshake-channels" }
 
 [profile.dist]
