@@ -31,26 +31,42 @@ impl Mount {
     pub fn read_only(host_path: impl Into<PathBuf>) -> Self {
         let host_path = host_path.into();
         let sandbox_path = host_path.clone();
-        Self { host_path, sandbox_path, writable: false }
+        Self {
+            host_path,
+            sandbox_path,
+            writable: false,
+        }
     }
 
     /// Expose `host_path` inside the sandbox at the same path, read-write.
     pub fn read_write(host_path: impl Into<PathBuf>) -> Self {
         let host_path = host_path.into();
         let sandbox_path = host_path.clone();
-        Self { host_path, sandbox_path, writable: true }
+        Self {
+            host_path,
+            sandbox_path,
+            writable: true,
+        }
     }
 
     /// Expose `host_path` inside the sandbox at a different `sandbox_path`,
     /// with read-only access.
     pub fn read_only_at(host_path: impl Into<PathBuf>, sandbox_path: impl Into<PathBuf>) -> Self {
-        Self { host_path: host_path.into(), sandbox_path: sandbox_path.into(), writable: false }
+        Self {
+            host_path: host_path.into(),
+            sandbox_path: sandbox_path.into(),
+            writable: false,
+        }
     }
 
     /// Expose `host_path` inside the sandbox at a different `sandbox_path`,
     /// with read-write access.
     pub fn read_write_at(host_path: impl Into<PathBuf>, sandbox_path: impl Into<PathBuf>) -> Self {
-        Self { host_path: host_path.into(), sandbox_path: sandbox_path.into(), writable: true }
+        Self {
+            host_path: host_path.into(),
+            sandbox_path: sandbox_path.into(),
+            writable: true,
+        }
     }
 }
 

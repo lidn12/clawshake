@@ -22,11 +22,11 @@ pub enum SandboxError {
 impl fmt::Display for SandboxError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Config(msg)      => write!(f, "sandbox config error: {msg}"),
-            Self::Setup(msg)       => write!(f, "sandbox setup error: {msg}"),
-            Self::Spawn(e)         => write!(f, "sandbox spawn error: {e}"),
-            Self::Wait(e)          => write!(f, "sandbox wait error: {e}"),
-            Self::Io(e)            => write!(f, "sandbox I/O error: {e}"),
+            Self::Config(msg) => write!(f, "sandbox config error: {msg}"),
+            Self::Setup(msg) => write!(f, "sandbox setup error: {msg}"),
+            Self::Spawn(e) => write!(f, "sandbox spawn error: {e}"),
+            Self::Wait(e) => write!(f, "sandbox wait error: {e}"),
+            Self::Io(e) => write!(f, "sandbox I/O error: {e}"),
             Self::Unsupported(msg) => write!(f, "sandbox unsupported: {msg}"),
         }
     }
@@ -42,6 +42,7 @@ impl std::error::Error for SandboxError {
 }
 
 impl From<std::io::Error> for SandboxError {
-    fn from(e: std::io::Error) -> Self { Self::Io(e) }
+    fn from(e: std::io::Error) -> Self {
+        Self::Io(e)
+    }
 }
-
