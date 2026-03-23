@@ -8,7 +8,6 @@ members = [
     "crates/clawshake-models",
     "crates/clawshake-channels",
     "crates/clawshake-memory",
-    "crates/clawshake-sandbox",
     "crates/clawshake",
 ]
 
@@ -64,7 +63,7 @@ libp2p-stream = "0.4.0-alpha"
 reqwest = { version = "0.12", features = ["json", "stream"] }
 
 # SQLite
-sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
+rusqlite   = { version = "0.38", features = ["bundled", "vtab"] }
 
 # Manifest watcher
 notify = "7"
@@ -87,7 +86,6 @@ tempfile = "3"
 bytes = "1"
 
 # Memory subsystem (clawshake-memory)
-rusqlite = { version = "0.38", features = ["bundled", "vtab"] }
 fastembed = "5"
 sqlite-vec = "0.1.6"
 sha2 = "0.10"
@@ -100,12 +98,8 @@ axum = "0.7"
 tokio-stream = "0.1"
 uuid = { version = "1", features = ["v4"] }
 
-# Unix process / namespace utilities (Linux + macOS)
-nix = { version = "0.29", features = ["process", "mount", "sched", "signal", "user", "fs", "unistd"] }
-
 # Internal crates
 clawshake-core = { path = "crates/clawshake-core" }
-clawshake-sandbox = { path = "crates/clawshake-sandbox" }
 clawshake-tools = { path = "crates/clawshake-tools" }
 clawshake-models = { path = "crates/clawshake-models" }
 clawshake-channels = { path = "crates/clawshake-channels" }

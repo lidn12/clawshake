@@ -8,9 +8,10 @@
 //!   5. not found → Local: Ask | P2P/Tailscale: Deny
 
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
-use sqlx::{Row, SqlitePool};
+use rusqlite::{params, Connection};
 use tracing::{error, info};
 
 use crate::identity::AgentId;
@@ -66,10 +67,10 @@ pub struct PermissionRecord {
 // ---------------------------------------------------------------------------
 
 /// Async, cheaply-cloneable permission store backed by SQLite.
-/// The internal pool is `Arc`-backed, so `Clone` is a refcount bump.
+/// The internal connection is `Arc<Mutex<…>>`-backed, so `Clone` is a refcount bump.
 #[derive(Clone)]
 pub struct PermissionStore {
-    db: SqlitePool,
+    db: Arc<Mutex<Connection>>,
 }
 
 impl PermissionStore {
@@ -85,30 +86,30 @@ impl PermissionStore {
                 .with_context(|| format!("creating {}", parent.display()))?;
         }
 
-        // SQLite URL — forward slashes required even on Windows.
-        let url = format!(
-            "sqlite://{}?mode=rwc",
-            path.to_string_lossy().replace('\\', "/")
-        );
-        let db = SqlitePool::connect(&url)
-            .await
-            .with_context(|| format!("opening permissions DB at {}", path.display()))?;
-
-        sqlx::query(
-            "CREATE TABLE IF NOT EXISTS permissions (
-                agent_id   TEXT NOT NULL,
-                tool_name  TEXT NOT NULL,
-                decision   TEXT NOT NULL CHECK(decision IN ('allow','deny','ask')),
-                granted_at INTEGER,
-                PRIMARY KEY (agent_id, tool_name)
-            )",
-        )
-        .execute(&db)
+        let path = path.to_path_buf();
+        let path2 = path.clone();
+        let db = tokio::task::spawn_blocking(move || -> Result<Connection> {
+            let conn = Connection::open(&path2)
+                .with_context(|| format!("opening permissions DB at {}", path2.display()))?;
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS permissions (
+                    agent_id   TEXT NOT NULL,
+                    tool_name  TEXT NOT NULL,
+                    decision   TEXT NOT NULL CHECK(decision IN ('allow','deny','ask')),
+                    granted_at INTEGER,
+                    PRIMARY KEY (agent_id, tool_name)
+                )",
+            )
+            .context("creating permissions table")?;
+            Ok(conn)
+        })
         .await
-        .context("creating permissions table")?;
+        .context("spawn_blocking join")??;
 
         info!("Permissions DB open: {}", path.display());
-        Ok(Self { db })
+        Ok(Self {
+            db: Arc::new(Mutex::new(db)),
+        })
     }
 
     // -----------------------------------------------------------------------
@@ -118,42 +119,56 @@ impl PermissionStore {
     /// Waterfall lookup — returns the first matching `Decision`, falling back
     /// to `Ask` (local) or `Deny` (P2P / Tailscale) when no row matches.
     pub async fn check(&self, agent_id: &AgentId, tool_name: &str) -> Decision {
-        let exact_agent = agent_id.as_str();
+        let exact_agent = agent_id.as_str().to_string();
 
         // Transport-class wildcard: "p2p:abc" → "p2p:*", "local" → "" (no wildcard).
-        let wildcard_agent: &str = match agent_id {
-            AgentId::P2p(_) => "p2p:*",
-            AgentId::Tailscale(_) => "tailscale:*",
-            AgentId::Local => "", // empty string won't match any real row
+        let wildcard_agent: String = match agent_id {
+            AgentId::P2p(_) => "p2p:*".into(),
+            AgentId::Tailscale(_) => "tailscale:*".into(),
+            AgentId::Local => String::new(), // empty string won't match any real row
         };
 
-        let result = sqlx::query(
-            "SELECT decision FROM permissions
-             WHERE agent_id IN (?1, ?2)
-               AND tool_name IN (?3, '*')
-             ORDER BY
-               CASE agent_id   WHEN ?1 THEN 0 ELSE 1 END,
-               CASE tool_name  WHEN ?3 THEN 0 ELSE 1 END
-             LIMIT 1",
-        )
-        .bind(exact_agent.as_str())
-        .bind(wildcard_agent)
-        .bind(tool_name)
-        .fetch_optional(&self.db)
+        let is_local = matches!(agent_id, AgentId::Local);
+        let tool_name = tool_name.to_string();
+        let db = self.db.clone();
+
+        let result = tokio::task::spawn_blocking(move || -> Result<Option<String>> {
+            let conn = db.lock().unwrap();
+            let mut stmt = conn.prepare(
+                "SELECT decision FROM permissions
+                 WHERE agent_id IN (?1, ?2)
+                   AND tool_name IN (?3, '*')
+                 ORDER BY
+                   CASE agent_id   WHEN ?1 THEN 0 ELSE 1 END,
+                   CASE tool_name  WHEN ?3 THEN 0 ELSE 1 END
+                 LIMIT 1",
+            )?;
+            let decision = stmt
+                .query_row(
+                    params![exact_agent, wildcard_agent, tool_name],
+                    |row| row.get::<_, String>(0),
+                )
+                .ok();
+            Ok(decision)
+        })
         .await;
 
         match result {
-            Ok(Some(row)) => {
-                let s: &str = row.try_get("decision").unwrap_or("deny");
-                Decision::from_db(s)
+            Ok(Ok(Some(s))) => Decision::from_db(&s),
+            Ok(Ok(None)) => {
+                if is_local {
+                    Decision::Ask
+                } else {
+                    Decision::Deny
+                }
             }
-            Ok(None) => match agent_id {
-                AgentId::Local => Decision::Ask,
-                AgentId::P2p(_) | AgentId::Tailscale(_) => Decision::Deny,
-            },
-            Err(e) => {
+            Ok(Err(e)) => {
                 error!("Permission check DB error: {e}");
                 Decision::Deny // fail-closed on DB error
+            }
+            Err(e) => {
+                error!("Permission check join error: {e}");
+                Decision::Deny
             }
         }
     }
@@ -164,65 +179,89 @@ impl PermissionStore {
 
     /// Insert or replace a permission rule.
     pub async fn set(&self, agent_id: &str, tool_name: &str, decision: Decision) -> Result<()> {
-        sqlx::query(
-            "INSERT OR REPLACE INTO permissions (agent_id, tool_name, decision, granted_at)
-             VALUES (?1, ?2, ?3, strftime('%s','now'))",
-        )
-        .bind(agent_id)
-        .bind(tool_name)
-        .bind(decision.to_string())
-        .execute(&self.db)
+        let agent_id = agent_id.to_string();
+        let tool_name = tool_name.to_string();
+        let decision_str = decision.to_string();
+        let db = self.db.clone();
+
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            let conn = db.lock().unwrap();
+            conn.execute(
+                "INSERT OR REPLACE INTO permissions (agent_id, tool_name, decision, granted_at)
+                 VALUES (?1, ?2, ?3, strftime('%s','now'))",
+                params![agent_id, tool_name, decision_str],
+            )
+            .context("inserting permission record")?;
+            Ok(())
+        })
         .await
-        .context("inserting permission record")?;
-        Ok(())
+        .context("spawn_blocking join")?
     }
 
     /// Remove a specific (agent_id, tool_name) rule.  No-op if the row does not exist.
     pub async fn remove(&self, agent_id: &str, tool_name: &str) -> Result<()> {
-        sqlx::query("DELETE FROM permissions WHERE agent_id = ?1 AND tool_name = ?2")
-            .bind(agent_id)
-            .bind(tool_name)
-            .execute(&self.db)
-            .await
+        let agent_id = agent_id.to_string();
+        let tool_name = tool_name.to_string();
+        let db = self.db.clone();
+
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            let conn = db.lock().unwrap();
+            conn.execute(
+                "DELETE FROM permissions WHERE agent_id = ?1 AND tool_name = ?2",
+                params![agent_id, tool_name],
+            )
             .context("removing permission record")?;
-        Ok(())
+            Ok(())
+        })
+        .await
+        .context("spawn_blocking join")?
     }
 
     /// Return all rows in the permissions table, ordered by agent_id then tool_name.
     pub async fn list(&self) -> Result<Vec<PermissionRecord>> {
-        let rows = sqlx::query(
-            "SELECT agent_id, tool_name, decision, granted_at
-             FROM permissions
-             ORDER BY agent_id, tool_name",
-        )
-        .fetch_all(&self.db)
-        .await
-        .context("listing permission records")?;
+        let db = self.db.clone();
 
-        let records = rows
-            .iter()
-            .map(|row| PermissionRecord {
-                agent_id: row.try_get("agent_id").unwrap_or_default(),
-                tool_name: row.try_get("tool_name").unwrap_or_default(),
-                decision: Decision::from_db(row.try_get("decision").unwrap_or("deny")),
-                granted_at: row.try_get("granted_at").ok(),
-            })
-            .collect();
-        Ok(records)
+        tokio::task::spawn_blocking(move || -> Result<Vec<PermissionRecord>> {
+            let conn = db.lock().unwrap();
+            let mut stmt = conn.prepare(
+                "SELECT agent_id, tool_name, decision, granted_at
+                 FROM permissions
+                 ORDER BY agent_id, tool_name",
+            )?;
+            let records = stmt
+                .query_map([], |row| {
+                    Ok(PermissionRecord {
+                        agent_id: row.get(0)?,
+                        tool_name: row.get(1)?,
+                        decision: Decision::from_db(&row.get::<_, String>(2)?),
+                        granted_at: row.get(3)?,
+                    })
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            Ok(records)
+        })
+        .await
+        .context("spawn_blocking join")?
     }
 
     /// Seed a catch-all deny for all P2P callers (`p2p:*` / `*` / deny) if no
     /// such row exists yet.  Called on bridge startup so fresh installs are
     /// closed by default — users must explicitly grant access.
     pub async fn seed_p2p_deny_default(&self) -> Result<()> {
-        sqlx::query(
-            "INSERT OR IGNORE INTO permissions (agent_id, tool_name, decision, granted_at)
-             VALUES ('p2p:*', '*', 'deny', strftime('%s','now'))",
-        )
-        .execute(&self.db)
+        let db = self.db.clone();
+
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            let conn = db.lock().unwrap();
+            conn.execute(
+                "INSERT OR IGNORE INTO permissions (agent_id, tool_name, decision, granted_at)
+                 VALUES ('p2p:*', '*', 'deny', strftime('%s','now'))",
+                [],
+            )
+            .context("seeding p2p deny default")?;
+            Ok(())
+        })
         .await
-        .context("seeding p2p deny default")?;
-        Ok(())
+        .context("spawn_blocking join")?
     }
 
     /// Check whether a tool should be published to the DHT.
@@ -242,36 +281,36 @@ impl PermissionStore {
     ///   • `deny  p2p:* *` + `allow p2p:<id> *`
     ///     + `deny p2p:<id> tool`                → **not** exposed (exact deny overrides)
     pub async fn is_network_exposed(&self, tool_name: &str) -> bool {
-        // A tool is exposed when ANY p2p agent (wildcard or specific) would
-        // be allowed to call it under the specificity waterfall.
-        //
-        // Case 1 — explicit exact-tool allow for any p2p agent (wins over any * rule).
-        // Case 2 — wildcard allow for any p2p agent, not overridden by an
-        //          exact-tool deny for that same agent.
-        let result = sqlx::query(
-            "SELECT 1 FROM (
-                SELECT 1 FROM permissions
-                WHERE agent_id LIKE 'p2p:%'
-                  AND tool_name = ?1
-                  AND decision = 'allow'
-                UNION ALL
-                SELECT 1 FROM permissions pa
-                WHERE pa.agent_id LIKE 'p2p:%'
-                  AND pa.tool_name = '*'
-                  AND pa.decision = 'allow'
-                  AND NOT EXISTS (
-                    SELECT 1 FROM permissions pd
-                    WHERE pd.agent_id = pa.agent_id
-                      AND pd.tool_name = ?1
-                      AND pd.decision = 'deny'
-                  )
-             ) LIMIT 1",
-        )
-        .bind(tool_name)
-        .fetch_optional(&self.db)
+        let tool_name = tool_name.to_string();
+        let db = self.db.clone();
+
+        let result = tokio::task::spawn_blocking(move || -> Result<bool> {
+            let conn = db.lock().unwrap();
+            let mut stmt = conn.prepare(
+                "SELECT 1 FROM (
+                    SELECT 1 FROM permissions
+                    WHERE agent_id LIKE 'p2p:%'
+                      AND tool_name = ?1
+                      AND decision = 'allow'
+                    UNION ALL
+                    SELECT 1 FROM permissions pa
+                    WHERE pa.agent_id LIKE 'p2p:%'
+                      AND pa.tool_name = '*'
+                      AND pa.decision = 'allow'
+                      AND NOT EXISTS (
+                        SELECT 1 FROM permissions pd
+                        WHERE pd.agent_id = pa.agent_id
+                          AND pd.tool_name = ?1
+                          AND pd.decision = 'deny'
+                      )
+                 ) LIMIT 1",
+            )?;
+            let found = stmt.query_row(params![tool_name], |_| Ok(())).is_ok();
+            Ok(found)
+        })
         .await;
 
-        matches!(result, Ok(Some(_)))
+        matches!(result, Ok(Ok(true)))
     }
 }
 
@@ -364,9 +403,6 @@ mod tests {
 
     #[tokio::test]
     async fn waterfall_exact_agent_beats_wildcard_agent() {
-        // Tests the agent-level dimension of the waterfall:
-        // a rule for the exact peer ID must beat a rule for "p2p:*".
-        // If the ORDER BY agent priority were wrong, the wildcard deny would win.
         let (store, _f) = open_temp_store().await;
         let peer_id = "12D3KooWspecific";
         let exact_agent = format!("p2p:{peer_id}");
@@ -381,7 +417,6 @@ mod tests {
             Decision::Allow,
             "exact agent rule must beat wildcard agent rule"
         );
-        // A different peer still gets the wildcard deny.
         assert_eq!(
             store
                 .check(&AgentId::P2p("12D3KooWother".into()), "any_tool")
@@ -420,31 +455,25 @@ mod tests {
         let file = NamedTempFile::new().expect("tempfile");
         // Build a table without the CHECK constraint so we can insert an
         // invalid decision value, then verify the store treats it as Deny.
-        let url = format!(
-            "sqlite://{}?mode=rwc",
-            file.path().to_string_lossy().replace('\\', "/")
-        );
-        let raw = SqlitePool::connect(&url).await.unwrap();
-        sqlx::query(
-            "CREATE TABLE IF NOT EXISTS permissions (
-                agent_id   TEXT NOT NULL,
-                tool_name  TEXT NOT NULL,
-                decision   TEXT NOT NULL,
-                granted_at INTEGER,
-                PRIMARY KEY (agent_id, tool_name)
-            )",
-        )
-        .execute(&raw)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO permissions (agent_id, tool_name, decision) \
-             VALUES ('local', 'badtool', 'invalid')",
-        )
-        .execute(&raw)
-        .await
-        .unwrap();
-        raw.close().await;
+        {
+            let raw = Connection::open(file.path()).unwrap();
+            raw.execute_batch(
+                "CREATE TABLE IF NOT EXISTS permissions (
+                    agent_id   TEXT NOT NULL,
+                    tool_name  TEXT NOT NULL,
+                    decision   TEXT NOT NULL,
+                    granted_at INTEGER,
+                    PRIMARY KEY (agent_id, tool_name)
+                )",
+            )
+            .unwrap();
+            raw.execute(
+                "INSERT INTO permissions (agent_id, tool_name, decision) \
+                 VALUES ('local', 'badtool', 'invalid')",
+                [],
+            )
+            .unwrap();
+        }
 
         // Now open via PermissionStore — the table already exists, so CREATE
         // TABLE IF NOT EXISTS is a no-op and the bad row survives.
@@ -468,8 +497,6 @@ mod tests {
 
     #[tokio::test]
     async fn remove_p2p_rule_falls_back_to_deny() {
-        // P2P and Local have *different* fallback defaults (Deny vs Ask).
-        // Removing the only P2P rule must reveal Deny, not Ask.
         let (store, _f) = open_temp_store().await;
         let peer = AgentId::P2p("somepeer".into());
         store.set("p2p:*", "foo", Decision::Allow).await.unwrap();
@@ -498,8 +525,6 @@ mod tests {
         store.set("p2p:*", "*", Decision::Deny).await.unwrap();
         let rows = store.list().await.unwrap();
         assert_eq!(rows.len(), 3);
-        // ORDER BY agent_id, tool_name: "local" < "p2p:*", and within local
-        // "alpha" < "beta".  If the ORDER BY were dropped this would fail.
         assert_eq!(rows[0].agent_id, "local");
         assert_eq!(rows[0].tool_name, "alpha");
         assert_eq!(rows[1].agent_id, "local");
@@ -524,9 +549,6 @@ mod tests {
 
     #[tokio::test]
     async fn is_network_exposed_empty_db_returns_false() {
-        // Immediately after install there are no rules at all.  The function
-        // must return false (not exposed) rather than panicking or returning
-        // true by accident.
         let (store, _f) = open_temp_store().await;
         assert!(
             !store.is_network_exposed("read_file").await,
@@ -537,31 +559,25 @@ mod tests {
     #[tokio::test]
     async fn is_network_exposed_reflects_p2p_wildcard_rules() {
         let (store, _f) = open_temp_store().await;
-        // Blanket allow → read_file is exposed.
         store.set("p2p:*", "*", Decision::Allow).await.unwrap();
         assert!(store.is_network_exposed("read_file").await);
 
-        // Specific deny for network_call → not exposed.
         store
             .set("p2p:*", "network_call", Decision::Deny)
             .await
             .unwrap();
         assert!(!store.is_network_exposed("network_call").await);
-
-        // read_file still exposed via wildcard.
         assert!(store.is_network_exposed("read_file").await);
     }
 
     #[tokio::test]
     async fn is_network_exposed_specific_peer_wildcard_allow() {
         let (store, _f) = open_temp_store().await;
-        // Default deny for all peers, but a specific peer has blanket access.
         store.set("p2p:*", "*", Decision::Deny).await.unwrap();
         store
             .set("p2p:12D3KooWxxxx", "*", Decision::Allow)
             .await
             .unwrap();
-        // Tool should be exposed because at least one peer can call it.
         assert!(store.is_network_exposed("read_file").await);
         assert!(store.is_network_exposed("write_file").await);
     }
@@ -569,21 +585,18 @@ mod tests {
     #[tokio::test]
     async fn is_network_exposed_specific_peer_exact_allow() {
         let (store, _f) = open_temp_store().await;
-        // Default deny for all peers, but a specific peer has an exact allow.
         store.set("p2p:*", "*", Decision::Deny).await.unwrap();
         store
             .set("p2p:12D3KooWxxxx", "read_file", Decision::Allow)
             .await
             .unwrap();
         assert!(store.is_network_exposed("read_file").await);
-        // Other tools are still not exposed.
         assert!(!store.is_network_exposed("write_file").await);
     }
 
     #[tokio::test]
     async fn is_network_exposed_specific_peer_exact_deny_overrides_wildcard() {
         let (store, _f) = open_temp_store().await;
-        // Specific peer has blanket allow but an exact deny for one tool.
         store.set("p2p:*", "*", Decision::Deny).await.unwrap();
         store
             .set("p2p:12D3KooWxxxx", "*", Decision::Allow)
@@ -593,9 +606,7 @@ mod tests {
             .set("p2p:12D3KooWxxxx", "network_call", Decision::Deny)
             .await
             .unwrap();
-        // network_call is not callable by any peer → not exposed.
         assert!(!store.is_network_exposed("network_call").await);
-        // read_file is still allowed via the specific peer's wildcard.
         assert!(store.is_network_exposed("read_file").await);
     }
 
@@ -608,7 +619,6 @@ mod tests {
         assert_eq!(Decision::from_db("allow"), Decision::Allow);
         assert_eq!(Decision::from_db("deny"), Decision::Deny);
         assert_eq!(Decision::from_db("ask"), Decision::Ask);
-        // Unknown value falls back to Deny.
         assert_eq!(Decision::from_db("unknown"), Decision::Deny);
     }
 }

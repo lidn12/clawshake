@@ -193,7 +193,7 @@ pub async fn invoke_embed(args: &Value, mem: &MemoryContext) -> Result<String> {
         }
         db.ensure_model_match(clawshake_memory::MODEL_NAME)?;
         let mut embedder = clawshake_memory::Embedder::new()?;
-        let total = chunks.len();
+        let _total = chunks.len();
         let texts: Vec<String> = chunks.iter().map(|(_, c)| c.clone()).collect();
         let embeddings = embedder.embed(texts)?;
         let mut inserted = 0usize;

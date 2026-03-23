@@ -1,15 +1,15 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use ashby_memory::ingest::SourceIngestor;
-use ashby_memory::{
+use clawshake_memory::ingest::SourceIngestor;
+use clawshake_memory::{
     db, Config, Db, Embedder, FilesSource, FilesSourceConfig, WatchConfig, MODEL_NAME,
 };
 
 #[derive(Parser)]
 #[command(
-    name = "ashby-memory",
-    about = "Ashby memory — transcript chunker and recall tool"
+    name = "clawshake-memory",
+    about = "Clawshake memory — transcript chunker and recall tool"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -101,8 +101,8 @@ fn main() -> Result<()> {
     match cli.command {
         Command::Ingest => {
             let db = Db::open(&config.db_path)?;
-            let strategy = ashby_memory::ingest::ChunkStrategy::default();
-            let count = ashby_memory::ingest::transcript::run_chunker(&db, &config, &strategy)?;
+            let strategy = clawshake_memory::ingest::ChunkStrategy::default();
+            let count = clawshake_memory::ingest::transcript::run_chunker(&db, &config, &strategy)?;
             eprintln!("ingested {count} chunks");
         }
 
@@ -181,7 +181,7 @@ fn main() -> Result<()> {
                 debounce: std::time::Duration::from_secs(debounce),
             };
 
-            ashby_memory::watch::watch(&config, &wc)?;
+            clawshake_memory::watch::watch(&config, &wc)?;
         }
     }
 
