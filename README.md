@@ -224,6 +224,22 @@ Three cron tools and one async wrapper:
 
 `spawn` composes with the rest of the tool set — `spawn({ tool: "shell", arguments: {...} })` runs a shell command without blocking the agent, `spawn({ tool: "network_call", ... })` makes a remote call fire-and-forget, and so on.
 
+### Memory
+
+Five tools for long-term agent memory — procedural (system prompt), episodic (transcript-derived), and semantic (consolidated knowledge, notes). Backed by SQLite WAL with FTS5 full-text search and sqlite-vec KNN vector search, hybrid BM25+KNN scoring with ACT-R activation.
+
+| Tool | Visibility | What it does |
+|------|------------|-------------|
+| `memory_recall` | visible | Ranked retrieval over all memory sources — returns matches with content, score, timestamp, and provenance |
+| `memory_procedural` | hidden | Load the rendered system prompt (identity + instructions + skills) |
+| `memory_append` | hidden | Log a transcript entry (message, tool call, tool result, reset, compact) |
+| `memory_ingest` | hidden | Run the chunker + embed pass on new transcript content |
+| `memory_embed` | hidden | Trigger embedding for all un-embedded chunks |
+
+Hidden tools are callable but do not appear in `tools/list` responses — the LLM never sees them directly. They are used by the agent runtime for bookkeeping (transcript logging, system prompt loading) without polluting the tool namespace the model reasons over.
+
+Memory data lives at `~/.clawshake/memory.db` (SQLite), with transcripts in `~/.clawshake/log/` (JSONL). A file watcher automatically re-ingests on changes to transcripts and configured note directories.
+
 ### Code mode
 
 
@@ -361,6 +377,8 @@ crates/
   clawshake-models/    Model proxy — OpenAI-compatible HTTP server + P2P streaming backend
   clawshake-tools/     Network tools + IPC between broker and bridge
   clawshake-channels/  Interactive I/O channels — CLI REPL (chat), future: web, Slack
+  clawshake-memory/    Long-term memory — procedural, episodic, semantic (SQLite + FTS5 + vec)
+  clawshake-sandbox/   Process-level sandboxing — seccomp, Landlock, Seatbelt, Job objects
 ```
 
 **P2P stack:** libp2p 0.56 with Kademlia DHT, mDNS, relay + DCUtR (hole punching), QUIC and TCP transports, Noise encryption, and libp2p-stream for real-time bidirectional streaming.
