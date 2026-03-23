@@ -28,6 +28,112 @@ pub struct Config {
     pub network: NetworkConfig,
     pub models: ModelsConfig,
     pub tools: ToolsConfig,
+    pub memory: MemoryConfig,
+}
+
+/// `[memory]` — long-term memory subsystem settings.
+///
+/// Path fields override defaults derived from `~/.clawshake/`.
+/// Supply them as absolute paths — tilde (`~`) is not expanded.
+///
+/// # Example
+///
+/// ```toml
+/// [memory]
+/// enabled = true
+/// # db_path = "/custom/path/memory.db"
+/// # transcript_dir = "/custom/path/log"
+/// # notes_dir = "/custom/path/notes"
+///
+/// [memory.watch]
+/// debounce_secs = 2
+/// watch_transcripts = true
+///
+/// [memory.ingest]
+/// chunk_max_chars = 1600
+/// chunk_overlap_chars = 320
+/// ```
+#[derive(Debug, Deserialize)]
+#[serde(default)]
+pub struct MemoryConfig {
+    /// When false, memory tools are not registered and the watcher is not
+    /// started.  Default: true.
+    pub enabled: bool,
+
+    /// Override `~/.clawshake/memory.db`.
+    pub db_path: Option<PathBuf>,
+
+    /// Override `~/.clawshake/log`.
+    pub transcript_dir: Option<PathBuf>,
+
+    /// Override `[~/.clawshake/skills, ~/.agents/skills]`.
+    pub skill_dirs: Option<Vec<PathBuf>>,
+
+    /// Override `~/.clawshake/notes`.
+    pub notes_dir: Option<PathBuf>,
+
+    /// Override `~/.clawshake/identity.md`.
+    pub identity_path: Option<PathBuf>,
+
+    /// Override `~/.clawshake/instructions.md`.
+    pub instructions_path: Option<PathBuf>,
+
+    pub watch: MemoryWatchConfig,
+    pub ingest: MemoryIngestConfig,
+}
+
+impl Default for MemoryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            db_path: None,
+            transcript_dir: None,
+            skill_dirs: None,
+            notes_dir: None,
+            identity_path: None,
+            instructions_path: None,
+            watch: MemoryWatchConfig::default(),
+            ingest: MemoryIngestConfig::default(),
+        }
+    }
+}
+
+/// `[memory.watch]` — file-system watcher settings.
+#[derive(Debug, Deserialize)]
+#[serde(default)]
+pub struct MemoryWatchConfig {
+    /// Debounce interval in seconds.
+    pub debounce_secs: u64,
+    /// Whether to watch the transcript directory for new JSONL entries.
+    pub watch_transcripts: bool,
+}
+
+impl Default for MemoryWatchConfig {
+    fn default() -> Self {
+        Self {
+            debounce_secs: 2,
+            watch_transcripts: true,
+        }
+    }
+}
+
+/// `[memory.ingest]` — chunking parameters for file-source ingestion.
+#[derive(Debug, Deserialize)]
+#[serde(default)]
+pub struct MemoryIngestConfig {
+    /// Maximum characters per chunk (sliding-window).
+    pub chunk_max_chars: usize,
+    /// Overlap between consecutive chunks.
+    pub chunk_overlap_chars: usize,
+}
+
+impl Default for MemoryIngestConfig {
+    fn default() -> Self {
+        Self {
+            chunk_max_chars: 1600,
+            chunk_overlap_chars: 320,
+        }
+    }
 }
 
 /// Tool-related settings.

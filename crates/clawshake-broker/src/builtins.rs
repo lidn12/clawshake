@@ -44,6 +44,16 @@ pub fn register(registry: &ManifestRegistry, code_mode: bool, bridge_available: 
         registry.register_builtin(tool, "cron");
     }
 
+    // -- Memory tools (always registered; some are hidden) --
+    for (tool, hidden) in memory_tools() {
+        if hidden {
+            info!(name = %tool.name, "Registered hidden memory tool");
+        } else {
+            info!(name = %tool.name, "Registered built-in tool");
+        }
+        registry.register_builtin_hidden(tool, "memory", hidden);
+    }
+
     // -- Code-mode tools --
     if code_mode {
         for tool in codemode_tools() {
@@ -304,4 +314,36 @@ fn spawn_tool() -> Tool {
         requires: None,
         invoke: InvokeConfig::InProcess,
     }
+}
+
+/// Build memory tool definitions.  Returns `(Tool, hidden)` pairs.
+///
+/// `memory_recall` is visible to agents.  Infrastructure and operational
+/// tools (`memory_procedural`, `memory_append`, `memory_ingest`,
+/// `memory_embed`) are hidden — callable but excluded from `tools/list`.
+fn memory_tools() -> Vec<(Tool, bool)> {
+    crate::invoke::memory::memory_tool_definitions()
+        .into_iter()
+        .filter_map(|val| {
+            let name = val.get("name")?.as_str()?.to_string();
+            let description = val.get("description")?.as_str()?.to_string();
+            let hidden = val.get("hidden").and_then(|v| v.as_bool()).unwrap_or(false);
+            let schema_val = val.get("inputSchema").cloned().unwrap_or(json!({
+                "type": "object",
+                "properties": {}
+            }));
+            let input_schema: InputSchema =
+                serde_json::from_value(schema_val).unwrap_or_default();
+            Some((
+                Tool {
+                    name,
+                    description,
+                    input_schema,
+                    requires: None,
+                    invoke: InvokeConfig::InProcess,
+                },
+                hidden,
+            ))
+        })
+        .collect()
 }

@@ -173,6 +173,7 @@ mod tests {
             cron: &cron,
             port: 0,
             code_mode: false,
+            memory: None,
         };
 
         let result = handle(&json!({"tool": "nonexistent_tool"}), &ctx).await;
@@ -201,6 +202,7 @@ mod tests {
             cron: &cron,
             port: 0,
             code_mode: false,
+            memory: None,
         };
 
         let result = handle(&json!({"tool": "spawn"}), &ctx).await;
@@ -229,6 +231,7 @@ mod tests {
             cron: &cron,
             port: 0,
             code_mode: false,
+            memory: None,
         };
 
         let result = handle(&json!({}), &ctx).await;

@@ -12,6 +12,7 @@ use crate::{
     invoke,
     invoke::codemode::ShimCache,
     invoke::cron::CronScheduler,
+    invoke::memory::MemoryContext,
     watcher::{ManifestRegistry, McpServerMap},
 };
 
@@ -27,6 +28,8 @@ pub struct DispatchContext<'a> {
     /// When true, `tools/list` hides individual tools and only shows
     /// `run_code` + `describe_tools`.
     pub code_mode: bool,
+    /// Long-term memory context. `None` when memory is disabled.
+    pub memory: Option<&'a MemoryContext>,
 }
 
 /// Owned version of [`DispatchContext`] used by server entry points
@@ -41,6 +44,8 @@ pub struct BrokerContext {
     pub cron: CronScheduler,
     pub port: u16,
     pub code_mode: bool,
+    /// Long-term memory context. `None` when memory is disabled.
+    pub memory: Option<MemoryContext>,
 }
 
 impl BrokerContext {
@@ -55,6 +60,7 @@ impl BrokerContext {
             cron: &self.cron,
             port: self.port,
             code_mode: self.code_mode,
+            memory: self.memory.as_ref(),
         }
     }
 }
@@ -71,6 +77,7 @@ impl<'a> DispatchContext<'a> {
             cron: self.cron.clone(),
             port: self.port,
             code_mode: self.code_mode,
+            memory: self.memory.cloned(),
         }
     }
 }
@@ -203,6 +210,20 @@ pub fn dispatch<'a>(
                 "cron_add" => ctx.cron.handle_add(arguments, ctx.event_queue).await,
                 "cron_list" => ctx.cron.handle_list(arguments).await,
                 "cron_remove" => ctx.cron.handle_remove(arguments).await,
+                // Memory tools — dispatch to the memory subsystem.
+                name if name.starts_with("memory_") => {
+                    let mem = ctx.memory.as_ref().ok_or_else(|| {
+                        anyhow::anyhow!("memory subsystem is disabled (no [memory] config)")
+                    })?;
+                    match name {
+                        "memory_recall" => invoke::memory::invoke_recall(arguments, mem).await,
+                        "memory_procedural" => invoke::memory::invoke_procedural(arguments, mem).await,
+                        "memory_append" => invoke::memory::invoke_append(arguments, mem).await,
+                        "memory_ingest" => invoke::memory::invoke_ingest(arguments, mem).await,
+                        "memory_embed" => invoke::memory::invoke_embed(arguments, mem).await,
+                        _ => anyhow::bail!("unknown memory tool '{name}'"),
+                    }
+                }
                 _ => anyhow::bail!(
                     "in-process tool '{tool_name}' has no registered handler in the router"
                 ),

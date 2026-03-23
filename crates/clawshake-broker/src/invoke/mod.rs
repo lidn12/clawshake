@@ -4,6 +4,7 @@ pub mod cron;
 pub mod deeplink;
 pub mod events;
 pub mod http;
+pub mod memory;
 pub mod script;
 pub mod spawn;
 

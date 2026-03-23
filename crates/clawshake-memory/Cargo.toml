@@ -1,0 +1,43 @@
+[package]
+name = "clawshake-memory"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Long-term memory subsystem — episodic, semantic, and procedural memory for AI agents"
+
+[[bin]]
+name = "clawshake-memory"
+path = "src/main.rs"
+
+[lib]
+name = "clawshake_memory"
+path = "src/lib.rs"
+
+[dependencies]
+# Database & indexing
+rusqlite   = { workspace = true }
+fastembed  = { workspace = true }
+sqlite-vec = { workspace = true }
+sha2       = { workspace = true }
+hex        = { workspace = true }
+
+# Runtime
+tokio      = { workspace = true }
+notify     = { workspace = true }
+
+# Serialization
+serde      = { workspace = true }
+serde_json = { workspace = true }
+
+# YAML (AgentSkills frontmatter)
+serde_yaml = { workspace = true }
+
+# Utilities
+anyhow     = { workspace = true }
+clap       = { workspace = true }
+dirs       = { workspace = true }
+chrono     = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
