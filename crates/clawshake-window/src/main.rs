@@ -4,8 +4,8 @@
 //! No broker startup logic — assumes the broker is already running.
 //!
 //! Usage:
-//!   clawshake-app                          # defaults to http://127.0.0.1:7475/ui
-//!   clawshake-app --port 8080              # custom port
+//!   clawshake-window                        # defaults to http://127.0.0.1:7475/ui
+//!   clawshake-window --port 8080            # custom port
 
 fn main() {
     // Parse --port flag (default: 7475)
@@ -31,5 +31,5 @@ fn main() {
             Ok(())
         })
         .run(tauri::generate_context!())
-        .expect("failed to run clawshake-app");
+        .expect("failed to run clawshake-window");
 }

@@ -1,9 +1,9 @@
 [package]
-name = "clawshake-app"
+name = "clawshake-window"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Native app shell for clawshake (Tauri v2)"
+description = "Native window shell for clawshake (Tauri v2)"
 
 [dependencies]
 tauri = { version = "2", features = [] }
