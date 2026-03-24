@@ -21,9 +21,7 @@
 #![cfg(target_os = "linux")]
 
 use std::collections::BTreeMap;
-use std::mem::ManuallyDrop;
-use std::os::unix::io::{AsFd, AsRawFd};
-use std::os::unix::process::CommandExt;
+use std::os::unix::io::IntoRawFd;
 use std::path::Path;
 
 use landlock::{ABI, Access, AccessFs, PathBeneath, PathFd, Ruleset, RulesetAttr, RulesetCreatedAttr};
@@ -165,60 +163,63 @@ fn build_landlock_ruleset(config: &SandboxConfig, scratch: &Path) -> Result<i32,
     let read_only = AccessFs::from_read(abi);
     let read_write = AccessFs::from_all(abi);
 
-    // Helper closure — adds a rule, logging soft failures.
-    fn add<R>(mut created: landlock::RulesetCreated, rule: R) -> landlock::RulesetCreated
-    where
-        R: landlock::Rule<landlock::AccessFs>,
-    {
-        match created.add_rule(rule) {
-            Ok(c)  => c,
-            Err(e) => {
-                warn!("sandbox/linux: landlock add_rule failed ({e}); skipping path");
-                created
+    // In landlock 0.4.x, add_rule() takes ownership of `self` and does not
+    // return the ruleset on error.  We thread it through a fallible closure
+    // using `?`; any failure soft-disables path restriction entirely.
+    let r: Result<landlock::RulesetCreated, Box<dyn std::error::Error>> = (|| {
+        let mut c = created;
+
+        // Standard read-only system directories.
+        for dir in &[
+            "/usr", "/lib", "/lib64", "/lib32", "/libx32",
+            "/bin", "/sbin", "/etc/alternatives", "/etc/ld.so.cache",
+            "/proc/self", "/dev/null", "/dev/urandom", "/dev/zero",
+        ] {
+            if Path::new(dir).exists() {
+                if let Ok(fd) = PathFd::new(dir) {
+                    c = c.add_rule(PathBeneath::new(fd, read_only))
+                        .map_err(|e| format!("add_rule({dir}): {e:?}"))?;
+                }
             }
         }
-    }
 
-    let mut c = created;
-
-    // Standard read-only system directories.
-    for dir in &[
-        "/usr", "/lib", "/lib64", "/lib32", "/libx32",
-        "/bin", "/sbin", "/etc/alternatives", "/etc/ld.so.cache",
-        "/proc/self", "/dev/null", "/dev/urandom", "/dev/zero",
-    ] {
-        if Path::new(dir).exists() {
+        // Full access to /tmp and the scratch dir.
+        for dir in [Path::new("/tmp"), scratch] {
             if let Ok(fd) = PathFd::new(dir) {
-                c = add(c, PathBeneath::new(fd, read_only));
+                c = c.add_rule(PathBeneath::new(fd, read_write))
+                    .map_err(|e| format!("add_rule(scratch): {e:?}"))?;
             }
         }
-    }
 
-    // Full access to /tmp and the scratch dir.
-    for dir in &["/tmp", scratch] {
-        if let Ok(fd) = PathFd::new(dir) {
-            c = add(c, PathBeneath::new(fd, read_write));
+        // Declared mounts.
+        for mount in &config.mounts {
+            if !mount.host_path.exists() {
+                warn!(
+                    path = %mount.host_path.display(),
+                    "sandbox/linux: mount host_path not found; skipping"
+                );
+                continue;
+            }
+            if let Ok(fd) = PathFd::new(&mount.host_path) {
+                let access = if mount.writable { read_write } else { read_only };
+                c = c.add_rule(PathBeneath::new(fd, access))
+                    .map_err(|e| format!("add_rule(mount): {e:?}"))?;
+            }
         }
-    }
 
-    // Declared mounts.
-    for mount in &config.mounts {
-        if !mount.host_path.exists() {
-            warn!(
-                path = %mount.host_path.display(),
-                "sandbox/linux: mount host_path not found; skipping"
-            );
-            continue;
-        }
-        if let Ok(fd) = PathFd::new(&mount.host_path) {
-            let access = if mount.writable { read_write } else { read_only };
-            c = add(c, PathBeneath::new(fd, access));
-        }
-    }
+        Ok(c)
+    })();
 
-    // Leak the fd out of Rust's ownership so we can pass the raw integer.
-    let raw = c.as_fd().as_raw_fd();
-    let _ = ManuallyDrop::new(c);
+    let c = match r {
+        Ok(c) => c,
+        Err(e) => {
+            warn!("sandbox/linux: landlock ruleset build failed ({e}); path restriction disabled");
+            return Ok(-1);
+        }
+    };
+
+    // Transfer fd ownership out of Rust; caller closes it in both parent and child.
+    let raw = c.into_raw_fd();
     Ok(raw)
 }
 
@@ -235,9 +236,14 @@ fn build_seccomp_filter(network: &NetworkPolicy) -> Result<BpfProgram, Box<dyn s
     let mut rules: BTreeMap<i64, Vec<SeccompRule>> = BTreeMap::new();
     let deny = SeccompAction::Errno(libc::EPERM as u32);
 
+    // In seccompiler 0.4.0, per-rule actions were removed.  To block a syscall
+    // unconditionally we insert an empty rule vec (no conditions → no match →
+    // `mismatch_action` fires), then pass `deny` as the `mismatch_action` to
+    // SeccompFilter::new.  Syscalls not in the map still get `default_action`
+    // (Allow).
     macro_rules! deny_all {
         ($( $sc:expr ),* $(,)?) => {
-            $( rules.insert($sc, vec![SeccompRule::new(vec![], deny.clone())]); )*
+            $( rules.insert($sc, vec![]); )*
         };
     }
 
@@ -272,9 +278,14 @@ fn build_seccomp_filter(network: &NetworkPolicy) -> Result<BpfProgram, Box<dyn s
         deny_all!(libc::SYS_socket);
     }
 
+    // seccompiler 0.4.0: SeccompFilter::new takes 4 args:
+    //   (rules, default_action, mismatch_action, target_arch)
+    // default_action → Allow (syscalls NOT in map)
+    // mismatch_action → deny (syscalls IN map but empty rule vec = no match)
     let filter = SeccompFilter::new(
         rules,
         SeccompAction::Allow,
+        deny,
         current_target_arch(),
     )?;
 
