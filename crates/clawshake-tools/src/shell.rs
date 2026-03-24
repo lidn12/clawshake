@@ -71,9 +71,25 @@ pub async fn handle(arguments: &Value) -> Result<String> {
     debug!(command, timeout_secs, ?workdir, "shell: executing");
 
     // Build the command.
+    //
+    // On Windows we use PowerShell instead of cmd.exe for two reasons:
+    //
+    // 1. **Quote fidelity**: cmd.exe /C re-parses its argument with its own
+    //    quoting rules and strips the outer double-quotes that tools like
+    //    `node -e "..."` rely on.  PowerShell -Command receives the string
+    //    verbatim and evaluates it, so quoting is preserved correctly.
+    //
+    // 2. **Encoding**: cmd.exe uses the system code page (e.g. CP936 on
+    //    Chinese Windows), producing garbled output.  We prepend a snippet
+    //    that sets the console encoding to UTF-8 before running the caller's
+    //    command, giving clean output regardless of locale.
     let mut cmd = if cfg!(windows) {
-        let mut c = tokio::process::Command::new("cmd");
-        c.args(["/C", command]);
+        let ps_command = format!(
+            "$OutputEncoding = [Console]::OutputEncoding = \
+             [Console]::InputEncoding = [System.Text.Encoding]::UTF8; {command}"
+        );
+        let mut c = tokio::process::Command::new("powershell");
+        c.args(["-NoProfile", "-NonInteractive", "-Command", &ps_command]);
         c
     } else {
         let mut c = tokio::process::Command::new("sh");
@@ -210,12 +226,8 @@ mod tests {
 
     #[tokio::test]
     async fn nonzero_exit_code() {
-        let cmd = if cfg!(windows) {
-            "cmd /C exit 1"
-        } else {
-            "exit 1"
-        };
-        let result = handle(&json!({"command": cmd})).await.unwrap();
+        // `exit 1` works in both PowerShell and sh.
+        let result = handle(&json!({"command": "exit 1"})).await.unwrap();
         assert!(result.contains("exit code: 1"));
     }
 }
