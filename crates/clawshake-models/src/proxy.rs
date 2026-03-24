@@ -4,12 +4,13 @@
 //! Applications point `OPENAI_BASE_URL` at this address and get transparent
 //! access to models running on any peer in the P2P network.
 //!
-//! When the client requests `stream: true`, the proxy opens a bidirectional
-//! P2P stream (via `libp2p-stream`) and re-emits each model delta as an SSE
-//! event — giving real-time, token-by-token streaming over the network.
+//! The proxy establishes TCP tunnels to remote model backends via
+//! `connect_models` (P2P tunnel infrastructure) and then proxies raw HTTP —
+//! both streaming (SSE) and non-streaming work natively over the tunnel.
 //!
 //! Model IDs use the format `<model_name>@<peer_id>`.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -21,20 +22,32 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use clawshake_core::network_channel::{OutboundModelStreamingCallTx, OutboundStreamCallTx};
+use clawshake_core::network_channel::OutboundCallTx;
 use clawshake_core::peer_table::PeerTable;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use tokio::sync::RwLock;
 use tracing::{info, warn};
 
 /// Shared state for the proxy server.
 pub struct ProxyState {
     /// Peer table — used to discover models from DHT announcements.
     pub peer_table: Arc<PeerTable>,
-    /// Channel for non-streaming model calls (request-response).
-    pub stream_call_tx: OutboundStreamCallTx,
-    /// Channel for streaming model calls (libp2p-stream, frame-by-frame).
-    pub model_streaming_tx: OutboundModelStreamingCallTx,
+    /// Channel for outbound P2P calls (used to call `connect_models`).
+    pub call_tx: OutboundCallTx,
+    /// Cache of established tunnels: `peer_id → local_url`.
+    tunnels: RwLock<HashMap<String, String>>,
+}
+
+impl ProxyState {
+    /// Create a new `ProxyState` with the given peer table and call channel.
+    pub fn new(peer_table: Arc<PeerTable>, call_tx: OutboundCallTx) -> Self {
+        Self {
+            peer_table,
+            call_tx,
+            tunnels: RwLock::new(HashMap::new()),
+        }
+    }
 }
 
 /// Start the local model proxy server on the given port.
@@ -84,7 +97,7 @@ async fn list_models(State(state): State<Arc<ProxyState>>) -> Json<Value> {
 struct CompletionRequest {
     /// Model ID in `model_name@peer_id` format.
     model: String,
-    messages: Vec<MessageInput>,
+    messages: Vec<Value>,
     #[serde(default)]
     temperature: Option<f64>,
     #[serde(default)]
@@ -92,28 +105,20 @@ struct CompletionRequest {
     /// Whether to stream the response as SSE events.
     #[serde(default)]
     stream: Option<bool>,
-}
-
-#[derive(Debug, Deserialize)]
-struct MessageInput {
-    role: String,
-    content: String,
+    /// Catch-all for extra fields (top_p, etc.) to forward unchanged.
+    #[serde(flatten)]
+    extra: HashMap<String, Value>,
 }
 
 /// `POST /v1/chat/completions` — route to the appropriate peer.
 ///
-/// Parses the `model` field as `model_name@peer_id`, opens a P2P stream
-/// to that peer, and forwards the completion request.
-///
-/// When `stream: true`, returns `text/event-stream` (SSE) with real-time
-/// token deltas forwarded from the remote model backend.  Otherwise returns
-/// a single JSON response.
+/// Parses the `model` field as `model_name@peer_id`, establishes a tunnel
+/// to the peer's model backend (if not already cached), and proxies the
+/// HTTP request through the tunnel.
 async fn chat_completions(
     State(state): State<Arc<ProxyState>>,
     Json(req): Json<CompletionRequest>,
 ) -> impl IntoResponse {
-    let wants_streaming = req.stream.unwrap_or(false);
-
     // Parse model@peer_id
     let (model_name, peer_id) = match req.model.rsplit_once('@') {
         Some((m, p)) => (m.to_string(), p.to_string()),
@@ -149,30 +154,16 @@ async fn chat_completions(
             .into_response();
     }
 
-    // Build the ModelRequest to send over P2P
-    let model_request = clawshake_core::models::ModelRequest {
-        model: model_name.clone(),
-        messages: req
-            .messages
-            .into_iter()
-            .map(|m| clawshake_core::models::Message {
-                role: m.role,
-                content: m.content,
-            })
-            .collect(),
-        temperature: req.temperature,
-        max_tokens: req.max_tokens,
-        stream: true, // always stream over P2P, we collect on the peer side if needed
-    };
-
-    let request_bytes = match serde_json::to_vec(&model_request) {
-        Ok(b) => b,
+    // Get or establish a tunnel to the peer's model backend.
+    let base_url = match get_tunnel_url(&state, &peer_id).await {
+        Ok(url) => url,
         Err(e) => {
+            warn!(peer = %peer_id, "Failed to establish model tunnel: {e}");
             return (
-                StatusCode::INTERNAL_SERVER_ERROR,
+                StatusCode::BAD_GATEWAY,
                 Json(json!({
                     "error": {
-                        "message": format!("Failed to serialize request: {e}"),
+                        "message": format!("Failed to connect to peer's model backend: {e}"),
                         "type": "server_error",
                     }
                 })),
@@ -181,55 +172,82 @@ async fn chat_completions(
         }
     };
 
-    if wants_streaming {
-        chat_completions_streaming(state, model_name, peer_id, request_bytes)
-            .await
-            .into_response()
-    } else {
-        chat_completions_buffered(state, model_name, peer_id, request_bytes)
-            .await
-            .into_response()
+    // Build the upstream request body — rewrite model to bare name (no @peer).
+    let mut body = json!({
+        "model": model_name,
+        "messages": req.messages,
+    });
+    if let Some(t) = req.temperature {
+        body["temperature"] = json!(t);
     }
-}
+    if let Some(m) = req.max_tokens {
+        body["max_tokens"] = json!(m);
+    }
+    if let Some(s) = req.stream {
+        body["stream"] = json!(s);
+    }
+    // Forward extra fields.
+    for (k, v) in &req.extra {
+        body[k] = v.clone();
+    }
 
-/// Non-streaming path: send request-response, wait for full result, return JSON.
-async fn chat_completions_buffered(
-    state: Arc<ProxyState>,
-    model_name: String,
-    peer_id: String,
-    request_bytes: Vec<u8>,
-) -> impl IntoResponse {
-    let (response_tx, response_rx) = tokio::sync::oneshot::channel();
-    let call = clawshake_core::network_channel::OutboundStreamCall {
-        peer_id: peer_id.clone(),
-        request: request_bytes,
-        response_tx,
+    let url = format!("{base_url}/v1/chat/completions");
+    let wants_streaming = req.stream.unwrap_or(false);
+
+    let client = reqwest::Client::new();
+    let upstream_resp = match client.post(&url).json(&body).send().await {
+        Ok(r) => r,
+        Err(e) => {
+            // Clear cached tunnel — it may be stale.
+            state.tunnels.write().await.remove(&peer_id);
+            warn!(peer = %peer_id, "Upstream request to tunnel failed: {e}");
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({
+                    "error": {
+                        "message": format!("Request to peer's model backend failed: {e}"),
+                        "type": "server_error",
+                    }
+                })),
+            )
+                .into_response();
+        }
     };
 
-    if state.stream_call_tx.send(call).await.is_err() {
+    let status = upstream_resp.status();
+    if !status.is_success() && !wants_streaming {
+        // Forward error responses as-is.
+        let body = upstream_resp.text().await.unwrap_or_default();
         return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({
-                "error": {
-                    "message": "P2P transport is not available",
-                    "type": "server_error",
-                }
-            })),
+            StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY),
+            body,
         )
             .into_response();
     }
 
-    match response_rx.await {
-        Ok(Ok(response_bytes)) => match serde_json::from_slice::<Value>(&response_bytes) {
+    if wants_streaming {
+        info!(model = %model_name, peer = %peer_id, "Streaming via tunnel");
+        // Forward the SSE byte stream directly — no re-framing needed.
+        let byte_stream = upstream_resp.bytes_stream();
+        let body = Body::from_stream(byte_stream);
+
+        axum::response::Response::builder()
+            .status(StatusCode::OK)
+            .header("Content-Type", "text/event-stream")
+            .header("Cache-Control", "no-cache")
+            .header("Connection", "keep-alive")
+            .body(body)
+            .unwrap()
+            .into_response()
+    } else {
+        // Non-streaming: read full JSON and return.
+        match upstream_resp.json::<Value>().await {
             Ok(response_json) => {
-                if response_json.get("error").is_some() {
-                    return (StatusCode::BAD_GATEWAY, Json(response_json)).into_response();
-                }
-                info!(model = %model_name, peer = %peer_id, "Model completion received from peer");
+                info!(model = %model_name, peer = %peer_id, "Model completion received via tunnel");
                 (StatusCode::OK, Json(response_json)).into_response()
             }
             Err(e) => {
-                warn!("Failed to parse peer response as JSON: {e}");
+                warn!("Failed to read upstream response: {e}");
                 (
                     StatusCode::BAD_GATEWAY,
                     Json(json!({
@@ -241,116 +259,95 @@ async fn chat_completions_buffered(
                 )
                     .into_response()
             }
-        },
-        Ok(Err(err)) => {
-            warn!(peer = %peer_id, "P2P stream call failed: {err}");
-            (
-                StatusCode::BAD_GATEWAY,
-                Json(json!({
-                    "error": {
-                        "message": format!("P2P call failed: {err}"),
-                        "type": "server_error",
-                    }
-                })),
-            )
-                .into_response()
         }
-        Err(_) => (
-            StatusCode::GATEWAY_TIMEOUT,
-            Json(json!({
-                "error": {
-                    "message": "P2P call was dropped (peer may have disconnected)",
-                    "type": "server_error",
-                }
-            })),
-        )
-            .into_response(),
     }
 }
 
-/// Streaming path: open a libp2p-stream, read frames, emit SSE events.
-async fn chat_completions_streaming(
-    state: Arc<ProxyState>,
-    model_name: String,
-    peer_id: String,
-    request_bytes: Vec<u8>,
-) -> impl IntoResponse {
-    // Create an mpsc channel for streaming frames from the P2P layer.
-    let (frame_tx, mut frame_rx) = tokio::sync::mpsc::channel::<Result<Vec<u8>, String>>(64);
+// ---------------------------------------------------------------------------
+// Tunnel management
+// ---------------------------------------------------------------------------
 
-    let call = clawshake_core::network_channel::OutboundModelStreamingCall {
-        peer_id: peer_id.clone(),
-        request: request_bytes,
-        frame_tx,
-    };
-
-    if state.model_streaming_tx.send(call).await.is_err() {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({
-                "error": {
-                    "message": "P2P streaming transport is not available",
-                    "type": "server_error",
-                }
-            })),
-        )
-            .into_response();
+/// Get the local tunnel URL for a peer's model backend, establishing a new
+/// tunnel via `connect_models` if needed.
+async fn get_tunnel_url(state: &ProxyState, peer_id: &str) -> Result<String> {
+    // Check cache first.
+    {
+        let cache = state.tunnels.read().await;
+        if let Some(url) = cache.get(peer_id) {
+            return Ok(url.clone());
+        }
     }
 
-    info!(model = %model_name, peer = %peer_id, "Starting SSE stream");
+    // No cached tunnel — establish one via network_call(connect_models).
+    let url = establish_tunnel(state, peer_id).await?;
 
-    // Build an SSE response body from the incoming frames.
-    let sse_stream = async_stream::stream! {
-        while let Some(result) = frame_rx.recv().await {
-            match result {
-                Ok(frame_bytes) => {
-                    // Each frame is a StreamFrame JSON object.
-                    // Parse to check type and re-emit as OpenAI SSE.
-                    match clawshake_core::stream::StreamFrame::from_bytes(&frame_bytes) {
-                        Ok(clawshake_core::stream::StreamFrame::Chunk { data, .. }) => {
-                            // Forward the OpenAI delta JSON as an SSE data event.
-                            let json_str = serde_json::to_string(&data).unwrap_or_default();
-                            yield Ok::<_, std::convert::Infallible>(
-                                format!("data: {json_str}\n\n")
-                            );
-                        }
-                        Ok(clawshake_core::stream::StreamFrame::Done { .. }) => {
-                            yield Ok("data: [DONE]\n\n".to_owned());
-                            break;
-                        }
-                        Ok(clawshake_core::stream::StreamFrame::Error { message, .. }) => {
-                            let err = serde_json::json!({
-                                "error": { "message": message, "type": "server_error" }
-                            });
-                            yield Ok(format!("data: {}\n\n", serde_json::to_string(&err).unwrap_or_default()));
-                            yield Ok("data: [DONE]\n\n".to_owned());
-                            break;
-                        }
-                        Err(e) => {
-                            warn!("Failed to parse stream frame: {e}");
-                        }
-                    }
-                }
-                Err(err) => {
-                    let err_json = serde_json::json!({
-                        "error": { "message": err, "type": "server_error" }
-                    });
-                    yield Ok(format!("data: {}\n\n", serde_json::to_string(&err_json).unwrap_or_default()));
-                    yield Ok("data: [DONE]\n\n".to_owned());
-                    break;
-                }
-            }
+    // Cache for future requests.
+    state.tunnels.write().await.insert(peer_id.to_string(), url.clone());
+
+    Ok(url)
+}
+
+/// Send a `connect_models` tool call to the target peer.  The bridge
+/// intercepts the tunnel-authorization response, opens the TCP tunnel,
+/// and returns `{ local_port, local_url }`.
+async fn establish_tunnel(state: &ProxyState, peer_id: &str) -> Result<String> {
+    let json_rpc = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": "connect_models",
+            "arguments": {}
         }
+    });
+    let request_bytes = serde_json::to_vec(&json_rpc)?;
+
+    let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+    let call = clawshake_core::network_channel::OutboundCall {
+        peer_id: peer_id.to_string(),
+        request: request_bytes,
+        response_tx,
     };
 
-    let body = Body::from_stream(sse_stream);
+    state
+        .call_tx
+        .send(call)
+        .await
+        .map_err(|_| anyhow::anyhow!("P2P transport is not available"))?;
 
-    axum::response::Response::builder()
-        .status(StatusCode::OK)
-        .header("Content-Type", "text/event-stream")
-        .header("Cache-Control", "no-cache")
-        .header("Connection", "keep-alive")
-        .body(body)
-        .unwrap()
-        .into_response()
+    let response_bytes = response_rx
+        .await
+        .map_err(|_| anyhow::anyhow!("P2P call was dropped"))?
+        .map_err(|e| anyhow::anyhow!("P2P call failed: {e}"))?;
+
+    // Parse the MCP JSON-RPC response to extract local_url.
+    let resp: Value = serde_json::from_slice(&response_bytes)
+        .map_err(|e| anyhow::anyhow!("Invalid response: {e}"))?;
+
+    // Check for JSON-RPC error.
+    if let Some(err) = resp.get("error") {
+        let msg = err
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown error");
+        anyhow::bail!("Remote peer returned error: {msg}");
+    }
+
+    // Extract text content from MCP result.
+    let text = resp
+        .pointer("/result/content/0/text")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("Unexpected response format"))?;
+
+    let inner: Value = serde_json::from_str(text)
+        .map_err(|e| anyhow::anyhow!("Failed to parse tunnel response: {e}"))?;
+
+    let local_url = inner
+        .get("local_url")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("Response missing local_url — tunnel may not have opened"))?;
+
+    info!(peer = %peer_id, url = %local_url, "Model tunnel established");
+
+    Ok(local_url.to_string())
 }

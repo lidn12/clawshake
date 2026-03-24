@@ -32,13 +32,12 @@ pub struct ModelAnnounce {
 }
 
 // ---------------------------------------------------------------------------
-// Request / response over the stream protocol
+// Request / response types for model completions
 // ---------------------------------------------------------------------------
 
-/// A chat completion request sent over `/clawshake/stream/1.0.0`.
+/// A chat completion request.
 ///
-/// Sent as the first `StreamFrame::Chunk` data payload when the initiator
-/// wants a model completion from a peer.
+/// Used by the model proxy when forwarding requests to peers via tunnels.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelRequest {
     /// Which model to use (e.g. `"llama3.1:70b"`).
@@ -55,9 +54,7 @@ pub struct ModelRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u64>,
 
-    /// Whether to stream the response.  Always `true` over P2P — individual
-    /// tokens are forwarded as `StreamFrame::Chunk`s.  For non-streaming
-    /// callers the local proxy collects and merges.
+    /// Whether to stream the response as SSE events.
     #[serde(default = "default_true")]
     pub stream: bool,
 }
@@ -75,7 +72,7 @@ pub struct Message {
     pub content: String,
 }
 
-/// A streaming delta chunk — sent back inside `StreamFrame::Chunk` data.
+/// A streaming delta chunk.
 ///
 /// Mirrors the OpenAI `chat.completion.chunk` shape.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -101,7 +98,7 @@ pub struct DeltaContent {
     pub content: Option<String>,
 }
 
-/// Token usage stats — sent in `StreamFrame::Done.meta`.
+/// Token usage stats.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelUsage {
     pub prompt_tokens: u64,

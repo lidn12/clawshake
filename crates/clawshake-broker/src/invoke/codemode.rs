@@ -614,6 +614,7 @@ mod tests {
         let (registry, servers, event_queue, shim_cache) = make_ctx_with_tools(tools).await;
 
         let frame_store = crate::webview::FrameStore::new();
+        let expose_table = crate::expose::ExposeTable::new();
         let ctx = crate::router::DispatchContext {
             registry: &registry,
             servers: &servers,
@@ -625,6 +626,7 @@ mod tests {
             code_mode: false,
             memory: None,
             frame_store: &frame_store,
+            expose_table: &expose_table,
         };
 
         let output = crate::invoke::codemode::invoke_describe_tools(None, &ctx);
@@ -675,6 +677,7 @@ mod tests {
         let (registry, servers, event_queue, shim_cache) = make_ctx_with_tools(tools).await;
 
         let frame_store = crate::webview::FrameStore::new();
+        let expose_table = crate::expose::ExposeTable::new();
         let ctx = crate::router::DispatchContext {
             registry: &registry,
             servers: &servers,
@@ -686,6 +689,7 @@ mod tests {
             code_mode: false,
             memory: None,
             frame_store: &frame_store,
+            expose_table: &expose_table,
         };
 
         let output = crate::invoke::codemode::invoke_describe_tools(Some("network"), &ctx);
@@ -716,6 +720,7 @@ mod tests {
         let (registry, servers, event_queue, shim_cache) = make_ctx_with_tools(tools).await;
 
         let frame_store = crate::webview::FrameStore::new();
+        let expose_table = crate::expose::ExposeTable::new();
         let ctx = crate::router::DispatchContext {
             registry: &registry,
             servers: &servers,
@@ -727,6 +732,7 @@ mod tests {
             code_mode: false,
             memory: None,
             frame_store: &frame_store,
+            expose_table: &expose_table,
         };
 
         let output = crate::invoke::codemode::invoke_describe_tools(Some("nonexistent"), &ctx);

@@ -11,7 +11,7 @@ use super::{addr, ClawshakeBehaviour, ClawshakeBehaviourEvent};
 use crate::announce;
 use clawshake_core::{network_channel::ConnectedPeers, peer_table::PeerTable};
 use libp2p::{
-    autonat, dcutr, identify, kad, mdns, relay, rendezvous, request_response,
+    autonat, dcutr, identify, kad, mdns, relay, rendezvous,
     swarm::{ConnectionId, SwarmEvent},
     upnp, Multiaddr, PeerId,
 };
@@ -176,14 +176,6 @@ pub(super) fn handle_event(
         // -- Kademlia ------------------------------------------------------
         SwarmEvent::Behaviour(ClawshakeBehaviourEvent::Kademlia(event)) => {
             on_kademlia(event, ctx, state);
-        }
-
-        // -- Proxy residual (InboundFailure only — request/response/outbound
-        //    are handled inline in the main event loop) --------------------
-        SwarmEvent::Behaviour(ClawshakeBehaviourEvent::Proxy(
-            request_response::Event::InboundFailure { peer, error, .. },
-        )) => {
-            warn!("MCP inbound failure from {peer}: {error}");
         }
 
         // -- Relay client --------------------------------------------------

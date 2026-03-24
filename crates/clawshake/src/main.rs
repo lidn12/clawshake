@@ -248,6 +248,7 @@ async fn main() -> Result<()> {
                     code_mode: code_mode_active,
                     memory,
                     frame_store: clawshake_broker::webview::FrameStore::new(),
+                    expose_table: clawshake_broker::expose::ExposeTable::new(),
                 };
 
                 tokio::spawn(async move {

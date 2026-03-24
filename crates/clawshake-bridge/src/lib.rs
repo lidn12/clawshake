@@ -7,6 +7,4 @@ pub mod announce;
 pub mod cli;
 pub(crate) mod codec;
 pub mod p2p;
-pub mod proxy;
-pub mod stream;
 pub(crate) mod watcher;

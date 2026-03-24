@@ -164,6 +164,7 @@ mod tests {
         let shim_cache = crate::invoke::codemode::ShimCache::new();
         let cron = crate::invoke::cron::CronScheduler::new();
         let frame_store = crate::webview::FrameStore::new();
+        let expose_table = crate::expose::ExposeTable::new();
 
         let ctx = router::DispatchContext {
             registry: &registry,
@@ -176,6 +177,7 @@ mod tests {
             code_mode: false,
             memory: None,
             frame_store: &frame_store,
+            expose_table: &expose_table,
         };
 
         let result = handle(&json!({"tool": "nonexistent_tool"}), &ctx).await;
@@ -195,6 +197,7 @@ mod tests {
         let shim_cache = crate::invoke::codemode::ShimCache::new();
         let cron = crate::invoke::cron::CronScheduler::new();
         let frame_store = crate::webview::FrameStore::new();
+        let expose_table = crate::expose::ExposeTable::new();
 
         let ctx = router::DispatchContext {
             registry: &registry,
@@ -207,6 +210,7 @@ mod tests {
             code_mode: false,
             memory: None,
             frame_store: &frame_store,
+            expose_table: &expose_table,
         };
 
         let result = handle(&json!({"tool": "spawn"}), &ctx).await;
@@ -226,6 +230,7 @@ mod tests {
         let shim_cache = crate::invoke::codemode::ShimCache::new();
         let cron = crate::invoke::cron::CronScheduler::new();
         let frame_store = crate::webview::FrameStore::new();
+        let expose_table = crate::expose::ExposeTable::new();
 
         let ctx = router::DispatchContext {
             registry: &registry,
@@ -238,6 +243,7 @@ mod tests {
             code_mode: false,
             memory: None,
             frame_store: &frame_store,
+            expose_table: &expose_table,
         };
 
         let result = handle(&json!({}), &ctx).await;

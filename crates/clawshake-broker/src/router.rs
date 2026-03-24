@@ -9,6 +9,7 @@ use serde_json::Value;
 
 use crate::{
     event_queue::EventQueue,
+    expose::ExposeTable,
     invoke,
     invoke::codemode::ShimCache,
     invoke::cron::CronScheduler,
@@ -33,6 +34,8 @@ pub struct DispatchContext<'a> {
     pub memory: Option<&'a MemoryContext>,
     /// Webview frame store for `ui_*` tools.
     pub frame_store: &'a FrameStore,
+    /// Expose table for `network_expose` / `network_unexpose` / `connect_*`.
+    pub expose_table: &'a ExposeTable,
 }
 
 /// Owned version of [`DispatchContext`] used by server entry points
@@ -51,6 +54,8 @@ pub struct BrokerContext {
     pub memory: Option<MemoryContext>,
     /// Webview frame store for `ui_*` tools.
     pub frame_store: FrameStore,
+    /// Expose table for `network_expose` / `network_unexpose` / `connect_*`.
+    pub expose_table: ExposeTable,
 }
 
 impl BrokerContext {
@@ -67,6 +72,7 @@ impl BrokerContext {
             code_mode: self.code_mode,
             memory: self.memory.as_ref(),
             frame_store: &self.frame_store,
+            expose_table: &self.expose_table,
         }
     }
 }
@@ -85,6 +91,7 @@ impl<'a> DispatchContext<'a> {
             code_mode: self.code_mode,
             memory: self.memory.cloned(),
             frame_store: self.frame_store.clone(),
+            expose_table: self.expose_table.clone(),
         }
     }
 }
@@ -200,6 +207,27 @@ pub fn dispatch<'a>(
                 "describe_tools" => {
                     let query = arguments.get("query").and_then(|v| v.as_str());
                     Ok(invoke::codemode::invoke_describe_tools(query, ctx))
+                }
+                // Expose tools — handled in-process (broker-side).
+                "network_expose" => {
+                    invoke::expose::handle_expose(
+                        arguments,
+                        ctx.expose_table,
+                        ctx.registry,
+                    )
+                    .await
+                }
+                "network_unexpose" => {
+                    invoke::expose::handle_unexpose(
+                        arguments,
+                        ctx.expose_table,
+                        ctx.registry,
+                    )
+                    .await
+                }
+                // Dynamic connect_* tools — handled in-process.
+                name if name.starts_with("connect_") => {
+                    invoke::expose::handle_connect(name, arguments, ctx.expose_table)
                 }
                 // Network tools — dispatch via IPC to the bridge daemon.
                 name if name.starts_with("network_") => {

@@ -30,7 +30,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tracing::{debug, error, warn};
 
 use clawshake_core::{
-    network_channel::{ConnectedPeers, DhtLookupTx, OutboundCallTx},
+    network_channel::{ConnectedPeers, DhtLookupTx, OutboundCallTx, TunnelTable},
     peer_table::PeerTable,
 };
 
@@ -52,12 +52,13 @@ pub async fn run(
     connected: ConnectedPeers,
     call_tx: OutboundCallTx,
     dht_tx: DhtLookupTx,
+    tunnel_table: TunnelTable,
 ) -> Result<()> {
     #[cfg(windows)]
-    run_windows(table, connected, call_tx, dht_tx).await?;
+    run_windows(table, connected, call_tx, dht_tx, tunnel_table).await?;
 
     #[cfg(not(windows))]
-    run_unix(table, connected, call_tx, dht_tx).await?;
+    run_unix(table, connected, call_tx, dht_tx, tunnel_table).await?;
 
     Ok(())
 }
@@ -72,6 +73,7 @@ async fn run_windows(
     connected: ConnectedPeers,
     call_tx: OutboundCallTx,
     dht_tx: DhtLookupTx,
+    tunnel_table: TunnelTable,
 ) -> Result<()> {
     use tokio::net::windows::named_pipe::ServerOptions;
 
@@ -101,8 +103,9 @@ async fn run_windows(
         let connected2 = connected.clone();
         let call_tx2 = call_tx.clone();
         let dht_tx2 = dht_tx.clone();
+        let tunnel_table2 = tunnel_table.clone();
         tokio::spawn(async move {
-            handle_connection(client, table2, connected2, call_tx2, dht_tx2).await;
+            handle_connection(client, table2, connected2, call_tx2, dht_tx2, tunnel_table2).await;
         });
     }
     Ok(())
@@ -118,6 +121,7 @@ async fn run_unix(
     connected: ConnectedPeers,
     call_tx: OutboundCallTx,
     dht_tx: DhtLookupTx,
+    tunnel_table: TunnelTable,
 ) -> Result<()> {
     use tokio::net::UnixListener;
 
@@ -137,8 +141,9 @@ async fn run_unix(
         let connected2 = connected.clone();
         let call_tx2 = call_tx.clone();
         let dht_tx2 = dht_tx.clone();
+        let tunnel_table2 = tunnel_table.clone();
         tokio::spawn(async move {
-            handle_connection(stream, table2, connected2, call_tx2, dht_tx2).await;
+            handle_connection(stream, table2, connected2, call_tx2, dht_tx2, tunnel_table2).await;
         });
     }
 }
@@ -153,6 +158,7 @@ async fn handle_connection<S>(
     connected: ConnectedPeers,
     call_tx: OutboundCallTx,
     dht_tx: DhtLookupTx,
+    tunnel_table: TunnelTable,
 ) where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
@@ -169,7 +175,7 @@ async fn handle_connection<S>(
         }
     }
 
-    let response = dispatch(line.trim(), &table, &connected, &call_tx, &dht_tx).await;
+    let response = dispatch(line.trim(), &table, &connected, &call_tx, &dht_tx, &tunnel_table).await;
 
     let mut out = match serde_json::to_string(&response) {
         Ok(s) => s,
@@ -195,6 +201,7 @@ async fn dispatch(
     connected: &ConnectedPeers,
     call_tx: &OutboundCallTx,
     dht_tx: &DhtLookupTx,
+    tunnel_table: &TunnelTable,
 ) -> Value {
     let req: Value = match serde_json::from_str(line) {
         Ok(v) => v,
@@ -209,6 +216,17 @@ async fn dispatch(
     let empty = Value::Object(Default::default());
     let params = req.get("params").unwrap_or(&empty);
 
+    // Tunnel registration methods — manage the bridge-side tunnel table.
+    match method {
+        "tunnel_register" => {
+            return handle_tunnel_register(params, tunnel_table);
+        }
+        "tunnel_unregister" => {
+            return handle_tunnel_unregister(params, tunnel_table);
+        }
+        _ => {}
+    }
+
     crate::network::handle(
         method,
         Some(params),
@@ -218,4 +236,47 @@ async fn dispatch(
         Some(dht_tx),
     )
     .await
+}
+
+/// Register a tunnel entry in the bridge-side tunnel table.
+fn handle_tunnel_register(params: &Value, tunnel_table: &TunnelTable) -> Value {
+    use clawshake_core::network_channel::TunnelEntry;
+
+    let name = match params["name"].as_str() {
+        Some(s) => s.to_string(),
+        None => return serde_json::json!({ "error": "missing field: name" }),
+    };
+    let port = match params["port"].as_u64() {
+        Some(p) => p as u16,
+        None => return serde_json::json!({ "error": "missing field: port" }),
+    };
+    let peers: Option<Vec<String>> = params.get("peers").and_then(|v| {
+        v.as_array().map(|arr| {
+            arr.iter()
+                .filter_map(|p| p.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+    });
+
+    let entry = TunnelEntry { port, peers };
+    {
+        let mut map = tunnel_table.write().expect("tunnel table lock");
+        map.insert(name.clone(), entry);
+    }
+    tracing::info!(name, port, "Tunnel registered in bridge");
+    serde_json::json!({ "ok": true })
+}
+
+/// Unregister a tunnel entry from the bridge-side tunnel table.
+fn handle_tunnel_unregister(params: &Value, tunnel_table: &TunnelTable) -> Value {
+    let name = match params["name"].as_str() {
+        Some(s) => s,
+        None => return serde_json::json!({ "error": "missing field: name" }),
+    };
+    {
+        let mut map = tunnel_table.write().expect("tunnel table lock");
+        map.remove(name);
+    }
+    tracing::info!(name, "Tunnel unregistered from bridge");
+    serde_json::json!({ "ok": true })
 }

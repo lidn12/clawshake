@@ -1,15 +1,12 @@
-//! Length-prefixed framing for libp2p request-response protocols.
+//! Length-prefixed framing for P2P tunnel protocols.
 //!
-//! Both `/clawshake/mcp/1.0.0` and `/clawshake/stream/1.0.0` use the same
-//! wire format: a 4-byte big-endian length prefix followed by that many bytes
-//! of payload.  This module provides the shared framing helpers and a single
-//! [`LengthPrefixedCodec`] that can be used with any protocol.
+//! The tunnel transport uses 4-byte big-endian length prefixes followed by
+//! that many bytes of payload.  [`read_framed`] and [`write_framed`] are the
+//! shared primitives used by both TCP tunnel headers and `_rpc` messages.
 
 use std::io;
 
-use async_trait::async_trait;
 use futures::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use libp2p::{request_response, StreamProtocol};
 
 /// Maximum payload we'll accept from a remote peer (16 MiB).
 pub(crate) const MAX_PAYLOAD: u32 = 16 * 1024 * 1024;
@@ -40,68 +37,4 @@ pub(crate) async fn write_framed<T: AsyncWrite + Unpin + Send>(
     io.write_all(data).await?;
     io.flush().await?;
     Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Generic codec
-// ---------------------------------------------------------------------------
-
-/// A codec that length-prefixes `Vec<u8>` payloads.
-///
-/// Works identically for any protocol — the protocol string is specified when
-/// constructing the `request_response::Behaviour`, not at the codec level.
-#[derive(Clone, Default)]
-pub struct LengthPrefixedCodec;
-
-#[async_trait]
-impl request_response::Codec for LengthPrefixedCodec {
-    type Protocol = StreamProtocol;
-    type Request = Vec<u8>;
-    type Response = Vec<u8>;
-
-    async fn read_request<T>(
-        &mut self,
-        _protocol: &Self::Protocol,
-        io: &mut T,
-    ) -> io::Result<Self::Request>
-    where
-        T: AsyncRead + Unpin + Send,
-    {
-        read_framed(io).await
-    }
-
-    async fn read_response<T>(
-        &mut self,
-        _protocol: &Self::Protocol,
-        io: &mut T,
-    ) -> io::Result<Self::Response>
-    where
-        T: AsyncRead + Unpin + Send,
-    {
-        read_framed(io).await
-    }
-
-    async fn write_request<T>(
-        &mut self,
-        _protocol: &Self::Protocol,
-        io: &mut T,
-        req: Self::Request,
-    ) -> io::Result<()>
-    where
-        T: AsyncWrite + Unpin + Send,
-    {
-        write_framed(io, &req).await
-    }
-
-    async fn write_response<T>(
-        &mut self,
-        _protocol: &Self::Protocol,
-        io: &mut T,
-        res: Self::Response,
-    ) -> io::Result<()>
-    where
-        T: AsyncWrite + Unpin + Send,
-    {
-        write_framed(io, &res).await
-    }
 }

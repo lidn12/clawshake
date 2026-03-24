@@ -306,19 +306,25 @@ pub async fn start_bridge(
     // the p2p event loop does a live get_record and sends back the result.
     let (dht_lookup_tx, dht_lookup_rx) = new_dht_lookup_channel();
 
+    // Tunnel table: shared between IPC (writes on tunnel_register/unregister)
+    // and P2P event loop (reads to accept inbound tunnel streams).
+    let tunnel_table = clawshake_core::network_channel::new_tunnel_table();
+
     // Spawn the IPC socket listener so clawshake-tools CLI (and any other
     // local process) can reach network_* handlers.
+    let call_tx_for_proxy = call_tx.clone();
     tokio::spawn(clawshake_tools::ipc::run(
         Arc::clone(&table),
         connected.clone(),
         call_tx,
         dht_lookup_tx,
+        tunnel_table.clone(),
     ));
 
     // -- Model proxy --------------------------------------------------------
     // Load config to check for [models] section.
     let config = clawshake_core::config::load(None).unwrap_or_default();
-    let (model_backend, stream_call_rx, model_streaming_rx) = if config.models.is_enabled() {
+    let model_backend = if config.models.is_enabled() {
         let endpoint = config
             .models
             .endpoint
@@ -327,21 +333,29 @@ pub async fn start_bridge(
         let mb = clawshake_models::backend::ModelBackend::new(endpoint);
         info!("Model proxy enabled — backend: {endpoint}");
 
-        // Outbound stream call channel: the proxy server sends completion
-        // requests here; the p2p event loop routes them to peers.
-        let (stream_call_tx, stream_call_rx) =
-            clawshake_core::network_channel::new_outbound_stream_call_channel();
-
-        // Outbound model streaming channel: used for SSE streaming requests.
-        let (model_streaming_tx, model_streaming_rx) =
-            clawshake_core::network_channel::new_outbound_model_streaming_channel();
+        // Auto-expose: register the model backend port in the tunnel table
+        // so inbound `connect_models` tunnels can reach it.
+        let backend_port = endpoint
+            .rsplit_once(':')
+            .and_then(|(_, p)| p.trim_end_matches('/').parse::<u16>().ok())
+            .unwrap_or(11434);
+        tunnel_table.write().expect("tunnel table lock").insert(
+            "models".to_string(),
+            clawshake_core::network_channel::TunnelEntry {
+                port: backend_port,
+                peers: None,
+            },
+        );
+        info!(
+            port = backend_port,
+            "Auto-exposed model backend as tunnel 'models'"
+        );
 
         // Spawn the local OpenAI-compatible proxy server.
-        let proxy_state = std::sync::Arc::new(clawshake_models::proxy::ProxyState {
-            peer_table: Arc::clone(&table),
-            stream_call_tx,
-            model_streaming_tx,
-        });
+        let proxy_state = std::sync::Arc::new(clawshake_models::proxy::ProxyState::new(
+            Arc::clone(&table),
+            call_tx_for_proxy,
+        ));
         let proxy_port = config.models.proxy_port;
         tokio::spawn(async move {
             if let Err(e) = clawshake_models::proxy::serve(proxy_state, proxy_port).await {
@@ -349,9 +363,9 @@ pub async fn start_bridge(
             }
         });
 
-        (Some(mb), Some(stream_call_rx), Some(model_streaming_rx))
+        Some(mb)
     } else {
-        (None, None, None)
+        None
     };
 
     crate::p2p::run(crate::p2p::P2pConfig {
@@ -367,8 +381,7 @@ pub async fn start_bridge(
         reannounce_rx: Some(reannounce_rx),
         dht_lookup_rx,
         model_backend,
-        stream_call_rx,
-        model_streaming_rx,
+        tunnel_table,
     })
     .await
 }

@@ -3,6 +3,7 @@ pub mod codemode;
 pub mod cron;
 pub mod deeplink;
 pub mod events;
+pub mod expose;
 pub mod http;
 pub mod memory;
 pub mod script;

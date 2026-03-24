@@ -101,6 +101,47 @@ pub fn tool_definitions() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "network_expose",
+            "description": "Expose a local TCP port to the P2P network. Registers a connect_{name} tool that remote peers can call to establish a tunneled connection. The tunnel is encrypted end-to-end via the P2P layer.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "port": {
+                        "type": "integer",
+                        "description": "Local TCP port to expose (e.g. 8888 for Jupyter, 5173 for Vite)"
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "Short name for the expose (e.g. 'jupyter', 'preview'). Used as the suffix in the connect_{name} tool."
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Optional human-readable description of the exposed service."
+                    },
+                    "peers": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional peer ID allowlist. If omitted, any connected peer can connect."
+                    }
+                },
+                "required": ["port", "name"]
+            }
+        }),
+        json!({
+            "name": "network_unexpose",
+            "description": "Stop exposing a previously shared port. Unregisters the connect_{name} tool and tears down any active tunnels for this expose.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Name of the expose to remove (the same name passed to network_expose)."
+                    }
+                },
+                "required": ["name"]
+            }
+        }),
+        json!({
             "name": "network_models",
             "description": "List AI models available on the peer-to-peer network. Returns model names, context lengths, parameter counts, and the peer hosting each model.",
             "inputSchema": {

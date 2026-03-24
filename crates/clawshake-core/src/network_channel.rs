@@ -74,62 +74,24 @@ pub fn new_dht_lookup_channel() -> (DhtLookupTx, mpsc::Receiver<DhtLookup>) {
 }
 
 // ---------------------------------------------------------------------------
-// Outbound stream (model proxy) call channel
+// Tunnel table (shared between bridge IPC + P2P event loop)
 // ---------------------------------------------------------------------------
 
-/// A single outbound model completion request to be routed through the swarm's
-/// stream protocol to a specific peer.
-///
-/// Sent by the local model proxy (`clawshake-models`) when a client calls
-/// `POST /v1/chat/completions` with a `model@peer_id` model ID.
-pub struct OutboundStreamCall {
-    /// Target peer ID string — parsed to `PeerId` inside the swarm loop.
-    pub peer_id: String,
-    /// Raw JSON bytes of the [`ModelRequest`](crate::models::ModelRequest).
-    pub request: Vec<u8>,
-    /// Oneshot channel to deliver the raw response bytes (or an error string).
-    pub response_tx: oneshot::Sender<Result<Vec<u8>, String>>,
+/// A single tunnel expose entry, populated by `tunnel_register` IPC calls
+/// from the broker when the agent calls `network_expose`.
+#[derive(Debug, Clone)]
+pub struct TunnelEntry {
+    /// The exposed local TCP port on the owning peer.
+    pub port: u16,
+    /// Optional peer allowlist.  `None` = any peer may connect.
+    pub peers: Option<Vec<String>>,
 }
 
-/// Sender half of the outbound stream call channel.
-pub type OutboundStreamCallTx = mpsc::Sender<OutboundStreamCall>;
+/// Thread-safe map of expose name → tunnel entry.
+/// Shared between the IPC handler (writes) and the P2P event loop (reads).
+pub type TunnelTable = Arc<RwLock<std::collections::HashMap<String, TunnelEntry>>>;
 
-/// Create a new outbound stream call channel.
-/// Pass the receiver to `p2p::run()`; keep the sender for the model proxy.
-pub fn new_outbound_stream_call_channel(
-) -> (OutboundStreamCallTx, mpsc::Receiver<OutboundStreamCall>) {
-    mpsc::channel(16)
-}
-
-// ---------------------------------------------------------------------------
-// Outbound model streaming call channel
-// ---------------------------------------------------------------------------
-
-/// An outbound model completion request that delivers response frames
-/// incrementally via an mpsc channel (true streaming).
-///
-/// Used when the HTTP client requests `stream: true` — the P2P layer opens a
-/// bidirectional `libp2p-stream` to the peer and forwards each
-/// [`StreamFrame`](crate::stream::StreamFrame) as it arrives from the remote
-/// model backend.
-pub struct OutboundModelStreamingCall {
-    /// Target peer ID string — parsed to `PeerId` inside the swarm loop.
-    pub peer_id: String,
-    /// Raw JSON bytes of the [`ModelRequest`](crate::models::ModelRequest).
-    pub request: Vec<u8>,
-    /// Channel to send streaming frames (serialised `StreamFrame` JSON bytes)
-    /// back to the proxy as they arrive from the remote peer.  Dropped when
-    /// the stream ends.
-    pub frame_tx: mpsc::Sender<Result<Vec<u8>, String>>,
-}
-
-/// Sender half of the outbound model streaming call channel.
-pub type OutboundModelStreamingCallTx = mpsc::Sender<OutboundModelStreamingCall>;
-
-/// Create a new outbound model streaming call channel.
-pub fn new_outbound_model_streaming_channel() -> (
-    OutboundModelStreamingCallTx,
-    mpsc::Receiver<OutboundModelStreamingCall>,
-) {
-    mpsc::channel(16)
+/// Create a new empty [`TunnelTable`].
+pub fn new_tunnel_table() -> TunnelTable {
+    Arc::new(RwLock::new(std::collections::HashMap::new()))
 }

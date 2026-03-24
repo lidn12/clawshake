@@ -2,6 +2,7 @@ mod addr;
 mod event;
 mod keypair;
 mod models;
+pub(crate) mod tunnel;
 
 use std::{
     collections::{HashMap, HashSet},
@@ -9,26 +10,24 @@ use std::{
     time::Duration,
 };
 
-use crate::{announce, proxy, stream};
+use crate::announce;
 use anyhow::{Context, Result};
 use clawshake_core::{
     mcp_client::McpClient,
-    network_channel::{
-        ConnectedPeers, DhtLookup, OutboundCall, OutboundModelStreamingCall, OutboundStreamCall,
-    },
+    network_channel::{ConnectedPeers, DhtLookup, OutboundCall, TunnelTable},
     peer_table::PeerTable,
     permissions::PermissionStore,
 };
 use clawshake_models::backend::ModelBackend;
 use libp2p::futures::StreamExt;
 use libp2p::{
-    autonat, dcutr, identify, kad, mdns, noise, relay, rendezvous, request_response,
-    swarm::{behaviour::toggle::Toggle, NetworkBehaviour, SwarmEvent},
+    autonat, dcutr, identify, kad, mdns, noise, relay, rendezvous,
+    swarm::{behaviour::toggle::Toggle, NetworkBehaviour},
     tcp, upnp, yamux, Multiaddr, PeerId, StreamProtocol, SwarmBuilder,
 };
 use tokio::{
     select,
-    sync::{mpsc, oneshot},
+    sync::mpsc,
     time::interval,
 };
 use tracing::{info, warn};
@@ -67,9 +66,8 @@ struct ClawshakeBehaviour {
     kademlia: kad::Behaviour<kad::store::MemoryStore>,
     identify: identify::Behaviour,
     mdns: mdns::tokio::Behaviour,
-    proxy: proxy::Behaviour,
-    stream: stream::Behaviour,
-    model_stream: libp2p_stream::Behaviour,
+    /// Hosts tunnel (`/clawshake/tunnel/1.0.0`) and `_rpc` streams.
+    streams: libp2p_stream::Behaviour,
     relay_server: Toggle<relay::Behaviour>,
     relay_client: relay::client::Behaviour,
     autonat: autonat::Behaviour,
@@ -96,8 +94,8 @@ pub struct P2pConfig {
     pub reannounce_rx: Option<mpsc::Receiver<()>>,
     pub dht_lookup_rx: mpsc::Receiver<DhtLookup>,
     pub model_backend: Option<ModelBackend>,
-    pub stream_call_rx: Option<mpsc::Receiver<OutboundStreamCall>>,
-    pub model_streaming_rx: Option<mpsc::Receiver<OutboundModelStreamingCall>>,
+    /// Bridge-side tunnel table, shared with the IPC handler.
+    pub tunnel_table: TunnelTable,
 }
 
 // ---------------------------------------------------------------------------
@@ -118,8 +116,7 @@ pub async fn run(cfg: P2pConfig) -> Result<()> {
         reannounce_rx,
         mut dht_lookup_rx,
         model_backend,
-        mut stream_call_rx,
-        mut model_streaming_rx,
+        tunnel_table,
     } = cfg;
 
     let keypair = keypair::load_or_create_keypair(identity.as_deref())?;
@@ -157,11 +154,7 @@ pub async fn run(cfg: P2pConfig) -> Result<()> {
 
             let mdns = mdns::tokio::Behaviour::new(mdns::Config::default(), peer_id)?;
 
-            let proxy = proxy::new_behaviour();
-
-            let stream_proto = stream::new_behaviour();
-
-            let model_stream = libp2p_stream::Behaviour::new();
+            let streams = libp2p_stream::Behaviour::new();
 
             // Only enable relay hop if the --relay-server flag was set.
             // Using Toggle so non-relay nodes don't advertise the
@@ -202,9 +195,7 @@ pub async fn run(cfg: P2pConfig) -> Result<()> {
                 kademlia,
                 identify,
                 mdns,
-                proxy,
-                stream: stream_proto,
-                model_stream,
+                streams,
                 relay_server,
                 relay_client,
                 autonat,
@@ -290,11 +281,6 @@ pub async fn run(cfg: P2pConfig) -> Result<()> {
 
     // -- Channels -----------------------------------------------------------
 
-    // Async proxy responses: (response_channel, response_bytes)
-    // The proxy handling task sends back here; main loop delivers to swarm.
-    let (resp_tx, mut resp_rx) =
-        mpsc::channel::<(request_response::ResponseChannel<Vec<u8>>, Vec<u8>)>(64);
-
     // DHT announce records from the background announce task.
     let (dht_tx, mut dht_rx) = mpsc::channel::<kad::Record>(4);
 
@@ -363,56 +349,26 @@ pub async fn run(cfg: P2pConfig) -> Result<()> {
     }
 
     // -- Main event loop ----------------------------------------------------
-    // Pending outbound P2P calls: request_id -> oneshot sender for the response.
-    // Populated when network_call sends a request through the swarm; resolved
-    // when the proxy Response or OutboundFailure event comes back.
-    let mut pending_outbound: HashMap<
-        request_response::OutboundRequestId,
-        oneshot::Sender<Result<Vec<u8>, String>>,
-    > = HashMap::new();
 
-    // Pending outbound stream calls (model completions via the local proxy).
-    let mut pending_stream_outbound: HashMap<
-        request_response::OutboundRequestId,
-        oneshot::Sender<Result<Vec<u8>, String>>,
-    > = HashMap::new();
+    // -- TCP tunnel (libp2p-stream) -----------------------------------------
+    // Accept inbound tunnel streams from peers that call `connect_{name}`
+    // via `network_call`.  The tunnel protocol is separate from model streams.
+    let tunnel_protocol =
+        StreamProtocol::try_from_owned("/clawshake/tunnel/1.0.0".to_string())
+            .expect("valid tunnel protocol");
 
-    // Async stream (model) responses: spawned tasks send back here.
-    let (stream_resp_tx, mut stream_resp_rx) =
-        mpsc::channel::<(request_response::ResponseChannel<Vec<u8>>, Vec<u8>)>(64);
-
-    // -- Model streaming (libp2p-stream) ------------------------------------
-    // Obtain a Control handle for opening outbound streams and accepting
-    // inbound ones.  The protocol uses the same framing as request_response
-    // (4-byte BE length prefix) but allows multiple frames per stream —
-    // essential for real-time token streaming from model backends.
-    let model_stream_protocol =
-        StreamProtocol::try_from_owned("/clawshake/models/stream/1.0.0".to_string())
-            .expect("valid model stream protocol");
-
-    let mut model_stream_control = swarm.behaviour().model_stream.new_control();
-
-    // Accept inbound model streams — spawn a long-lived task that loops over
-    // incoming streams and handles each in its own sub-task.
-    if let Some(ref mb) = model_backend {
-        let mb_inbound = mb.clone();
-        let store_inbound = Arc::clone(&store);
-        let mut incoming = model_stream_control
-            .accept(model_stream_protocol.clone())
-            .expect("model stream protocol not yet registered");
+    let mut tunnel_stream_control = swarm.behaviour().streams.new_control();
+    let tunnel_incoming = tunnel_stream_control
+        .accept(tunnel_protocol.clone())
+        .expect("tunnel protocol not yet registered");
+    {
+        let tt = tunnel_table.clone();
+        let rpc_ctx = Arc::new(tunnel::RpcContext {
+            backend: backend.clone(),
+            permissions: Arc::clone(&store),
+        });
         tokio::spawn(async move {
-            while let Some((peer, stream)) = incoming.next().await {
-                let mb = mb_inbound.clone();
-                let store = store_inbound.clone();
-                tokio::spawn(async move {
-                    if let Err(e) =
-                        models::handle_inbound_model_stream(&mb, stream, &peer.to_string(), &store)
-                            .await
-                    {
-                        warn!(%peer, "Inbound model stream error: {e}");
-                    }
-                });
-            }
+            tunnel::accept_inbound_tunnels(tunnel_incoming, tt, rpc_ctx).await;
         });
     }
 
@@ -441,137 +397,22 @@ pub async fn run(cfg: P2pConfig) -> Result<()> {
     loop {
         select! {
             event = swarm.select_next_some() => {
-                match event {
-                    // ── Inbound proxy request from a remote peer ──────────────
-                    SwarmEvent::Behaviour(ClawshakeBehaviourEvent::Proxy(
-                        request_response::Event::Message {
-                            peer,
-                            message: request_response::Message::Request {
-                                request, channel, ..
-                            },
-                            ..
-                        },
-                    )) => {
-                        if let Some(ref b) = backend {
-                            let b = b.clone();
-                            let s = store.clone();
-                            let tx = resp_tx.clone();
-                            tokio::spawn(async move {
-                                let response = proxy::forward(&b, &s, &peer, request).await;
-                                let _ = tx.send((channel, response)).await;
-                            });
-                        } else {
-                            // No backend — return a JSON-RPC error.
-                            let err = serde_json::to_vec(&serde_json::json!({
-                                "jsonrpc": "2.0",
-                                "id": null,
-                                "error": {
-                                    "code": -32603,
-                                    "message": "No MCP backend configured on this node"
-                                }
-                            }))
-                            .unwrap_or_default();
-                            let _ = resp_tx.send((channel, err)).await;
-                        }
-                    }
-
-                    // ── Response to an outbound network_call ──────────────────
-                    SwarmEvent::Behaviour(ClawshakeBehaviourEvent::Proxy(
-                        request_response::Event::Message {
-                            message: request_response::Message::Response {
-                                request_id, response,
-                            },
-                            ..
-                        },
-                    )) => {
-                        if let Some(tx) = pending_outbound.remove(&request_id) {
-                            let _ = tx.send(Ok(response));
-                        } else {
-                            info!("Proxy: received response for unknown request {request_id:?}");
-                        }
-                    }
-
-                    // ── Outbound failure for a pending network_call ───────────
-                    SwarmEvent::Behaviour(ClawshakeBehaviourEvent::Proxy(
-                        request_response::Event::OutboundFailure {
-                            peer, request_id, error, ..
-                        },
-                    )) => {
-                        if let Some(tx) = pending_outbound.remove(&request_id) {
-                            let _ = tx.send(Err(format!("P2P call to {peer} failed: {error}")));
-                        } else {
-                            warn!("MCP outbound failure to {peer}: {error}");
-                        }
-                    }
-
-                    // ── Inbound stream protocol request (model completions) ──
-                    SwarmEvent::Behaviour(ClawshakeBehaviourEvent::Stream(
-                        request_response::Event::Message {
-                            peer,
-                            message: request_response::Message::Request {
-                                request, channel, ..
-                            },
-                            ..
-                        },
-                    )) => {
-                        if let Some(ref mb) = model_backend {
-                            let mb = mb.clone();
-                            let tx = stream_resp_tx.clone();
-                            let perm_store = Arc::clone(&store);
-                            tokio::spawn(async move {
-                                let response = models::handle_model_request(&mb, &request, &peer.to_string(), &perm_store).await;
-                                let _ = tx.send((channel, response)).await;
-                            });
-                        } else {
-                            info!(%peer, "Inbound stream request but no model backend configured");
-                            let err = models::model_error_bytes(
-                                "No model backend configured on this node",
-                                "server_error",
-                            );
-                            let _ = swarm.behaviour_mut().stream.send_response(channel, err);
-                        }
-                    }
-
-                    // ── Stream protocol response (outbound model call result) ─
-                    SwarmEvent::Behaviour(ClawshakeBehaviourEvent::Stream(
-                        request_response::Event::Message {
-                            message: request_response::Message::Response {
-                                request_id, response,
-                            },
-                            ..
-                        },
-                    )) => {
-                        if let Some(tx) = pending_stream_outbound.remove(&request_id) {
-                            let _ = tx.send(Ok(response));
-                        } else {
-                            info!("Stream: received response for unknown request {request_id:?}");
-                        }
-                    }
-
-                    // ── Stream protocol outbound failure ──────────────────────
-                    SwarmEvent::Behaviour(ClawshakeBehaviourEvent::Stream(
-                        request_response::Event::OutboundFailure {
-                            peer, request_id, error, ..
-                        },
-                    )) => {
-                        if let Some(tx) = pending_stream_outbound.remove(&request_id) {
-                            let _ = tx.send(Err(format!("Stream call to {peer} failed: {error}")));
-                        } else {
-                            warn!("Stream outbound failure to {peer} ({request_id:?}): {error}");
-                        }
-                    }
-
-                    // ── Everything else ───────────────────────────────────────
-                    other => event::handle_event(&mut swarm, other, &ctx, &mut state),
-                }
+                event::handle_event(&mut swarm, event, &ctx, &mut state);
             }
 
-            // network_call: send an outbound MCP request to a remote peer.
+            // network_call: send an outbound MCP request to a remote peer
+            // via the _rpc tunnel.
             Some(OutboundCall { peer_id, request, response_tx }) = call_rx.recv() => {
                 match peer_id.parse::<PeerId>() {
                     Ok(pid) => {
-                        let req_id = swarm.behaviour_mut().proxy.send_request(&pid, request);
-                        pending_outbound.insert(req_id, response_tx);
+                        let mut tsc = tunnel_stream_control.clone();
+                        let tp = tunnel_protocol.clone();
+                        tokio::spawn(async move {
+                            let result = tunnel::send_rpc_via_tunnel(
+                                pid, request, &mut tsc, tp,
+                            ).await;
+                            let _ = response_tx.send(result);
+                        });
                     }
                     Err(e) => {
                         let _ = response_tx.send(Err(format!("invalid peer_id '{peer_id}': {e}")));
@@ -589,62 +430,6 @@ pub async fn run(cfg: P2pConfig) -> Result<()> {
                     }
                     Err(e) => {
                         let _ = response_tx.send(Err(format!("invalid peer_id '{peer_id}': {e}")));
-                    }
-                }
-            }
-
-            // Deliver async proxy responses back through the swarm.
-            Some((channel, response)) = resp_rx.recv() => {
-                let _ = swarm.behaviour_mut().proxy.send_response(channel, response);
-            }
-
-            // Deliver async stream (model) responses back through the swarm.
-            Some((channel, response)) = stream_resp_rx.recv() => {
-                let _ = swarm.behaviour_mut().stream.send_response(channel, response);
-            }
-
-            // Outbound stream call: model proxy sends a completion request to a peer.
-            Some(OutboundStreamCall { peer_id, request, response_tx }) = async {
-                match stream_call_rx.as_mut() {
-                    Some(rx) => rx.recv().await,
-                    None => std::future::pending().await,
-                }
-            } => {
-                match peer_id.parse::<PeerId>() {
-                    Ok(pid) => {
-                        let req_id = swarm.behaviour_mut().stream.send_request(&pid, request);
-                        pending_stream_outbound.insert(req_id, response_tx);
-                    }
-                    Err(e) => {
-                        let _ = response_tx.send(Err(format!("invalid peer_id '{peer_id}': {e}")));
-                    }
-                }
-            }
-
-            // Outbound model streaming call: like above but uses libp2p-stream
-            // for true frame-by-frame streaming.  Opens a bidirectional stream,
-            // writes the request, then reads StreamFrame JSON objects and
-            // forwards each through the mpsc channel.
-            Some(OutboundModelStreamingCall { peer_id, request, frame_tx }) = async {
-                match model_streaming_rx.as_mut() {
-                    Some(rx) => rx.recv().await,
-                    None => std::future::pending().await,
-                }
-            } => {
-                match peer_id.parse::<PeerId>() {
-                    Ok(pid) => {
-                        let mut ctl = model_stream_control.clone();
-                        let proto = model_stream_protocol.clone();
-                        tokio::spawn(async move {
-                            if let Err(e) = models::drive_outbound_model_stream(
-                                &mut ctl, pid, proto, &request, frame_tx,
-                            ).await {
-                                warn!(%pid, "Outbound model stream failed: {e}");
-                            }
-                        });
-                    }
-                    Err(e) => {
-                        let _ = frame_tx.send(Err(format!("invalid peer_id '{peer_id}': {e}"))).await;
                     }
                 }
             }
