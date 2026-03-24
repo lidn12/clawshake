@@ -14,10 +14,14 @@ path = "src/lib.rs"
 name = "clawshake-broker"
 path = "src/main.rs"
 
+[features]
+default = ["memory"]
+memory = ["dep:clawshake-memory"]
+
 [dependencies]
 clawshake-core = { workspace = true }
 clawshake-tools = { workspace = true }
-clawshake-memory = { workspace = true }
+clawshake-memory = { workspace = true, optional = true }
 tokio = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }

@@ -225,6 +225,7 @@ async fn main() -> Result<()> {
 
                 // ── Memory subsystem ────────────────────────────────────
                 let config = core_config::load(None)?;
+                #[cfg(feature = "memory")]
                 let memory = if config.memory.enabled {
                     let mem_ctx = clawshake_broker::invoke::memory::build_memory_context(
                         &clawshake_dir,
@@ -234,6 +235,11 @@ async fn main() -> Result<()> {
                     Some(mem_ctx)
                 } else {
                     info!("Memory subsystem disabled");
+                    None
+                };
+                #[cfg(not(feature = "memory"))]
+                let memory: Option<clawshake_broker::router::MemoryContext> = {
+                    let _ = &config;
                     None
                 };
 

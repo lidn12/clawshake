@@ -13,10 +13,17 @@ use crate::{
     invoke,
     invoke::codemode::ShimCache,
     invoke::cron::CronScheduler,
-    invoke::memory::MemoryContext,
     watcher::{ManifestRegistry, McpServerMap},
     webview::FrameStore,
 };
+
+#[cfg(feature = "memory")]
+use crate::invoke::memory::MemoryContext;
+
+/// Stub type used when the `memory` feature is disabled.
+#[cfg(not(feature = "memory"))]
+#[derive(Clone)]
+pub struct MemoryContext;
 
 /// Everything the router needs to dispatch any tool call.
 pub struct DispatchContext<'a> {
@@ -210,20 +217,10 @@ pub fn dispatch<'a>(
                 }
                 // Expose tools — handled in-process (broker-side).
                 "network_expose" => {
-                    invoke::expose::handle_expose(
-                        arguments,
-                        ctx.expose_table,
-                        ctx.registry,
-                    )
-                    .await
+                    invoke::expose::handle_expose(arguments, ctx.expose_table, ctx.registry).await
                 }
                 "network_unexpose" => {
-                    invoke::expose::handle_unexpose(
-                        arguments,
-                        ctx.expose_table,
-                        ctx.registry,
-                    )
-                    .await
+                    invoke::expose::handle_unexpose(arguments, ctx.expose_table, ctx.registry).await
                 }
                 // Dynamic connect_* tools — handled in-process.
                 name if name.starts_with("connect_") => {
@@ -246,27 +243,32 @@ pub fn dispatch<'a>(
                 "cron_list" => ctx.cron.handle_list(arguments).await,
                 "cron_remove" => ctx.cron.handle_remove(arguments).await,
                 // Memory tools — dispatch to the memory subsystem.
+                #[cfg(feature = "memory")]
                 name if name.starts_with("memory_") => {
                     let mem = ctx.memory.as_ref().ok_or_else(|| {
                         anyhow::anyhow!("memory subsystem is disabled (no [memory] config)")
                     })?;
                     match name {
                         "memory_recall" => invoke::memory::invoke_recall(arguments, mem).await,
-                        "memory_procedural" => invoke::memory::invoke_procedural(arguments, mem).await,
+                        "memory_procedural" => {
+                            invoke::memory::invoke_procedural(arguments, mem).await
+                        }
                         "memory_append" => invoke::memory::invoke_append(arguments, mem).await,
                         "memory_ingest" => invoke::memory::invoke_ingest(arguments, mem).await,
                         "memory_embed" => invoke::memory::invoke_embed(arguments, mem).await,
                         _ => anyhow::bail!("unknown memory tool '{name}'"),
                     }
                 }
+                #[cfg(not(feature = "memory"))]
+                name if name.starts_with("memory_") => {
+                    anyhow::bail!("memory subsystem not compiled in (build with --features memory)")
+                }
                 // Webview UI tools — dispatch to the frame store.
                 "ui_render" => {
                     invoke::webview::handle_render(arguments, ctx.frame_store, ctx.port).await
                 }
                 "ui_push" => invoke::webview::handle_push(arguments, ctx.frame_store).await,
-                "ui_snapshot" => {
-                    invoke::webview::handle_snapshot(arguments, ctx.frame_store).await
-                }
+                "ui_snapshot" => invoke::webview::handle_snapshot(arguments, ctx.frame_store).await,
                 "ui_close" => invoke::webview::handle_close(arguments, ctx.frame_store).await,
                 _ => anyhow::bail!(
                     "in-process tool '{tool_name}' has no registered handler in the router"

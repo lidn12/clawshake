@@ -113,12 +113,18 @@ async fn main() -> Result<()> {
 
             // ── Memory subsystem ────────────────────────────────────────
             let config = core_config::load(None)?;
+            #[cfg(feature = "memory")]
             let memory = if config.memory.enabled {
                 let mem_ctx = invoke::memory::build_memory_context(&clawshake_dir, &config.memory);
                 invoke::memory::start_watcher(&clawshake_dir, &config.memory);
                 Some(mem_ctx)
             } else {
                 info!("Memory subsystem disabled");
+                None
+            };
+            #[cfg(not(feature = "memory"))]
+            let memory: Option<router::MemoryContext> = {
+                let _ = &config;
                 None
             };
 

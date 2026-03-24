@@ -5,6 +5,7 @@ pub mod deeplink;
 pub mod events;
 pub mod expose;
 pub mod http;
+#[cfg(feature = "memory")]
 pub mod memory;
 pub mod script;
 pub mod spawn;

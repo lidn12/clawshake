@@ -15,7 +15,7 @@ clawshake-core     = { workspace = true }
 clawshake-tools    = { workspace = true }
 clawshake-channels = { workspace = true }
 clawshake-bridge   = { path = "../clawshake-bridge" }
-clawshake-broker   = { path = "../clawshake-broker" }
+clawshake-broker   = { path = "../clawshake-broker", default-features = false }
 
 tokio             = { workspace = true }
 clap              = { workspace = true }
@@ -23,3 +23,7 @@ anyhow            = { workspace = true }
 tracing           = { workspace = true }
 tracing-subscriber = { workspace = true }
 dirs              = { workspace = true }
+
+[features]
+default = ["memory"]
+memory = ["clawshake-broker/memory"]

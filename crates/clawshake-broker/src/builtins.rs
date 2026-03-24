@@ -51,6 +51,7 @@ pub fn register(registry: &ManifestRegistry, code_mode: bool, bridge_available: 
     }
 
     // -- Memory tools (always registered; some are hidden) --
+    #[cfg(feature = "memory")]
     for (tool, hidden) in memory_tools() {
         if hidden {
             info!(name = %tool.name, "Registered hidden memory tool");
@@ -351,6 +352,7 @@ fn webview_tools() -> Vec<Tool> {
 /// `memory_recall` is visible to agents.  Infrastructure and operational
 /// tools (`memory_procedural`, `memory_append`, `memory_ingest`,
 /// `memory_embed`) are hidden — callable but excluded from `tools/list`.
+#[cfg(feature = "memory")]
 fn memory_tools() -> Vec<(Tool, bool)> {
     crate::invoke::memory::memory_tool_definitions()
         .into_iter()
