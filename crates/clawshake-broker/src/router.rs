@@ -43,6 +43,9 @@ pub struct DispatchContext<'a> {
     pub frame_store: &'a FrameStore,
     /// Expose table for `network_expose` / `network_unexpose` / `connect_*`.
     pub expose_table: &'a ExposeTable,
+    /// Trigger a DHT re-announce when the tool list changes (e.g. after
+    /// `network_expose`). `None` in standalone broker mode (no bridge).
+    pub reannounce_tx: Option<&'a tokio::sync::mpsc::Sender<()>>,
 }
 
 /// Owned version of [`DispatchContext`] used by server entry points
@@ -63,6 +66,9 @@ pub struct BrokerContext {
     pub frame_store: FrameStore,
     /// Expose table for `network_expose` / `network_unexpose` / `connect_*`.
     pub expose_table: ExposeTable,
+    /// Trigger a DHT re-announce when the tool list changes (e.g. after
+    /// `network_expose`). `None` in standalone broker mode (no bridge).
+    pub reannounce_tx: Option<tokio::sync::mpsc::Sender<()>>,
 }
 
 impl BrokerContext {
@@ -80,6 +86,7 @@ impl BrokerContext {
             memory: self.memory.as_ref(),
             frame_store: &self.frame_store,
             expose_table: &self.expose_table,
+            reannounce_tx: self.reannounce_tx.as_ref(),
         }
     }
 }
@@ -99,6 +106,7 @@ impl<'a> DispatchContext<'a> {
             memory: self.memory.cloned(),
             frame_store: self.frame_store.clone(),
             expose_table: self.expose_table.clone(),
+            reannounce_tx: self.reannounce_tx.cloned(),
         }
     }
 }
@@ -217,10 +225,22 @@ pub fn dispatch<'a>(
                 }
                 // Expose tools — handled in-process (broker-side).
                 "network_expose" => {
-                    invoke::expose::handle_expose(arguments, ctx.expose_table, ctx.registry).await
+                    invoke::expose::handle_expose(
+                        arguments,
+                        ctx.expose_table,
+                        ctx.registry,
+                        ctx.reannounce_tx,
+                    )
+                    .await
                 }
                 "network_unexpose" => {
-                    invoke::expose::handle_unexpose(arguments, ctx.expose_table, ctx.registry).await
+                    invoke::expose::handle_unexpose(
+                        arguments,
+                        ctx.expose_table,
+                        ctx.registry,
+                        ctx.reannounce_tx,
+                    )
+                    .await
                 }
                 // Dynamic connect_* tools — handled in-process.
                 name if name.starts_with("connect_") => {

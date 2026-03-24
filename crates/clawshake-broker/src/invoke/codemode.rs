@@ -627,6 +627,7 @@ mod tests {
             memory: None,
             frame_store: &frame_store,
             expose_table: &expose_table,
+            reannounce_tx: None,
         };
 
         let output = crate::invoke::codemode::invoke_describe_tools(None, &ctx);
@@ -690,6 +691,7 @@ mod tests {
             memory: None,
             frame_store: &frame_store,
             expose_table: &expose_table,
+            reannounce_tx: None,
         };
 
         let output = crate::invoke::codemode::invoke_describe_tools(Some("network"), &ctx);
@@ -733,6 +735,7 @@ mod tests {
             memory: None,
             frame_store: &frame_store,
             expose_table: &expose_table,
+            reannounce_tx: None,
         };
 
         let output = crate::invoke::codemode::invoke_describe_tools(Some("nonexistent"), &ctx);

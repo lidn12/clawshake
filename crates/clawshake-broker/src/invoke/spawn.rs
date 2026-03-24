@@ -178,6 +178,7 @@ mod tests {
             memory: None,
             frame_store: &frame_store,
             expose_table: &expose_table,
+            reannounce_tx: None,
         };
 
         let result = handle(&json!({"tool": "nonexistent_tool"}), &ctx).await;
@@ -211,6 +212,7 @@ mod tests {
             memory: None,
             frame_store: &frame_store,
             expose_table: &expose_table,
+            reannounce_tx: None,
         };
 
         let result = handle(&json!({"tool": "spawn"}), &ctx).await;
@@ -244,6 +246,7 @@ mod tests {
             memory: None,
             frame_store: &frame_store,
             expose_table: &expose_table,
+            reannounce_tx: None,
         };
 
         let result = handle(&json!({}), &ctx).await;

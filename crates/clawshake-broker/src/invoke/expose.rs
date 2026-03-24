@@ -16,6 +16,7 @@ pub async fn handle_expose(
     arguments: &Value,
     expose_table: &ExposeTable,
     registry: &ManifestRegistry,
+    reannounce_tx: Option<&tokio::sync::mpsc::Sender<()>>,
 ) -> Result<String> {
     let port = arguments
         .get("port")
@@ -113,6 +114,11 @@ pub async fn handle_expose(
         tracing::warn!("Failed to notify bridge about expose '{name}': {e:#}");
     }
 
+    // Trigger a DHT re-announce so peers discover the new connect_* tool.
+    if let Some(tx) = reannounce_tx {
+        let _ = tx.try_send(());
+    }
+
     let result = json!({
         "expose_id": expose_id,
         "name": name,
@@ -130,6 +136,7 @@ pub async fn handle_unexpose(
     arguments: &Value,
     expose_table: &ExposeTable,
     registry: &ManifestRegistry,
+    reannounce_tx: Option<&tokio::sync::mpsc::Sender<()>>,
 ) -> Result<String> {
     let name = arguments
         .get("name")
@@ -149,6 +156,11 @@ pub async fn handle_unexpose(
     let ipc_params = json!({ "name": name });
     if let Err(e) = clawshake_tools::client::send_request("tunnel_unregister", ipc_params).await {
         tracing::warn!("Failed to notify bridge about unexpose '{name}': {e:#}");
+    }
+
+    // Trigger a DHT re-announce so peers drop the stale connect_* tool.
+    if let Some(tx) = reannounce_tx {
+        let _ = tx.try_send(());
     }
 
     let result = json!({ "ok": true, "name": name });

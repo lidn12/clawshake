@@ -355,42 +355,9 @@ pub async fn maybe_open_tunnel(
         .and_then(|v| v.as_str())
         .unwrap_or("unknown");
 
-    info!(%target_peer, name, "Tunnel authorization received — opening tunnel");
+    info!(%target_peer, name, "Tunnel authorization received — opening accept loop");
 
-    // Open a libp2p stream to the target peer.
-    let mut p2p_stream = match stream_control
-        .open_stream(target_peer, tunnel_protocol)
-        .await
-    {
-        Ok(s) => s,
-        Err(e) => {
-            warn!(%target_peer, "Failed to open tunnel stream: {e}");
-            return None;
-        }
-    };
-
-    // Send the tunnel header (length-prefixed JSON).
-    let header = serde_json::json!({ "name": name });
-    let header_bytes = serde_json::to_vec(&header).ok()?;
-    codec::write_framed(&mut p2p_stream, &header_bytes)
-        .await
-        .ok()?;
-
-    // Read the 1-byte ack from the remote bridge.
-    let mut ack = [0u8; 1];
-    if FuturesReadExt::read_exact(&mut p2p_stream, &mut ack)
-        .await
-        .is_err()
-    {
-        warn!("Tunnel ack read failed");
-        return None;
-    }
-    if ack[0] != 0x01 {
-        warn!("Tunnel rejected by remote bridge (peer not authorized)");
-        return None;
-    }
-
-    // Bind a local TCP listener.
+    // Bind a local TCP listener first so we can return the port immediately.
     let bind_addr = format!("127.0.0.1:{}", requested_local_port.unwrap_or(0));
     let listener = match tokio::net::TcpListener::bind(&bind_addr).await {
         Ok(l) => l,
@@ -401,17 +368,62 @@ pub async fn maybe_open_tunnel(
     };
     let local_port = listener.local_addr().ok()?.port();
 
-    info!(local_port, %target_peer, name, "Tunnel established");
+    info!(local_port, %target_peer, name, "Tunnel listener ready");
 
-    // Spawn a task that accepts one TCP connection and splices it to the
-    // P2P stream.  For v1, one connection per tunnel.
+    // Clone stream_control so the accept loop can open new streams per connection.
+    let sc = stream_control.clone();
+    let proto = tunnel_protocol;
+    let name_owned = name.to_string();
+
+    // Persistent accept loop: each TCP connection gets its own P2P stream,
+    // allowing multiple concurrent clients (e.g. repeated HTTP requests).
     tokio::spawn(async move {
-        match listener.accept().await {
-            Ok((tcp_stream, _)) => {
-                splice(p2p_stream, tcp_stream).await;
-            }
-            Err(e) => {
-                warn!("Tunnel local accept failed: {e}");
+        loop {
+            match listener.accept().await {
+                Ok((tcp_stream, client_addr)) => {
+                    let mut sc2 = sc.clone();
+                    let proto2 = proto.clone();
+                    let name2 = name_owned.clone();
+                    tokio::spawn(async move {
+                        // Open a fresh P2P stream to the remote peer.
+                        let mut p2p_stream = match sc2.open_stream(target_peer, proto2).await {
+                            Ok(s) => s,
+                            Err(e) => {
+                                warn!(%target_peer, %client_addr,
+                                        "Failed to open tunnel stream: {e}");
+                                return;
+                            }
+                        };
+                        // Send the tunnel header.
+                        let header = serde_json::json!({ "name": &name2 });
+                        let header_bytes = match serde_json::to_vec(&header) {
+                            Ok(b) => b,
+                            Err(_) => return,
+                        };
+                        if codec::write_framed(&mut p2p_stream, &header_bytes)
+                            .await
+                            .is_err()
+                        {
+                            warn!(%target_peer, "Tunnel header write failed");
+                            return;
+                        }
+                        // Read ack.
+                        let mut ack = [0u8; 1];
+                        if FuturesReadExt::read_exact(&mut p2p_stream, &mut ack)
+                            .await
+                            .is_err()
+                            || ack[0] != 0x01
+                        {
+                            warn!(%target_peer, "Tunnel ack failed");
+                            return;
+                        }
+                        splice(p2p_stream, tcp_stream).await;
+                    });
+                }
+                Err(e) => {
+                    warn!("Tunnel accept loop exited: {e}");
+                    break;
+                }
             }
         }
     });

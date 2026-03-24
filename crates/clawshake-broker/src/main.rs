@@ -142,6 +142,7 @@ async fn main() -> Result<()> {
                 memory,
                 frame_store: clawshake_broker::webview::FrameStore::new(),
                 expose_table: clawshake_broker::expose::ExposeTable::new(),
+                reannounce_tx: None,
             };
 
             if port.is_some() {
