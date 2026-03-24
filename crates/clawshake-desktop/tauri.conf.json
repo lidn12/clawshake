@@ -1,0 +1,19 @@
+{
+    "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/crates/tauri-cli/schema.json",
+    "productName": "clawshake",
+    "version": "0.1.0",
+    "identifier": "com.clawshake.desktop",
+    "build": {
+        "frontendDist": "../../dist"
+    },
+    "app": {
+        "withGlobalTauri": false,
+        "windows": []
+    },
+    "bundle": {
+        "active": false,
+        "icon": [
+            "icons/icon.ico"
+        ]
+    }
+}

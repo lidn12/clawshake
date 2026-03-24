@@ -9,6 +9,7 @@ members = [
     "crates/clawshake-channels",
     "crates/clawshake-memory",
     "crates/clawshake-sandbox",
+    "crates/clawshake-desktop",
     "crates/clawshake",
 ]
 
