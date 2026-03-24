@@ -100,9 +100,12 @@ pub(crate) async fn spawn(config: &SandboxConfig) -> Result<SandboxHandle, Sandb
     // The RulesetCreated is moved into the closure; after fork the child owns
     // a copy of the underlying fd and applies the ruleset via restrict_self.
     unsafe {
+        let mut ll_ruleset = ll_ruleset;
         cmd.pre_exec(move || {
             // Apply Landlock (soft-fail if kernel is too old).
-            if let Some(ruleset) = ll_ruleset {
+            // take() moves the RulesetCreated out of the Option, leaving None.
+            // pre_exec requires FnMut so we cannot move directly with if-let.
+            if let Some(ruleset) = ll_ruleset.take() {
                 // restrict_self() calls prctl(PR_SET_NO_NEW_PRIVS) + syscall.
                 // Errors are silently ignored — we degrade rather than block.
                 let _ = ruleset.restrict_self();
