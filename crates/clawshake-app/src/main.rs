@@ -1,11 +1,11 @@
-//! Minimal Tauri v2 desktop window for clawshake.
+//! Minimal Tauri v2 app shell for clawshake.
 //!
 //! Opens a native window pointing at the broker's `/ui` endpoint.
 //! No broker startup logic — assumes the broker is already running.
 //!
 //! Usage:
-//!   clawshake-desktop                     # defaults to http://127.0.0.1:7475/ui
-//!   clawshake-desktop --port 8080         # custom port
+//!   clawshake-app                          # defaults to http://127.0.0.1:7475/ui
+//!   clawshake-app --port 8080              # custom port
 
 fn main() {
     // Parse --port flag (default: 7475)
@@ -31,5 +31,5 @@ fn main() {
             Ok(())
         })
         .run(tauri::generate_context!())
-        .expect("failed to run clawshake-desktop");
+        .expect("failed to run clawshake-app");
 }

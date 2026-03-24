@@ -855,6 +855,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "clawshake-app"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+]
+
+[[package]]
 name = "clawshake-bridge"
 version = "0.1.0"
 dependencies = [
@@ -932,16 +942,6 @@ dependencies = [
  "tokio",
  "toml 0.8.23",
  "tracing",
-]
-
-[[package]]
-name = "clawshake-desktop"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
 ]
 
 [[package]]
