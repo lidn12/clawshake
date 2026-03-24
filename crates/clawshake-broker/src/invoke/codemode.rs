@@ -613,6 +613,7 @@ mod tests {
         ];
         let (registry, servers, event_queue, shim_cache) = make_ctx_with_tools(tools).await;
 
+        let frame_store = crate::webview::FrameStore::new();
         let ctx = crate::router::DispatchContext {
             registry: &registry,
             servers: &servers,
@@ -623,6 +624,7 @@ mod tests {
             port: 7474,
             code_mode: false,
             memory: None,
+            frame_store: &frame_store,
         };
 
         let output = crate::invoke::codemode::invoke_describe_tools(None, &ctx);
@@ -672,6 +674,7 @@ mod tests {
         ];
         let (registry, servers, event_queue, shim_cache) = make_ctx_with_tools(tools).await;
 
+        let frame_store = crate::webview::FrameStore::new();
         let ctx = crate::router::DispatchContext {
             registry: &registry,
             servers: &servers,
@@ -682,6 +685,7 @@ mod tests {
             port: 7474,
             code_mode: false,
             memory: None,
+            frame_store: &frame_store,
         };
 
         let output = crate::invoke::codemode::invoke_describe_tools(Some("network"), &ctx);
@@ -711,6 +715,7 @@ mod tests {
         let tools = vec![make_loaded_tool("mail_send", "mail", "Send mail")];
         let (registry, servers, event_queue, shim_cache) = make_ctx_with_tools(tools).await;
 
+        let frame_store = crate::webview::FrameStore::new();
         let ctx = crate::router::DispatchContext {
             registry: &registry,
             servers: &servers,
@@ -721,6 +726,7 @@ mod tests {
             port: 7474,
             code_mode: false,
             memory: None,
+            frame_store: &frame_store,
         };
 
         let output = crate::invoke::codemode::invoke_describe_tools(Some("nonexistent"), &ctx);

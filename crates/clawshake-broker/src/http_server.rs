@@ -24,23 +24,30 @@ use std::{
 
 use anyhow::Result;
 use axum::{
-    extract::{Query, State},
+    extract::{
+        ws::{Message, WebSocket},
+        Path as AxumPath, Query, State, WebSocketUpgrade,
+    },
     http::StatusCode,
     response::{
         sse::{Event, KeepAlive, Sse},
-        IntoResponse, Json,
+        Html, IntoResponse, Json,
     },
     routing::{get, post},
     Router,
 };
 use clawshake_core::protocol::{JsonRpcRequest, JsonRpcResponse};
-use futures::{Stream, StreamExt};
+use futures::{SinkExt, Stream, StreamExt};
 use tokio::sync::{mpsc, RwLock};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-use crate::{mcp_server, router::BrokerContext};
+use crate::{
+    mcp_server,
+    router::BrokerContext,
+    webview::{self, FrameContent, WsIncoming},
+};
 
 // ---------------------------------------------------------------------------
 // Shared state
@@ -102,6 +109,10 @@ pub async fn serve(
         .route("/", post(direct_handler))
         .route("/invoke", post(invoke_handler))
         .route("/events", post(events_handler))
+        // Webview channel routes
+        .route("/ui", get(ui_host_page))
+        .route("/ui/frame/{id}", get(ui_frame_content))
+        .route("/ui/ws", get(ui_websocket_handler))
         .with_state(state);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
@@ -300,6 +311,165 @@ async fn events_handler(State(state): State<AppState>, body: String) -> impl Int
     let resp = serde_json::json!({"ok": true, "id": id});
     debug!(resp = %resp, "→ POST /events");
     Json(resp).into_response()
+}
+
+// ---------------------------------------------------------------------------
+// Webview channel routes
+// ---------------------------------------------------------------------------
+
+/// Serve the webview host page at `GET /ui`.
+async fn ui_host_page() -> Html<&'static str> {
+    Html(webview::HOST_PAGE)
+}
+
+/// Serve inline frame content at `GET /ui/frame/:id`.
+///
+/// Returns the agent-generated HTML wrapped with CSP + bridge script.
+/// For `Src` frames, this endpoint is not used (iframe navigates directly).
+async fn ui_frame_content(
+    AxumPath(frame_id): AxumPath<String>,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    let frame = state.ctx.frame_store.get(&frame_id).await;
+    match frame {
+        Some(f) => match &f.content {
+            FrameContent::Inline { html, css, js } => {
+                let body = webview::build_inline_frame(html, css, js);
+                (
+                    StatusCode::OK,
+                    [("content-type", "text/html; charset=utf-8")],
+                    body,
+                )
+                    .into_response()
+            }
+            FrameContent::Src(url) => {
+                // Redirect to the src URL — shouldn't normally hit this path
+                // since the host page sets iframe.src directly.
+                (
+                    StatusCode::TEMPORARY_REDIRECT,
+                    [("location", url.as_str())],
+                    String::new(),
+                )
+                    .into_response()
+            }
+        },
+        None => (StatusCode::NOT_FOUND, "Frame not found").into_response(),
+    }
+}
+
+/// WebSocket handler for the webview channel at `WS /ui/ws`.
+///
+/// The host page connects here. The broker pushes render/push/close/snapshot
+/// messages, and the host page sends back interaction events and snapshot
+/// responses.
+async fn ui_websocket_handler(
+    ws: WebSocketUpgrade,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| ui_websocket(socket, state))
+}
+
+async fn ui_websocket(socket: WebSocket, state: AppState) {
+    let (mut ws_tx, mut ws_rx) = socket.split();
+
+    // Channel for broker → host page messages.
+    let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+
+    // Replay all currently-open frames to the newly connected host page
+    // before registering the sender so it sees the full current state.
+    let port = state.ctx.port;
+    let existing = state.ctx.frame_store.list_all().await;
+    for (frame_id, frame) in existing {
+        let src = match &frame.content {
+            webview::FrameContent::Inline { .. } => {
+                format!("http://127.0.0.1:{port}/ui/frame/{frame_id}")
+            }
+            webview::FrameContent::Src(url) => url.clone(),
+        };
+        let msg = webview::WsOutgoing::Render {
+            frame_id,
+            src,
+            title: frame.title,
+            width: frame.width,
+            height: frame.height,
+        };
+        if let Ok(json) = serde_json::to_string(&msg) {
+            let _ = tx.send(json);
+        }
+    }
+
+    state.ctx.frame_store.add_ws_sender(tx).await;
+
+    debug!("Webview WebSocket connected");
+
+    // Forward outgoing messages from the broker to the WebSocket.
+    let send_task = tokio::spawn(async move {
+        while let Some(msg) = rx.recv().await {
+            if ws_tx.send(Message::Text(msg.into())).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    // Read incoming messages from the host page.
+    let frame_store = state.ctx.frame_store.clone();
+    let event_queue = state.ctx.event_queue.clone();
+
+    while let Some(Ok(msg)) = ws_rx.next().await {
+        let text = match msg {
+            Message::Text(t) => t.to_string(),
+            Message::Close(_) => break,
+            _ => continue,
+        };
+
+        // Size guard — drop messages > 64 KB.
+        if text.len() > 65536 {
+            continue;
+        }
+
+        let incoming: WsIncoming = match serde_json::from_str(&text) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+
+        match incoming {
+            WsIncoming::Interaction {
+                frame_id,
+                event,
+                id,
+                data,
+            } => {
+                // Push into the event queue as a channel.ui event.
+                let payload = serde_json::json!({
+                    "frame_id": frame_id,
+                    "event": event,
+                    "id": id,
+                    "data": data,
+                });
+                event_queue.push("channel.ui", "webview", payload).await;
+            }
+            WsIncoming::Close { frame_id } => {
+                frame_store.remove(&frame_id).await;
+            }
+            WsIncoming::SnapshotResponse {
+                request_id,
+                result,
+                error,
+            } => {
+                let res = match (result, error) {
+                    (Some(text), _) => Ok(text),
+                    (_, Some(err)) => Err(err),
+                    _ => Err("empty snapshot response".to_string()),
+                };
+                frame_store.resolve_snapshot(&request_id, res).await;
+            }
+        }
+    }
+
+    // Clean up.
+    send_task.abort();
+    frame_store.prune_senders().await;
+    debug!("Webview WebSocket disconnected");
 }
 
 // ---------------------------------------------------------------------------

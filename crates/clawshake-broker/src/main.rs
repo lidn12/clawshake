@@ -134,6 +134,7 @@ async fn main() -> Result<()> {
                 port: effective_port,
                 code_mode: code_mode_active,
                 memory,
+                frame_store: clawshake_broker::webview::FrameStore::new(),
             };
 
             if port.is_some() {

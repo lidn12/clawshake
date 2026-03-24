@@ -97,8 +97,8 @@ chrono = { version = "0.4", features = ["serde"] }
 # Unix: namespace / mount / signal utilities (Linux + macOS)
 nix = { version = "0.29", features = ["process", "mount", "sched", "signal", "user", "fs"] }
 
-# HTTP server (broker SSE transport)
-axum = "0.7"
+# HTTP server (broker SSE transport + WebSocket for webview channel)
+axum = { version = "0.8", features = ["ws"] }
 tokio-stream = "0.1"
 uuid = { version = "1", features = ["v4"] }
 

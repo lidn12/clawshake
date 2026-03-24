@@ -7,6 +7,7 @@ pub mod http;
 pub mod memory;
 pub mod script;
 pub mod spawn;
+pub mod webview;
 
 /// Replace every `{{key}}` in `template` with the matching value from `arguments`.
 /// Unresolved placeholders (and any immediately preceding `:` or `=` separator)

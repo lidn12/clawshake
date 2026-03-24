@@ -44,6 +44,12 @@ pub fn register(registry: &ManifestRegistry, code_mode: bool, bridge_available: 
         registry.register_builtin(tool, "cron");
     }
 
+    // -- Webview UI tools (always available) --
+    for tool in webview_tools() {
+        info!(name = %tool.name, "Registered built-in tool");
+        registry.register_builtin(tool, "webview");
+    }
+
     // -- Memory tools (always registered; some are hidden) --
     for (tool, hidden) in memory_tools() {
         if hidden {
@@ -314,6 +320,30 @@ fn spawn_tool() -> Tool {
         requires: None,
         invoke: InvokeConfig::InProcess,
     }
+}
+
+/// Convert webview tool definitions from `invoke::webview` into `Tool` structs.
+fn webview_tools() -> Vec<Tool> {
+    crate::invoke::webview::webview_tool_definitions()
+        .into_iter()
+        .filter_map(|val| {
+            let name = val.get("name")?.as_str()?.to_string();
+            let description = val.get("description")?.as_str()?.to_string();
+            let schema_val = val.get("inputSchema").cloned().unwrap_or(json!({
+                "type": "object",
+                "properties": {}
+            }));
+            let input_schema: InputSchema =
+                serde_json::from_value(schema_val).unwrap_or_default();
+            Some(Tool {
+                name,
+                description,
+                input_schema,
+                requires: None,
+                invoke: InvokeConfig::InProcess,
+            })
+        })
+        .collect()
 }
 
 /// Build memory tool definitions.  Returns `(Tool, hidden)` pairs.

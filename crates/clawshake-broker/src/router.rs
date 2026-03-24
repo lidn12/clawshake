@@ -14,6 +14,7 @@ use crate::{
     invoke::cron::CronScheduler,
     invoke::memory::MemoryContext,
     watcher::{ManifestRegistry, McpServerMap},
+    webview::FrameStore,
 };
 
 /// Everything the router needs to dispatch any tool call.
@@ -30,6 +31,8 @@ pub struct DispatchContext<'a> {
     pub code_mode: bool,
     /// Long-term memory context. `None` when memory is disabled.
     pub memory: Option<&'a MemoryContext>,
+    /// Webview frame store for `ui_*` tools.
+    pub frame_store: &'a FrameStore,
 }
 
 /// Owned version of [`DispatchContext`] used by server entry points
@@ -46,6 +49,8 @@ pub struct BrokerContext {
     pub code_mode: bool,
     /// Long-term memory context. `None` when memory is disabled.
     pub memory: Option<MemoryContext>,
+    /// Webview frame store for `ui_*` tools.
+    pub frame_store: FrameStore,
 }
 
 impl BrokerContext {
@@ -61,6 +66,7 @@ impl BrokerContext {
             port: self.port,
             code_mode: self.code_mode,
             memory: self.memory.as_ref(),
+            frame_store: &self.frame_store,
         }
     }
 }
@@ -78,6 +84,7 @@ impl<'a> DispatchContext<'a> {
             port: self.port,
             code_mode: self.code_mode,
             memory: self.memory.cloned(),
+            frame_store: self.frame_store.clone(),
         }
     }
 }
@@ -224,6 +231,15 @@ pub fn dispatch<'a>(
                         _ => anyhow::bail!("unknown memory tool '{name}'"),
                     }
                 }
+                // Webview UI tools — dispatch to the frame store.
+                "ui_render" => {
+                    invoke::webview::handle_render(arguments, ctx.frame_store, ctx.port).await
+                }
+                "ui_push" => invoke::webview::handle_push(arguments, ctx.frame_store).await,
+                "ui_snapshot" => {
+                    invoke::webview::handle_snapshot(arguments, ctx.frame_store).await
+                }
+                "ui_close" => invoke::webview::handle_close(arguments, ctx.frame_store).await,
                 _ => anyhow::bail!(
                     "in-process tool '{tool_name}' has no registered handler in the router"
                 ),

@@ -8,3 +8,4 @@ pub mod invoke;
 pub mod mcp_server;
 pub mod router;
 pub mod watcher;
+pub mod webview;

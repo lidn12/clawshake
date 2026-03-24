@@ -26,3 +26,9 @@ pub const TOPIC_CLI: &str = "channel.cli";
 
 /// Topic for CLI REPL agent responses.
 pub const TOPIC_CLI_RESPONSE: &str = "channel.cli.response";
+
+/// Topic for webview interaction events (user → agent).
+pub const TOPIC_UI: &str = "channel.ui";
+
+/// Topic for webview responses (agent → webview).
+pub const TOPIC_UI_RESPONSE: &str = "channel.ui.response";

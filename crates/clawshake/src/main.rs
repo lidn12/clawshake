@@ -230,10 +230,7 @@ async fn main() -> Result<()> {
                         &clawshake_dir,
                         &config.memory,
                     );
-                    clawshake_broker::invoke::memory::start_watcher(
-                        &clawshake_dir,
-                        &config.memory,
-                    );
+                    clawshake_broker::invoke::memory::start_watcher(&clawshake_dir, &config.memory);
                     Some(mem_ctx)
                 } else {
                     info!("Memory subsystem disabled");
@@ -250,6 +247,7 @@ async fn main() -> Result<()> {
                     port,
                     code_mode: code_mode_active,
                     memory,
+                    frame_store: clawshake_broker::webview::FrameStore::new(),
                 };
 
                 tokio::spawn(async move {
