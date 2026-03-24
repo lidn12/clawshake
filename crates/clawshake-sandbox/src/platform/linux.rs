@@ -21,10 +21,11 @@
 #![cfg(target_os = "linux")]
 
 use std::collections::BTreeMap;
-use std::os::unix::io::IntoRawFd;
 use std::path::Path;
 
-use landlock::{ABI, Access, AccessFs, PathBeneath, PathFd, Ruleset, RulesetAttr, RulesetCreatedAttr};
+use landlock::{
+    Access, AccessFs, PathBeneath, PathFd, Ruleset, RulesetAttr, RulesetCreatedAttr, ABI,
+};
 use seccompiler::{BpfProgram, SeccompAction, SeccompFilter, SeccompRule, TargetArch};
 use tempfile::TempDir;
 use tokio::process::Command;
@@ -43,12 +44,20 @@ pub(crate) async fn spawn(config: &SandboxConfig) -> Result<SandboxHandle, Sandb
     let scratch = TempDir::new().map_err(SandboxError::Io)?;
     let scratch_path = scratch.path().to_path_buf();
 
-    for sub in &["tmp", ".config", ".cache", ".local/bin", ".local/share", ".cargo/bin"] {
+    for sub in &[
+        "tmp",
+        ".config",
+        ".cache",
+        ".local/bin",
+        ".local/share",
+        ".cargo/bin",
+    ] {
         std::fs::create_dir_all(scratch_path.join(sub)).map_err(SandboxError::Io)?;
     }
 
     // ── 2. Landlock ruleset (built in parent) ────────────────────────────────
-    let ll_fd = build_landlock_ruleset(config, &scratch_path)?;
+    // Returns None if the kernel does not support Landlock.
+    let ll_ruleset = build_landlock_ruleset(config, &scratch_path)?;
 
     // ── 3. Seccomp BPF filter (compiled in parent) ───────────────────────────
     let seccomp_prog = build_seccomp_filter(&config.network)
@@ -70,41 +79,33 @@ pub(crate) async fn spawn(config: &SandboxConfig) -> Result<SandboxHandle, Sandb
     }
 
     // Reroute home / temp / package-manager dirs into the scratch space.
-    cmd.env("HOME",             &scratch_path);
-    cmd.env("TMPDIR",           scratch_path.join("tmp"));
-    cmd.env("XDG_CONFIG_HOME",  scratch_path.join(".config"));
-    cmd.env("XDG_CACHE_HOME",   scratch_path.join(".cache"));
-    cmd.env("XDG_DATA_HOME",    scratch_path.join(".local/share"));
+    cmd.env("HOME", &scratch_path);
+    cmd.env("TMPDIR", scratch_path.join("tmp"));
+    cmd.env("XDG_CONFIG_HOME", scratch_path.join(".config"));
+    cmd.env("XDG_CACHE_HOME", scratch_path.join(".cache"));
+    cmd.env("XDG_DATA_HOME", scratch_path.join(".local/share"));
     cmd.env("npm_config_prefix", scratch_path.join(".local"));
-    cmd.env("npm_config_cache",  scratch_path.join(".cache/npm"));
-    cmd.env("CARGO_HOME",        scratch_path.join(".cargo"));
-    cmd.env("GOPATH",            scratch_path.join("go"));
-    cmd.env("PYTHONUSERBASE",    scratch_path.join(".local"));
-    cmd.env("PIP_USER",          "1");
+    cmd.env("npm_config_cache", scratch_path.join(".cache/npm"));
+    cmd.env("CARGO_HOME", scratch_path.join(".cargo"));
+    cmd.env("GOPATH", scratch_path.join("go"));
+    cmd.env("PYTHONUSERBASE", scratch_path.join(".local"));
+    cmd.env("PIP_USER", "1");
 
     // ── 5. pre_exec: apply Landlock + seccomp in child ───────────────────────
     //
     // Safety: This closure runs in the child process after fork() but before
-    // exec().  Only async-signal-safe operations (syscalls) are performed here.
-    // The captured `seccomp_prog` Vec is read-only; the raw fd `ll_fd` was
-    // obtained in the parent and is duplicated into the child by fork().
+    // exec().  landlock::RulesetCreated::restrict_self() and
+    // seccompiler::apply_filter() only perform syscalls (prctl,
+    // landlock_restrict_self, prctl/seccomp) and are async-signal-safe.
+    // The RulesetCreated is moved into the closure; after fork the child owns
+    // a copy of the underlying fd and applies the ruleset via restrict_self.
     unsafe {
         cmd.pre_exec(move || {
             // Apply Landlock (soft-fail if kernel is too old).
-            if ll_fd >= 0 {
-                let ret = libc::syscall(
-                    libc::SYS_landlock_restrict_self,
-                    ll_fd as libc::c_long,
-                    0i64,
-                );
-                if ret != 0 {
-                    let err = *libc::__errno_location();
-                    if err != libc::ENOSYS && err != libc::EOPNOTSUPP {
-                        return Err(std::io::Error::from_raw_os_error(err));
-                    }
-                }
-                // No longer needed in the child after restrict_self.
-                libc::close(ll_fd);
+            if let Some(ruleset) = ll_ruleset {
+                // restrict_self() calls prctl(PR_SET_NO_NEW_PRIVS) + syscall.
+                // Errors are silently ignored — we degrade rather than block.
+                let _ = ruleset.restrict_self();
             }
 
             // Apply seccomp filter.
@@ -117,11 +118,6 @@ pub(crate) async fn spawn(config: &SandboxConfig) -> Result<SandboxHandle, Sandb
 
     // ── 6. Spawn ─────────────────────────────────────────────────────────────
     let child = cmd.spawn().map_err(SandboxError::Spawn)?;
-
-    // Close the landlock fd in the parent now that fork has happened.
-    if ll_fd >= 0 {
-        unsafe { libc::close(ll_fd); }
-    }
 
     debug!(
         pid  = child.id().unwrap_or(0),
@@ -136,27 +132,29 @@ pub(crate) async fn spawn(config: &SandboxConfig) -> Result<SandboxHandle, Sandb
 // Landlock helpers
 // ---------------------------------------------------------------------------
 
-/// Build a Landlock ruleset and return the raw fd, or -1 if unsupported.
-///
-/// The returned fd is **not** owned by Rust's drop machinery — the caller
-/// must close it manually in both parent and child.
-fn build_landlock_ruleset(config: &SandboxConfig, scratch: &Path) -> Result<i32, SandboxError> {
+/// Build a Landlock ruleset and return it, or `None` if Landlock is unsupported.
+fn build_landlock_ruleset(
+    config: &SandboxConfig,
+    scratch: &Path,
+) -> Result<Option<landlock::RulesetCreated>, SandboxError> {
     let abi = ABI::V3;
 
     let base = Ruleset::default().handle_access(AccessFs::from_all(abi));
     let base = match base {
-        Ok(b)  => b,
+        Ok(b) => b,
         Err(e) => {
-            warn!("sandbox/linux: landlock not supported by kernel ({e}); path restriction disabled");
-            return Ok(-1);
+            warn!(
+                "sandbox/linux: landlock not supported by kernel ({e}); path restriction disabled"
+            );
+            return Ok(None);
         }
     };
 
     let created = match base.create() {
-        Ok(c)  => c,
+        Ok(c) => c,
         Err(e) => {
             warn!("sandbox/linux: landlock ruleset create failed ({e}); path restriction disabled");
-            return Ok(-1);
+            return Ok(None);
         }
     };
 
@@ -171,13 +169,24 @@ fn build_landlock_ruleset(config: &SandboxConfig, scratch: &Path) -> Result<i32,
 
         // Standard read-only system directories.
         for dir in &[
-            "/usr", "/lib", "/lib64", "/lib32", "/libx32",
-            "/bin", "/sbin", "/etc/alternatives", "/etc/ld.so.cache",
-            "/proc/self", "/dev/null", "/dev/urandom", "/dev/zero",
+            "/usr",
+            "/lib",
+            "/lib64",
+            "/lib32",
+            "/libx32",
+            "/bin",
+            "/sbin",
+            "/etc/alternatives",
+            "/etc/ld.so.cache",
+            "/proc/self",
+            "/dev/null",
+            "/dev/urandom",
+            "/dev/zero",
         ] {
             if Path::new(dir).exists() {
                 if let Ok(fd) = PathFd::new(dir) {
-                    c = c.add_rule(PathBeneath::new(fd, read_only))
+                    c = c
+                        .add_rule(PathBeneath::new(fd, read_only))
                         .map_err(|e| format!("add_rule({dir}): {e:?}"))?;
                 }
             }
@@ -186,7 +195,8 @@ fn build_landlock_ruleset(config: &SandboxConfig, scratch: &Path) -> Result<i32,
         // Full access to /tmp and the scratch dir.
         for dir in [Path::new("/tmp"), scratch] {
             if let Ok(fd) = PathFd::new(dir) {
-                c = c.add_rule(PathBeneath::new(fd, read_write))
+                c = c
+                    .add_rule(PathBeneath::new(fd, read_write))
                     .map_err(|e| format!("add_rule(scratch): {e:?}"))?;
             }
         }
@@ -201,8 +211,13 @@ fn build_landlock_ruleset(config: &SandboxConfig, scratch: &Path) -> Result<i32,
                 continue;
             }
             if let Ok(fd) = PathFd::new(&mount.host_path) {
-                let access = if mount.writable { read_write } else { read_only };
-                c = c.add_rule(PathBeneath::new(fd, access))
+                let access = if mount.writable {
+                    read_write
+                } else {
+                    read_only
+                };
+                c = c
+                    .add_rule(PathBeneath::new(fd, access))
                     .map_err(|e| format!("add_rule(mount): {e:?}"))?;
             }
         }
@@ -214,13 +229,11 @@ fn build_landlock_ruleset(config: &SandboxConfig, scratch: &Path) -> Result<i32,
         Ok(c) => c,
         Err(e) => {
             warn!("sandbox/linux: landlock ruleset build failed ({e}); path restriction disabled");
-            return Ok(-1);
+            return Ok(None);
         }
     };
 
-    // Transfer fd ownership out of Rust; caller closes it in both parent and child.
-    let raw = c.into_raw_fd();
-    Ok(raw)
+    Ok(Some(c))
 }
 
 // ---------------------------------------------------------------------------
@@ -282,20 +295,18 @@ fn build_seccomp_filter(network: &NetworkPolicy) -> Result<BpfProgram, Box<dyn s
     //   (rules, default_action, mismatch_action, target_arch)
     // default_action → Allow (syscalls NOT in map)
     // mismatch_action → deny (syscalls IN map but empty rule vec = no match)
-    let filter = SeccompFilter::new(
-        rules,
-        SeccompAction::Allow,
-        deny,
-        current_target_arch(),
-    )?;
+    let filter = SeccompFilter::new(rules, SeccompAction::Allow, deny, current_target_arch())?;
 
     Ok(filter.try_into()?)
 }
 
 fn current_target_arch() -> TargetArch {
-    #[cfg(target_arch = "x86_64")]  return TargetArch::x86_64;
-    #[cfg(target_arch = "aarch64")] return TargetArch::aarch64;
-    #[cfg(target_arch = "arm")]     return TargetArch::arm;
+    #[cfg(target_arch = "x86_64")]
+    return TargetArch::x86_64;
+    #[cfg(target_arch = "aarch64")]
+    return TargetArch::aarch64;
+    #[cfg(target_arch = "arm")]
+    return TargetArch::arm;
     #[allow(unreachable_code)]
     panic!("sandbox/linux: unsupported CPU architecture for seccomp")
 }
