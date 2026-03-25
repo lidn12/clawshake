@@ -29,54 +29,46 @@ pub const SOCKET_PATH: &str = "/tmp/clawshake-bridge.sock";
 ///
 /// Opens a fresh connection for each call — connections are short-lived.
 pub async fn send_request(method: &str, params: Value) -> Result<Value> {
+    tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        send_request_inner(method, params),
+    )
+    .await
+    .context("IPC request to bridge timed out after 15 s")?
+}
+
+async fn send_request_inner(method: &str, params: Value) -> Result<Value> {
     let body = serde_json::json!({ "method": method, "params": params });
     let line = serde_json::to_string(&body).context("serialize request")? + "\n";
 
     #[cfg(windows)]
-    {
+    let stream = {
         use tokio::net::windows::named_pipe::ClientOptions;
-
-        let pipe = ClientOptions::new()
+        ClientOptions::new()
             .open(SOCKET_PATH)
-            .context("connect to bridge (is clawshake-bridge running?)")?;
-
-        let (read_half, mut write_half) = tokio::io::split(pipe);
-        write_half
-            .write_all(line.as_bytes())
-            .await
-            .context("write request")?;
-        write_half.shutdown().await.context("shutdown write")?;
-
-        let mut reader = BufReader::new(read_half);
-        let mut response = String::new();
-        reader
-            .read_line(&mut response)
-            .await
-            .context("read response")?;
-        serde_json::from_str(response.trim()).context("parse response JSON")
-    }
+            .context("connect to bridge (is clawshake-bridge running?)")?
+    };
 
     #[cfg(not(windows))]
-    {
+    let stream = {
         use tokio::net::UnixStream;
-
-        let stream = UnixStream::connect(SOCKET_PATH)
+        UnixStream::connect(SOCKET_PATH)
             .await
-            .context("connect to bridge (is clawshake-bridge running?)")?;
+            .context("connect to bridge (is clawshake-bridge running?)")?
+    };
 
-        let (read_half, mut write_half) = stream.into_split();
-        write_half
-            .write_all(line.as_bytes())
-            .await
-            .context("write request")?;
-        write_half.shutdown().await.context("shutdown write")?;
+    let (read_half, mut write_half) = tokio::io::split(stream);
+    write_half
+        .write_all(line.as_bytes())
+        .await
+        .context("write request")?;
+    write_half.shutdown().await.context("shutdown write")?;
 
-        let mut reader = BufReader::new(read_half);
-        let mut response = String::new();
-        reader
-            .read_line(&mut response)
-            .await
-            .context("read response")?;
-        serde_json::from_str(response.trim()).context("parse response JSON")
-    }
+    let mut reader = BufReader::new(read_half);
+    let mut response = String::new();
+    reader
+        .read_line(&mut response)
+        .await
+        .context("read response")?;
+    serde_json::from_str(response.trim()).context("parse response JSON")
 }

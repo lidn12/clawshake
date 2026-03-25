@@ -912,7 +912,6 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
- "uuid",
 ]
 
 [[package]]
@@ -970,13 +969,10 @@ dependencies = [
 name = "clawshake-sandbox"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "landlock",
  "libc",
  "nix 0.29.0",
  "seccompiler",
- "serde",
- "serde_json",
  "tempfile",
  "tokio",
  "tracing",

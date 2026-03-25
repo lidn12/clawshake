@@ -50,6 +50,32 @@ pub struct Tool {
     pub invoke: InvokeConfig,
 }
 
+impl Tool {
+    /// Construct an in-process `Tool` from a JSON schema definition.
+    ///
+    /// Expects a JSON object with at least `"name"` and `"description"` string
+    /// fields, plus an optional `"inputSchema"` object.  Returns `None` if
+    /// the required fields are missing.
+    ///
+    /// This is the canonical way to register built-in tools from inline
+    /// `json!({...})` definitions.
+    pub fn from_json_schema(val: &Value) -> Option<Self> {
+        let name = val.get("name")?.as_str()?.to_string();
+        let description = val.get("description")?.as_str()?.to_string();
+        let schema_val = val.get("inputSchema").cloned().unwrap_or_else(|| {
+            serde_json::json!({ "type": "object", "properties": {} })
+        });
+        let input_schema: InputSchema = serde_json::from_value(schema_val).unwrap_or_default();
+        Some(Tool {
+            name,
+            description,
+            input_schema,
+            requires: None,
+            invoke: InvokeConfig::InProcess,
+        })
+    }
+}
+
 /// JSON Schema object for a tool's inputs (`inputSchema` in MCP).
 ///
 /// ```json

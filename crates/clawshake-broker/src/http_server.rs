@@ -66,7 +66,6 @@ struct AppState {
 // ---------------------------------------------------------------------------
 
 /// Bind an MCP HTTP SSE server on `127.0.0.1:<port>` and serve forever.
-/// Bind an MCP HTTP SSE server on `127.0.0.1:<port>` and serve forever.
 pub async fn serve(
     broker: BrokerContext,
     notify_rx: Option<tokio::sync::mpsc::Receiver<()>>,

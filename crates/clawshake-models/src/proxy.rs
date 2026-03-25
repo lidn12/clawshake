@@ -37,6 +37,8 @@ pub struct ProxyState {
     pub call_tx: OutboundCallTx,
     /// Cache of established tunnels: `peer_id → local_url`.
     tunnels: RwLock<HashMap<String, String>>,
+    /// Reusable HTTP client for upstream requests.
+    client: reqwest::Client,
 }
 
 impl ProxyState {
@@ -46,6 +48,11 @@ impl ProxyState {
             peer_table,
             call_tx,
             tunnels: RwLock::new(HashMap::new()),
+            client: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(300))
+                .connect_timeout(std::time::Duration::from_secs(10))
+                .build()
+                .expect("building reqwest client"),
         }
     }
 }
@@ -194,7 +201,7 @@ async fn chat_completions(
     let url = format!("{base_url}/v1/chat/completions");
     let wants_streaming = req.stream.unwrap_or(false);
 
-    let client = reqwest::Client::new();
+    let client = &state.client;
     let upstream_resp = match client.post(&url).json(&body).send().await {
         Ok(r) => r,
         Err(e) => {

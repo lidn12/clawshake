@@ -33,3 +33,21 @@ pub fn recall(config: &Config, query: &str, limit: usize) -> anyhow::Result<Vec<
         db::search::recall(&db, query, limit)
     }
 }
+
+/// Embed all chunks that don't yet have embeddings.
+///
+/// Returns the number of chunks embedded.  If there are no pending chunks,
+/// returns `Ok(0)` without initialising the embedder.
+pub fn embed_pending(db: &Db, embedder: &mut Embedder) -> anyhow::Result<usize> {
+    let chunks = db.get_unembedded_chunks()?;
+    if chunks.is_empty() {
+        return Ok(0);
+    }
+
+    let texts: Vec<String> = chunks.iter().map(|(_, c)| c.clone()).collect();
+    let embeddings = embedder.embed(texts)?;
+    for ((id, _), emb) in chunks.iter().zip(embeddings.iter()) {
+        db.insert_embedding(*id, emb)?;
+    }
+    Ok(chunks.len())
+}

@@ -38,6 +38,7 @@ pub(super) fn load_or_create_keypair(
 }
 
 fn keypair_path() -> Result<PathBuf> {
-    let home = dirs::home_dir().context("could not determine home directory")?;
-    Ok(home.join(".clawshake").join("identity.key"))
+    let dir = clawshake_core::config::config_dir()
+        .context("could not determine home directory")?;
+    Ok(dir.join("identity.key"))
 }

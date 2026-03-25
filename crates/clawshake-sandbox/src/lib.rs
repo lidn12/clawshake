@@ -22,13 +22,13 @@
 //! ```no_run
 //! use clawshake_sandbox::{Sandbox, Mount, NetworkPolicy};
 //!
-//! # async fn example() -> anyhow::Result<()> {
+//! # async fn example() -> Result<(), clawshake_sandbox::SandboxError> {
 //! let handle = Sandbox::builder()
 //!     .command("bash")
 //!     .arg("-c")
 //!     .arg("npm install && node index.js")
-//!     .mount(Mount::read_write("/home/user/project", "/workspace"))
-//!     .mount(Mount::read_only("/home/user/.cargo", "/root/.cargo"))
+//!     .mount(Mount::read_write_at("/home/user/project", "/workspace"))
+//!     .mount(Mount::read_only_at("/home/user/.cargo", "/root/.cargo"))
 //!     .network(NetworkPolicy::None)
 //!     .build()?
 //!     .spawn()
@@ -62,14 +62,14 @@ use std::path::PathBuf;
 /// Obtain via [`Sandbox::builder`].
 #[derive(Debug, Default)]
 pub struct SandboxBuilder {
-    argv:        Vec<String>,
-    workdir:     Option<PathBuf>,
-    mounts:      Vec<Mount>,
-    network:     NetworkPolicy,
-    extra_env:   HashMap<String, String>,
+    argv: Vec<String>,
+    workdir: Option<PathBuf>,
+    mounts: Vec<Mount>,
+    network: NetworkPolicy,
+    extra_env: HashMap<String, String>,
     inherit_env: bool,
-    limits:      ResourceLimits,
-    capture:     bool,
+    limits: ResourceLimits,
+    capture: bool,
 }
 
 impl SandboxBuilder {
@@ -150,16 +150,19 @@ impl SandboxBuilder {
     /// Validate the configuration and produce a [`Sandbox`] ready to spawn.
     pub fn build(self) -> Result<Sandbox, SandboxError> {
         let config = SandboxConfig {
-            argv:        self.argv,
-            workdir:     self.workdir,
-            mounts:      self.mounts,
-            network:     self.network,
-            extra_env:   self.extra_env,
+            argv: self.argv,
+            workdir: self.workdir,
+            mounts: self.mounts,
+            network: self.network,
+            extra_env: self.extra_env,
             inherit_env: self.inherit_env,
-            limits:      self.limits,
+            limits: self.limits,
         };
         config.validate()?;
-        Ok(Sandbox { config, capture: self.capture })
+        Ok(Sandbox {
+            config,
+            capture: self.capture,
+        })
     }
 }
 
@@ -170,8 +173,9 @@ impl SandboxBuilder {
 /// A validated, ready-to-spawn sandbox configuration.
 ///
 /// Produced by [`SandboxBuilder::build`]; consumed by [`Sandbox::spawn`].
+#[derive(Debug)]
 pub struct Sandbox {
-    config:  SandboxConfig,
+    config: SandboxConfig,
     capture: bool,
 }
 
@@ -191,9 +195,179 @@ impl Sandbox {
         //  for now by injecting it via extra_env sentinel; full pipe support
         //  is straightforward but adds tokio::process::Stdio plumbing.)
         if self.capture {
-            self.config.extra_env
+            self.config
+                .extra_env
                 .insert("__CLAWSHAKE_SANDBOX_CAPTURE__".into(), "1".into());
         }
         platform::spawn(&self.config).await
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -- Builder validation -------------------------------------------------
+
+    #[test]
+    fn build_fails_without_command() {
+        let err = Sandbox::builder().build().unwrap_err();
+        assert!(
+            matches!(err, SandboxError::Config(_)),
+            "expected Config error, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn build_fails_with_relative_host_mount() {
+        let err = Sandbox::builder()
+            .command("echo")
+            .mount(Mount {
+                host_path: "relative/path".into(),
+                sandbox_path: "/absolute".into(),
+                writable: false,
+            })
+            .build()
+            .unwrap_err();
+        assert!(
+            matches!(err, SandboxError::Config(_)),
+            "expected Config error, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn build_fails_with_relative_sandbox_mount() {
+        let err = Sandbox::builder()
+            .command("echo")
+            .mount(Mount {
+                host_path: if cfg!(windows) {
+                    "C:\\abs".into()
+                } else {
+                    "/abs".into()
+                },
+                sandbox_path: "relative".into(),
+                writable: false,
+            })
+            .build()
+            .unwrap_err();
+        assert!(
+            matches!(err, SandboxError::Config(_)),
+            "expected Config error, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn build_succeeds_with_minimal_config() {
+        Sandbox::builder()
+            .command("echo")
+            .arg("hello")
+            .build()
+            .expect("minimal builder should succeed");
+    }
+
+    // -- Config defaults ----------------------------------------------------
+
+    #[test]
+    fn network_policy_default_is_none() {
+        assert_eq!(NetworkPolicy::default(), NetworkPolicy::None);
+    }
+
+    #[test]
+    fn resource_limits_default_is_unbounded() {
+        let rl = ResourceLimits::default();
+        assert!(rl.memory_bytes.is_none());
+        assert!(rl.timeout.is_none());
+    }
+
+    // -- Mount constructors -------------------------------------------------
+
+    #[test]
+    fn mount_read_only_mirrors_path() {
+        let m = Mount::read_only("/data");
+        assert_eq!(m.host_path.to_str().unwrap(), "/data");
+        assert_eq!(m.sandbox_path.to_str().unwrap(), "/data");
+        assert!(!m.writable);
+    }
+
+    #[test]
+    fn mount_read_write_mirrors_path() {
+        let m = Mount::read_write("/data");
+        assert_eq!(m.host_path, m.sandbox_path);
+        assert!(m.writable);
+    }
+
+    #[test]
+    fn mount_read_only_at_uses_distinct_paths() {
+        let m = Mount::read_only_at("/host", "/guest");
+        assert_eq!(m.host_path.to_str().unwrap(), "/host");
+        assert_eq!(m.sandbox_path.to_str().unwrap(), "/guest");
+        assert!(!m.writable);
+    }
+
+    #[test]
+    fn mount_read_write_at_uses_distinct_paths() {
+        let m = Mount::read_write_at("/host", "/guest");
+        assert_eq!(m.host_path.to_str().unwrap(), "/host");
+        assert_eq!(m.sandbox_path.to_str().unwrap(), "/guest");
+        assert!(m.writable);
+    }
+
+    // -- Builder chaining ---------------------------------------------------
+
+    #[test]
+    fn builder_chaining() {
+        let sb = Sandbox::builder()
+            .command("bash")
+            .arg("-c")
+            .args(["echo", "hello"])
+            .workdir("/tmp")
+            .network(NetworkPolicy::Allow)
+            .env("FOO", "bar")
+            .inherit_env(false)
+            .limits(ResourceLimits {
+                memory_bytes: Some(1024 * 1024),
+                timeout: Some(std::time::Duration::from_secs(10)),
+            })
+            .capture_output()
+            .build()
+            .expect("chained builder should succeed");
+        // Verifying it compiles and validates is sufficient.
+        let _ = sb;
+    }
+
+    // -- Spawn + wait (integration) -----------------------------------------
+
+    #[tokio::test]
+    async fn spawn_echo_succeeds() {
+        let cmd = if cfg!(windows) { "cmd" } else { "echo" };
+        let mut builder = Sandbox::builder().command(cmd);
+        if cfg!(windows) {
+            builder = builder.arg("/C").arg("echo hello");
+        } else {
+            builder = builder.arg("hello");
+        }
+        let handle = builder
+            .build()
+            .unwrap()
+            .spawn()
+            .await
+            .expect("spawn should succeed");
+        let status = handle.wait().await.expect("wait should succeed");
+        assert!(status.success(), "exit status: {:?}", status);
+    }
+
+    #[tokio::test]
+    async fn spawn_nonexistent_command_fails() {
+        let result = Sandbox::builder()
+            .command("__nonexistent_clawshake_test_binary__")
+            .build()
+            .unwrap()
+            .spawn()
+            .await;
+        assert!(result.is_err(), "spawning a nonexistent binary should fail");
     }
 }

@@ -109,19 +109,13 @@ fn main() -> Result<()> {
         Command::Embed => {
             let db = Db::open(&config.db_path)?;
             db.ensure_model_match(MODEL_NAME)?;
-            let chunks = db.get_unembedded_chunks()?;
-            if chunks.is_empty() {
+            if db.get_unembedded_chunks()?.is_empty() {
                 eprintln!("nothing to embed");
                 return Ok(());
             }
             eprintln!("loading embedding model (downloads on first run)…");
             let mut embedder = Embedder::new()?;
-            let total = chunks.len();
-            let texts: Vec<String> = chunks.iter().map(|(_, c)| c.clone()).collect();
-            let embeddings = embedder.embed(texts)?;
-            for ((id, _), emb) in chunks.iter().zip(embeddings.iter()) {
-                db.insert_embedding(*id, emb)?;
-            }
+            let total = clawshake_memory::embed_pending(&db, &mut embedder)?;
             eprintln!("embedded {total} chunks");
         }
 

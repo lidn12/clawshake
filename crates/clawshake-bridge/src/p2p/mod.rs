@@ -40,9 +40,9 @@ pub fn peer_id_from_disk(override_path: Option<&std::path::Path>) -> Result<Peer
     let path = match override_path {
         Some(p) => p.to_path_buf(),
         None => {
-            let home = dirs::home_dir()
-                .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
-            home.join(".clawshake").join("identity.key")
+            clawshake_core::config::config_dir()
+                .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?
+                .join("identity.key")
         }
     };
     anyhow::ensure!(
@@ -91,11 +91,18 @@ pub struct P2pConfig {
     pub connected: ConnectedPeers,
     pub relay_server: bool,
     pub call_rx: mpsc::Receiver<OutboundCall>,
-    pub reannounce_rx: Option<mpsc::Receiver<()>>,
+    /// Sender half: cloned into `EventContext` so internal P2P events
+    /// (ExternalAddrConfirmed) and external sources (permission changes,
+    /// manifest watcher, expose/unexpose) all feed the same announce task.
+    pub announce_tx: mpsc::Sender<()>,
+    /// Receiver half: consumed by the background announce task.
+    pub announce_rx: mpsc::Receiver<()>,
     pub dht_lookup_rx: mpsc::Receiver<DhtLookup>,
     pub model_backend: Option<ModelBackend>,
     /// Bridge-side tunnel table, shared with the IPC handler.
     pub tunnel_table: TunnelTable,
+    /// Pre-loaded configuration — avoids redundant `config::load()` calls.
+    pub config: clawshake_core::config::Config,
 }
 
 // ---------------------------------------------------------------------------
@@ -113,10 +120,12 @@ pub async fn run(cfg: P2pConfig) -> Result<()> {
         connected,
         relay_server,
         mut call_rx,
-        reannounce_rx,
+        announce_tx,
+        mut announce_rx,
         mut dht_lookup_rx,
         model_backend,
         tunnel_table,
+        config: app_config,
     } = cfg;
 
     let keypair = keypair::load_or_create_keypair(identity.as_deref())?;
@@ -240,8 +249,7 @@ pub async fn run(cfg: P2pConfig) -> Result<()> {
     //   2. CLI `--boot <MULTIADDR>` flags
     // When neither is set the node operates in local-only mode (mDNS only).
     let all_boot_peers: Vec<String> = {
-        let cfg = clawshake_core::config::load(None).unwrap_or_default();
-        let mut peers = cfg.network.bootstrap;
+        let mut peers = app_config.network.bootstrap.clone();
         peers.extend(boot_peers);
         peers
     };
@@ -284,10 +292,6 @@ pub async fn run(cfg: P2pConfig) -> Result<()> {
     // DHT announce records from the background announce task.
     let (dht_tx, mut dht_rx) = mpsc::channel::<kad::Record>(4);
 
-    // Notify channel: poked by ExternalAddrConfirmed so the announce task
-    // re-publishes immediately instead of waiting for the next 5-min tick.
-    let (announce_tx, mut announce_rx) = mpsc::channel::<()>(4);
-
     // -- Announce task ------------------------------------------------------
     // Always runs: publishes the node's description, addresses, and (when a
     // backend is configured) its tool and model list to the DHT.  Relay-only
@@ -295,10 +299,8 @@ pub async fn run(cfg: P2pConfig) -> Result<()> {
     // peers via network_peers.
     const ANNOUNCE_INTERVAL: u64 = 300; // 5 minutes
 
-    // Load config for model advertise settings and node description.
-    let node_config = clawshake_core::config::load(None).unwrap_or_default();
-    let models_config = node_config.models;
-    let node_description = node_config.network.description;
+    let models_config = app_config.models;
+    let node_description = app_config.network.description;
 
     {
         let backend_ann = backend.clone();
@@ -309,21 +311,15 @@ pub async fn run(cfg: P2pConfig) -> Result<()> {
         let model_backend_ann = model_backend.clone();
         let advertise_ann = models_config.advertise.clone();
         let description_ann = node_description.clone();
-        let mut reannounce_rx = reannounce_rx;
         tokio::spawn(async move {
             let mut tick = interval(Duration::from_secs(ANNOUNCE_INTERVAL));
             tick.tick().await; // burn the immediate first tick
             loop {
-                // Wait for periodic tick, ExternalAddrConfirmed, or external signal.
+                // Wait for periodic tick or any announce signal (internal
+                // P2P events + external permission/manifest/expose changes).
                 tokio::select! {
                     _ = tick.tick() => {}
                     v = announce_rx.recv() => { if v.is_none() { break; } }
-                    v = async {
-                        match reannounce_rx.as_mut() {
-                            Some(rx) => rx.recv().await,
-                            None => std::future::pending().await,
-                        }
-                    } => { if v.is_none() { break; } }
                 }
                 let addrs = addr::dedup_announce_addrs(&addrs_ann);
                 let models = models::query_models(&model_backend_ann, &advertise_ann).await;
@@ -408,9 +404,20 @@ pub async fn run(cfg: P2pConfig) -> Result<()> {
                         let mut tsc = tunnel_stream_control.clone();
                         let tp = tunnel_protocol.clone();
                         tokio::spawn(async move {
-                            let result = tunnel::send_rpc_via_tunnel(
+                            let rpc_future = tunnel::send_rpc_via_tunnel(
                                 pid, request, &mut tsc, tp,
-                            ).await;
+                            );
+                            let result = match tokio::time::timeout(
+                                std::time::Duration::from_secs(60),
+                                rpc_future,
+                            )
+                            .await
+                            {
+                                Ok(r) => r,
+                                Err(_) => Err(format!(
+                                    "RPC call to {pid} timed out after 60 s"
+                                )),
+                            };
                             let _ = response_tx.send(result);
                         });
                     }

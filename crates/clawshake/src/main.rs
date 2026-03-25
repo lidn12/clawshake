@@ -161,9 +161,8 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     // Shared ~/.clawshake paths.
-    let home =
-        dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
-    let clawshake_dir = home.join(".clawshake");
+    let clawshake_dir = clawshake_core::config::config_dir()
+        .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
     let db_path = clawshake_dir.join("permissions.db");
 
     match cli.command {
@@ -201,7 +200,7 @@ async fn main() -> Result<()> {
             p2p,
             mcp,
         } => {
-            let (reannounce_tx, reannounce_rx) = tokio::sync::mpsc::channel::<()>(4);
+            let (announce_tx, announce_rx) = tokio::sync::mpsc::channel::<()>(4);
             let backend: Option<McpClient> = if mcp.is_track1() {
                 mcp.build("clawshake-bridge").await?
             } else {
@@ -219,7 +218,7 @@ async fn main() -> Result<()> {
                 let servers = clawshake_broker::watcher::start(
                     manifests_dir,
                     registry.clone(),
-                    Some(reannounce_tx.clone()),
+                    Some(announce_tx.clone()),
                     Some(sse_tx),
                     Some(event_queue.clone()),
                 )?;
@@ -257,7 +256,7 @@ async fn main() -> Result<()> {
                     memory,
                     frame_store: clawshake_broker::webview::FrameStore::new(),
                     expose_table: clawshake_broker::expose::ExposeTable::new(),
-                    reannounce_tx: Some(reannounce_tx.clone()),
+                    reannounce_tx: Some(announce_tx.clone()),
                 };
 
                 tokio::spawn(async move {
@@ -278,8 +277,8 @@ async fn main() -> Result<()> {
                 p2p,
                 backend,
                 &db_path,
-                reannounce_tx,
-                reannounce_rx,
+                announce_tx,
+                announce_rx,
             )
             .await?;
         }

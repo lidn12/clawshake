@@ -51,7 +51,7 @@ pub async fn handle_expose(
         })
     });
 
-    let expose_id = format!("expose_{}", uuid_v4());
+    let expose_id = format!("expose_{}", uuid::Uuid::new_v4());
 
     // Check for duplicate name.
     if expose_table.get(&name).is_some() {
@@ -166,8 +166,6 @@ pub async fn handle_unexpose(
     let result = json!({ "ok": true, "name": name });
     Ok(serde_json::to_string_pretty(&result)?)
 }
-
-/// Handle a dynamically registered `connect_{name}` tool call.
 ///
 /// Looks up the expose table and returns the authorization response that the
 /// caller's bridge will intercept to set up the tunnel.
@@ -198,30 +196,4 @@ pub fn handle_connect(
     }
 
     Ok(serde_json::to_string_pretty(&response)?)
-}
-
-/// Simple v4-style UUID without pulling in the `uuid` crate.
-fn uuid_v4() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let t = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    // Mix timestamp with a pseudo-random component from the thread-local RNG.
-    let r: u64 = {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut h = DefaultHasher::new();
-        t.hash(&mut h);
-        std::thread::current().id().hash(&mut h);
-        h.finish()
-    };
-    format!(
-        "{:08x}-{:04x}-4{:03x}-{:04x}-{:012x}",
-        (t & 0xFFFF_FFFF) as u32,
-        ((t >> 32) & 0xFFFF) as u16,
-        (r & 0x0FFF) as u16,
-        ((r >> 12) & 0x3FFF | 0x8000) as u16,
-        (r >> 26) & 0xFFFF_FFFF_FFFF,
-    )
 }

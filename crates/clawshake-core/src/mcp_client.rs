@@ -158,7 +158,11 @@ impl HttpClient {
     pub fn new(url: impl Into<String>) -> Self {
         Self {
             url: url.into(),
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(120))
+                .connect_timeout(std::time::Duration::from_secs(10))
+                .build()
+                .expect("building reqwest client"),
         }
     }
 
@@ -335,7 +339,10 @@ impl StdioClient {
             stdin.flush().await?;
         }
 
-        rx.await.context("MCP server closed before responding")
+        tokio::time::timeout(std::time::Duration::from_secs(120), rx)
+            .await
+            .context("MCP stdio call timed out after 120 s")?
+            .context("MCP server closed before responding")
     }
 
     /// Forward a JSON-RPC request, assigning a fresh `id` (overwriting any

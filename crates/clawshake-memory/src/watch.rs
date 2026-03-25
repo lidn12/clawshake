@@ -225,15 +225,15 @@ fn run_ingest_and_embed(
 /// debounce tick) takes ~50-200 ms through ONNX — negligible next to
 /// the 2 s debounce window.
 fn embed_unembedded(db: &Db, embedder: &mut Option<Embedder>) {
-    let chunks = match db.get_unembedded_chunks() {
-        Ok(c) => c,
+    let has_pending = match db.get_unembedded_chunks() {
+        Ok(c) => !c.is_empty(),
         Err(e) => {
             eprintln!("[watch] failed to query unembedded chunks: {e}");
             return;
         }
     };
 
-    if chunks.is_empty() {
+    if !has_pending {
         return;
     }
 
@@ -256,27 +256,10 @@ fn embed_unembedded(db: &Db, embedder: &mut Option<Embedder>) {
     }
 
     let emb = embedder.as_mut().unwrap();
-    let total = chunks.len();
-    let texts: Vec<String> = chunks.iter().map(|(_, c)| c.clone()).collect();
-
-    let embeddings = match emb.embed(texts) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("[watch] embedding failed: {e}");
-            return;
-        }
-    };
-
-    let mut inserted = 0usize;
-    for ((id, _), vec) in chunks.iter().zip(embeddings.iter()) {
-        if let Err(e) = db.insert_embedding(*id, vec) {
-            eprintln!("[watch] insert_embedding({id}) error: {e}");
-        } else {
-            inserted += 1;
-        }
+    match crate::embed_pending(db, emb) {
+        Ok(n) => eprintln!("[watch] embedded {n} chunks"),
+        Err(e) => eprintln!("[watch] embedding failed: {e}"),
     }
-
-    eprintln!("[watch] embedded {inserted}/{total} chunks");
 }
 
 // ── tests ───────────────────────────────────────────────────────────────

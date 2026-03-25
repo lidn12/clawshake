@@ -277,8 +277,8 @@ pub async fn start_bridge(
     p2p_args: P2pArgs,
     backend: Option<McpClient>,
     db_path: &Path,
-    reannounce_tx: mpsc::Sender<()>,
-    reannounce_rx: mpsc::Receiver<()>,
+    announce_tx: mpsc::Sender<()>,
+    announce_rx: mpsc::Receiver<()>,
 ) -> Result<()> {
     let p2p_port = if p2p_args.relay_server && p2p_args.p2p_port == 0 {
         crate::p2p::RELAY_DEFAULT_PORT
@@ -292,7 +292,7 @@ pub async fn start_bridge(
     let store = Arc::new(store);
 
     // Watch permissions.db so DHT re-announces when permissions change.
-    crate::watcher::watch_permissions_db(db_path, reannounce_tx);
+    crate::watcher::watch_permissions_db(db_path, announce_tx.clone());
 
     // Peer table and connected-peer tracker for network_* built-in tools.
     let table = Arc::new(PeerTable::new());
@@ -378,10 +378,12 @@ pub async fn start_bridge(
         connected,
         relay_server: p2p_args.relay_server,
         call_rx,
-        reannounce_rx: Some(reannounce_rx),
+        announce_tx,
+        announce_rx,
         dht_lookup_rx,
         model_backend,
         tunnel_table,
+        config,
     })
     .await
 }

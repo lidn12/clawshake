@@ -67,11 +67,9 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    let db_path = dirs::home_dir()
-        .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?
-        .join(".clawshake")
-        .join("permissions.db");
-    let clawshake_dir = db_path.parent().unwrap().to_path_buf();
+    let clawshake_dir = clawshake_core::config::config_dir()
+        .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
+    let db_path = clawshake_dir.join("permissions.db");
 
     match cli.command {
         Command::Permissions { action } => {
@@ -85,13 +83,13 @@ async fn main() -> Result<()> {
 
         Command::Run { p2p, mcp } => {
             let backend = mcp.build("clawshake-bridge").await?;
-            let (reannounce_tx, reannounce_rx) = tokio::sync::mpsc::channel::<()>(4);
+            let (announce_tx, announce_rx) = tokio::sync::mpsc::channel::<()>(4);
             clawshake_bridge::cli::start_bridge(
                 p2p,
                 backend,
                 &db_path,
-                reannounce_tx,
-                reannounce_rx,
+                announce_tx,
+                announce_rx,
             )
             .await?;
         }

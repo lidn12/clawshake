@@ -304,13 +304,12 @@ pub fn memory_tool_definitions() -> Vec<Value> {
 // Startup helpers
 // ---------------------------------------------------------------------------
 
-/// Build a [`MemoryContext`] from the node's `[memory]` config section.
-///
-/// Resolves all paths relative to `clawshake_dir` (`~/.clawshake`).
-pub fn build_memory_context(clawshake_dir: &Path, cfg: &MemoryConfig) -> MemoryContext {
+/// Build a [`MemConfig`] from the node's `[memory]` config section,
+/// resolving all paths relative to `clawshake_dir` (`~/.clawshake`).
+fn resolve_mem_config(clawshake_dir: &Path, cfg: &MemoryConfig) -> MemConfig {
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
 
-    let mem_config = MemConfig {
+    MemConfig {
         db_path: cfg
             .db_path
             .clone()
@@ -325,7 +324,14 @@ pub fn build_memory_context(clawshake_dir: &Path, cfg: &MemoryConfig) -> MemoryC
                 home.join(".agents").join("skills"),
             ]
         }),
-    };
+    }
+}
+
+/// Build a [`MemoryContext`] from the node's `[memory]` config section.
+///
+/// Resolves all paths relative to `clawshake_dir` (`~/.clawshake`).
+pub fn build_memory_context(clawshake_dir: &Path, cfg: &MemoryConfig) -> MemoryContext {
+    let mem_config = resolve_mem_config(clawshake_dir, cfg);
 
     let identity_path = cfg
         .identity_path
@@ -344,24 +350,7 @@ pub fn build_memory_context(clawshake_dir: &Path, cfg: &MemoryConfig) -> MemoryC
 /// Watches the transcript directory and optional notes directory for changes,
 /// debounces events, and re-runs ingest + embed.  The thread blocks forever.
 pub fn start_watcher(clawshake_dir: &Path, cfg: &MemoryConfig) {
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-
-    let mem_config = MemConfig {
-        db_path: cfg
-            .db_path
-            .clone()
-            .unwrap_or_else(|| clawshake_dir.join("memory.db")),
-        transcript_dir: cfg
-            .transcript_dir
-            .clone()
-            .unwrap_or_else(|| clawshake_dir.join("log")),
-        skill_dirs: cfg.skill_dirs.clone().unwrap_or_else(|| {
-            vec![
-                clawshake_dir.join("skills"),
-                home.join(".agents").join("skills"),
-            ]
-        }),
-    };
+    let mem_config = resolve_mem_config(clawshake_dir, cfg);
 
     let notes_dir = cfg
         .notes_dir

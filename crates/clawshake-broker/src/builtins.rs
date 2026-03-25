@@ -227,23 +227,8 @@ fn codemode_tools() -> Vec<Tool> {
 /// which are handled in-process).
 fn network_tools() -> Vec<Tool> {
     network_tool_schemas()
-        .into_iter()
-        .filter_map(|val: Value| {
-            let name = val.get("name")?.as_str()?.to_string();
-            let description = val.get("description")?.as_str()?.to_string();
-            let schema_val = val.get("inputSchema").cloned().unwrap_or(json!({
-                "type": "object",
-                "properties": {}
-            }));
-            let input_schema: InputSchema = serde_json::from_value(schema_val).unwrap_or_default();
-            Some(Tool {
-                name,
-                description,
-                input_schema,
-                requires: None,
-                invoke: InvokeConfig::InProcess,
-            })
-        })
+        .iter()
+        .filter_map(Tool::from_json_schema)
         .collect()
 }
 
@@ -359,99 +344,29 @@ fn network_tool_schemas() -> Vec<Value> {
 /// Dispatched in-process (no IPC) by the router.
 fn general_tools() -> Vec<Tool> {
     let val = crate::invoke::shell::tool_definition();
-    let name = val
-        .get("name")
-        .and_then(|v| v.as_str())
-        .unwrap_or("shell")
-        .to_string();
-    let description = val
-        .get("description")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    let schema_val = val.get("inputSchema").cloned().unwrap_or(json!({
-        "type": "object",
-        "properties": {}
-    }));
-    let input_schema: InputSchema = serde_json::from_value(schema_val).unwrap_or_default();
-    vec![Tool {
-        name,
-        description,
-        input_schema,
-        requires: None,
-        invoke: InvokeConfig::InProcess,
-    }]
+    Tool::from_json_schema(&val).into_iter().collect()
 }
 
 /// Convert cron tool definitions into `Tool` structs.
 /// These are dispatched in-process to the [`CronScheduler`](crate::invoke::cron::CronScheduler).
 fn cron_tools() -> Vec<Tool> {
     crate::invoke::cron::cron_tool_definitions()
-        .into_iter()
-        .filter_map(|val| {
-            let name = val.get("name")?.as_str()?.to_string();
-            let description = val.get("description")?.as_str()?.to_string();
-            let schema_val = val.get("inputSchema").cloned().unwrap_or(json!({
-                "type": "object",
-                "properties": {}
-            }));
-            let input_schema: InputSchema = serde_json::from_value(schema_val).unwrap_or_default();
-            Some(Tool {
-                name,
-                description,
-                input_schema,
-                requires: None,
-                invoke: InvokeConfig::InProcess,
-            })
-        })
+        .iter()
+        .filter_map(Tool::from_json_schema)
         .collect()
 }
 
 /// Build the `spawn` tool from its schema definition.
 fn spawn_tool() -> Tool {
     let val = crate::invoke::spawn::spawn_tool_definition();
-    let name = val.get("name").unwrap().as_str().unwrap().to_string();
-    let description = val
-        .get("description")
-        .unwrap()
-        .as_str()
-        .unwrap()
-        .to_string();
-    let schema_val = val.get("inputSchema").cloned().unwrap_or(json!({
-        "type": "object",
-        "properties": {}
-    }));
-    let input_schema: InputSchema = serde_json::from_value(schema_val).unwrap_or_default();
-    Tool {
-        name,
-        description,
-        input_schema,
-        requires: None,
-        invoke: InvokeConfig::InProcess,
-    }
+    Tool::from_json_schema(&val).expect("spawn tool definition must be valid")
 }
 
 /// Convert webview tool definitions from `invoke::webview` into `Tool` structs.
 fn webview_tools() -> Vec<Tool> {
     crate::invoke::webview::webview_tool_definitions()
-        .into_iter()
-        .filter_map(|val| {
-            let name = val.get("name")?.as_str()?.to_string();
-            let description = val.get("description")?.as_str()?.to_string();
-            let schema_val = val.get("inputSchema").cloned().unwrap_or(json!({
-                "type": "object",
-                "properties": {}
-            }));
-            let input_schema: InputSchema =
-                serde_json::from_value(schema_val).unwrap_or_default();
-            Some(Tool {
-                name,
-                description,
-                input_schema,
-                requires: None,
-                invoke: InvokeConfig::InProcess,
-            })
-        })
+        .iter()
+        .filter_map(Tool::from_json_schema)
         .collect()
 }
 
@@ -463,27 +378,11 @@ fn webview_tools() -> Vec<Tool> {
 #[cfg(feature = "memory")]
 fn memory_tools() -> Vec<(Tool, bool)> {
     crate::invoke::memory::memory_tool_definitions()
-        .into_iter()
+        .iter()
         .filter_map(|val| {
-            let name = val.get("name")?.as_str()?.to_string();
-            let description = val.get("description")?.as_str()?.to_string();
             let hidden = val.get("hidden").and_then(|v| v.as_bool()).unwrap_or(false);
-            let schema_val = val.get("inputSchema").cloned().unwrap_or(json!({
-                "type": "object",
-                "properties": {}
-            }));
-            let input_schema: InputSchema =
-                serde_json::from_value(schema_val).unwrap_or_default();
-            Some((
-                Tool {
-                    name,
-                    description,
-                    input_schema,
-                    requires: None,
-                    invoke: InvokeConfig::InProcess,
-                },
-                hidden,
-            ))
+            let tool = Tool::from_json_schema(val)?;
+            Some((tool, hidden))
         })
         .collect()
 }

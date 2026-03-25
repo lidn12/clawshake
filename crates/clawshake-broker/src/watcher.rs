@@ -81,10 +81,6 @@ impl ManifestRegistry {
     ///
     /// Built-in tools are invisible to the file watcher — they can only be
     /// replaced by another `register_builtin` call.
-    /// Register a single built-in tool directly (no manifest file on disk).
-    ///
-    /// Built-in tools are invisible to the file watcher — they can only be
-    /// replaced by another `register_builtin` call.
     pub fn register_builtin(&self, tool: Tool, source: &str) {
         self.register_builtin_hidden(tool, source, false);
     }

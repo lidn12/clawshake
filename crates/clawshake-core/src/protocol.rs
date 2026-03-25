@@ -141,3 +141,56 @@ impl McpContent {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// MCP response extraction
+// ---------------------------------------------------------------------------
+
+/// Extract text content from a JSON-RPC `tools/call` response envelope.
+///
+/// Handles the standard MCP response shape:
+/// ```json
+/// { "result": { "content": [{ "type": "text", "text": "..." }], "isError": false } }
+/// ```
+///
+/// Returns the concatenated text from all `text` content items, or an error
+/// if the response contains a JSON-RPC error or the tool reported `isError`.
+pub fn extract_tool_result(body: &Value) -> Result<String, String> {
+    // Check for JSON-RPC error.
+    if let Some(err) = body.get("error") {
+        let msg = err
+            .get("message")
+            .and_then(|m| m.as_str())
+            .unwrap_or("unknown error");
+        return Err(format!("Broker error: {msg}"));
+    }
+
+    let result = match body.get("result") {
+        Some(r) => r,
+        None => return Err("Missing result in broker response".into()),
+    };
+
+    // Check isError flag.
+    let is_error = result
+        .get("isError")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    // Collect text from content array.
+    let text = result
+        .get("content")
+        .and_then(|c| c.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|item| item.get("text").and_then(|t| t.as_str()))
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default();
+
+    if is_error {
+        return Err(format!("Tool error: {text}"));
+    }
+
+    Ok(text)
+}

@@ -213,7 +213,8 @@ async fn local_tools_call(
         .context("Invalid JSON response from broker")?;
 
     // Extract text content from the MCP tools/call result.
-    extract_tool_result(&body)
+    clawshake_core::protocol::extract_tool_result(&body)
+        .map_err(|e| anyhow::anyhow!("{e}"))
 }
 
 /// Get the current event cursor from the broker.
@@ -276,53 +277,4 @@ async fn remote_get_cursor(peer_id: &str) -> Result<u64> {
 
     let parsed: Value = serde_json::from_str(&result).unwrap_or(json!({}));
     Ok(parsed.get("cursor").and_then(|v| v.as_u64()).unwrap_or(0))
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/// Extract text content from a JSON-RPC `tools/call` response.
-///
-/// Handles the MCP response envelope:
-/// ```json
-/// { "result": { "content": [{ "type": "text", "text": "..." }], "isError": false } }
-/// ```
-fn extract_tool_result(body: &Value) -> Result<String> {
-    // Check for JSON-RPC error.
-    if let Some(err) = body.get("error") {
-        let msg = err
-            .get("message")
-            .and_then(|m| m.as_str())
-            .unwrap_or("unknown error");
-        anyhow::bail!("Broker error: {msg}");
-    }
-
-    let result = body
-        .get("result")
-        .ok_or_else(|| anyhow::anyhow!("Missing result in broker response"))?;
-
-    // Check isError flag.
-    let is_error = result
-        .get("isError")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-
-    // Collect text from content array.
-    let text = result
-        .get("content")
-        .and_then(|c| c.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|item| item.get("text").and_then(|t| t.as_str()))
-                .collect::<Vec<_>>()
-                .join("\n")
-        })
-        .unwrap_or_default();
-
-    if is_error {
-        anyhow::bail!("Tool error: {text}");
-    }
-
-    Ok(text)
 }

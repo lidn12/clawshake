@@ -481,123 +481,149 @@ fn on_identify_received(
     }
 
     // --- 4. Proactive direct dial ------------------------------------------
-    // When Identify arrives over a relay (observed_addr has no IP component),
-    // try the peer's private LAN addresses for a direct path — without
-    // waiting for DCUTR's relay timeout.
-    let is_relay_observed = !info.observed_addr.iter().any(|p| {
+    try_direct_dial_private_addrs(swarm, peer_id, &info.observed_addr, &info.listen_addrs);
+
+    // --- 5. Rendezvous discover + register ---------------------------------
+    try_rendezvous_discover_and_register(swarm, peer_id, &info.protocols, ctx, state);
+
+    // --- 6. Auto-relay reservation -----------------------------------------
+    try_auto_relay_reserve(swarm, peer_id, &info.protocols, &info.listen_addrs, ctx, state);
+}
+
+// ---------------------------------------------------------------------------
+// on_identify_received helpers
+// ---------------------------------------------------------------------------
+
+/// When Identify arrives over a relay (observed_addr has no IP component),
+/// try the peer's private LAN addresses for a direct path — without waiting
+/// for DCUTR's relay timeout.
+fn try_direct_dial_private_addrs(
+    swarm: &mut libp2p::Swarm<ClawshakeBehaviour>,
+    peer_id: PeerId,
+    observed_addr: &Multiaddr,
+    listen_addrs: &[Multiaddr],
+) {
+    let is_relay_observed = !observed_addr.iter().any(|p| {
         matches!(
             p,
             libp2p::multiaddr::Protocol::Ip4(_) | libp2p::multiaddr::Protocol::Ip6(_)
         )
     });
-    if is_relay_observed {
-        let private_addrs: Vec<Multiaddr> = info
-            .listen_addrs
-            .iter()
-            .filter(|a| {
-                !addr::is_public_addr(a)
-                    && !a
-                        .iter()
-                        .any(|p| matches!(p, libp2p::multiaddr::Protocol::P2pCircuit))
-                    && a.iter().any(|p| match p {
-                        libp2p::multiaddr::Protocol::Ip4(ip) => {
-                            !ip.is_loopback() && !ip.is_unspecified()
-                        }
-                        libp2p::multiaddr::Protocol::Ip6(ip) => {
-                            !ip.is_loopback() && !ip.is_unspecified()
-                        }
-                        _ => false,
-                    })
-            })
-            .cloned()
-            .collect();
-        if !private_addrs.is_empty() {
-            info!(
-                "Attempting direct dial to {peer_id} via {} private addr(s)",
-                private_addrs.len()
-            );
-            let opts = libp2p::swarm::dial_opts::DialOpts::peer_id(peer_id)
-                .addresses(private_addrs)
-                .condition(libp2p::swarm::dial_opts::PeerCondition::Always)
-                .build();
-            if let Err(e) = swarm.dial(opts) {
-                info!("Direct dial to {peer_id} failed: {e}");
-            }
+    if !is_relay_observed {
+        return;
+    }
+    let private_addrs: Vec<Multiaddr> = listen_addrs
+        .iter()
+        .filter(|a| {
+            !addr::is_public_addr(a)
+                && !a
+                    .iter()
+                    .any(|p| matches!(p, libp2p::multiaddr::Protocol::P2pCircuit))
+                && a.iter().any(|p| match p {
+                    libp2p::multiaddr::Protocol::Ip4(ip) => {
+                        !ip.is_loopback() && !ip.is_unspecified()
+                    }
+                    libp2p::multiaddr::Protocol::Ip6(ip) => {
+                        !ip.is_loopback() && !ip.is_unspecified()
+                    }
+                    _ => false,
+                })
+        })
+        .cloned()
+        .collect();
+    if !private_addrs.is_empty() {
+        info!(
+            "Attempting direct dial to {peer_id} via {} private addr(s)",
+            private_addrs.len()
+        );
+        let opts = libp2p::swarm::dial_opts::DialOpts::peer_id(peer_id)
+            .addresses(private_addrs)
+            .condition(libp2p::swarm::dial_opts::PeerCondition::Always)
+            .build();
+        if let Err(e) = swarm.dial(opts) {
+            info!("Direct dial to {peer_id} failed: {e}");
         }
     }
+}
 
-    // --- 5. Rendezvous discover + register ---------------------------------
-    if !ctx.relay_server
-        && info
-            .protocols
-            .iter()
-            .any(|p| p.as_ref() == RENDEZVOUS_PROTOCOL)
-    {
-        state.rendezvous_servers.insert(peer_id);
+/// If the peer advertises the rendezvous protocol, discover peers from it
+/// and attempt to register ourselves.
+fn try_rendezvous_discover_and_register(
+    swarm: &mut libp2p::Swarm<ClawshakeBehaviour>,
+    peer_id: PeerId,
+    protocols: &[libp2p::StreamProtocol],
+    ctx: &EventContext<'_>,
+    state: &mut NodeState,
+) {
+    if ctx.relay_server || !protocols.iter().any(|p| p.as_ref() == RENDEZVOUS_PROTOCOL) {
+        return;
+    }
+    state.rendezvous_servers.insert(peer_id);
+    let ns = clawshake_namespace();
+    let cookie = state.rendezvous_cookies.get(&peer_id).cloned();
+    swarm
+        .behaviour_mut()
+        .rendezvous_client
+        .discover(Some(ns), cookie, None, peer_id);
+    info!("Rendezvous: discovering peers from {peer_id}");
+
+    if !state.rendezvous_registered.contains(&peer_id) {
         let ns = clawshake_namespace();
-        let cookie = state.rendezvous_cookies.get(&peer_id).cloned();
-        swarm
+        match swarm
             .behaviour_mut()
             .rendezvous_client
-            .discover(Some(ns), cookie, None, peer_id);
-        info!("Rendezvous: discovering peers from {peer_id}");
-
-        // Also try to register — will fail with NoExternalAddresses if we
-        // don't have any yet; retry happens on ExternalAddrConfirmed.
-        if !state.rendezvous_registered.contains(&peer_id) {
-            let ns = clawshake_namespace();
-            match swarm
-                .behaviour_mut()
-                .rendezvous_client
-                .register(ns, peer_id, None)
-            {
-                Ok(_) => {
-                    info!("Rendezvous: registering with {peer_id}");
-                    state.rendezvous_registered.insert(peer_id);
-                }
-                Err(e) => {
-                    info!("Rendezvous: register deferred (no external addrs yet): {e:?}");
-                }
+            .register(ns, peer_id, None)
+        {
+            Ok(_) => {
+                info!("Rendezvous: registering with {peer_id}");
+                state.rendezvous_registered.insert(peer_id);
+            }
+            Err(e) => {
+                info!("Rendezvous: register deferred (no external addrs yet): {e:?}");
             }
         }
     }
+}
 
-    // --- 6. Auto-relay reservation -----------------------------------------
-    if !ctx.relay_server
-        && !state.relay_reserved_peers.contains(&peer_id)
-        && info
-            .protocols
-            .iter()
-            .any(|p| p.as_ref() == RELAY_HOP_PROTOCOL)
+/// If the peer advertises the relay hop protocol, reserve a relay slot
+/// through it so other peers can reach us via the relay.
+fn try_auto_relay_reserve(
+    swarm: &mut libp2p::Swarm<ClawshakeBehaviour>,
+    peer_id: PeerId,
+    protocols: &[libp2p::StreamProtocol],
+    listen_addrs: &[Multiaddr],
+    ctx: &EventContext<'_>,
+    state: &mut NodeState,
+) {
+    if ctx.relay_server
+        || state.relay_reserved_peers.contains(&peer_id)
+        || !protocols.iter().any(|p| p.as_ref() == RELAY_HOP_PROTOCOL)
     {
-        // Prefer a publicly routable listen address for the circuit base;
-        // fall back to any non-loopback, non-circuit address.
-        let circuit_base = info
-            .listen_addrs
-            .iter()
-            .find(|a| addr::is_public_addr(a))
-            .or_else(|| {
-                info.listen_addrs.iter().find(|a| {
-                    !a.iter().any(|p| {
-                        matches!(p, libp2p::multiaddr::Protocol::Ip4(ip) if ip.is_loopback())
-                            || matches!(p, libp2p::multiaddr::Protocol::P2pCircuit)
-                    })
+        return;
+    }
+    let circuit_base = listen_addrs
+        .iter()
+        .find(|a| addr::is_public_addr(a))
+        .or_else(|| {
+            listen_addrs.iter().find(|a| {
+                !a.iter().any(|p| {
+                    matches!(p, libp2p::multiaddr::Protocol::Ip4(ip) if ip.is_loopback())
+                        || matches!(p, libp2p::multiaddr::Protocol::P2pCircuit)
                 })
-            });
-        if let Some(base) = circuit_base {
-            // Strip any trailing /p2p, then append /p2p/<relay>/p2p-circuit.
-            let mut circuit: Multiaddr = base
-                .iter()
-                .filter(|p| !matches!(p, libp2p::multiaddr::Protocol::P2p(_)))
-                .collect();
-            circuit.push(libp2p::multiaddr::Protocol::P2p(peer_id));
-            circuit.push(libp2p::multiaddr::Protocol::P2pCircuit);
-            info!("Auto-relay: reserving slot via {peer_id}");
-            if let Err(e) = swarm.listen_on(circuit) {
-                warn!("Auto-relay: listen_on failed: {e}");
-            }
-            state.relay_reserved_peers.insert(peer_id);
+            })
+        });
+    if let Some(base) = circuit_base {
+        let mut circuit: Multiaddr = base
+            .iter()
+            .filter(|p| !matches!(p, libp2p::multiaddr::Protocol::P2p(_)))
+            .collect();
+        circuit.push(libp2p::multiaddr::Protocol::P2p(peer_id));
+        circuit.push(libp2p::multiaddr::Protocol::P2pCircuit);
+        info!("Auto-relay: reserving slot via {peer_id}");
+        if let Err(e) = swarm.listen_on(circuit) {
+            warn!("Auto-relay: listen_on failed: {e}");
         }
+        state.relay_reserved_peers.insert(peer_id);
     }
 }
 
