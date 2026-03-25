@@ -9,18 +9,10 @@
 //!
 //! Newline-delimited JSON over a full-duplex stream connection.
 //!
-//! Each client sends exactly **one** request line then optionally shuts down
-//! the write half.  The server reads one line, dispatches it, and writes one
-//! response line back.
-//!
 //! ```text
 //! → {"method":"network_peers","params":{}}\n
 //! ← {"peers":[...]}\n
 //! ```
-//!
-//! `clawshake-tools` CLI and the broker's in-process client both use this
-//! protocol.  Any language that can open a named pipe / Unix socket can use
-//! it directly.
 
 use std::sync::Arc;
 
@@ -30,11 +22,10 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tracing::{debug, error, warn};
 
 use clawshake_core::{
+    ipc::SOCKET_PATH,
     network_channel::{ConnectedPeers, DhtLookupTx, OutboundCallTx, TunnelTable},
     peer_table::PeerTable,
 };
-
-use crate::SOCKET_PATH;
 
 // ---------------------------------------------------------------------------
 // Public entry point
@@ -42,11 +33,7 @@ use crate::SOCKET_PATH;
 
 /// Run the IPC listener forever.
 ///
-/// Spawns a new Tokio task for each incoming connection.  Each connection
-/// handles a single request/response pair then closes.
-///
-/// Intended to be started with `tokio::spawn(clawshake_tools::ipc::run(...))`
-/// from `clawshake-bridge`'s `main`.
+/// Spawns a new Tokio task for each incoming connection.
 pub async fn run(
     table: Arc<PeerTable>,
     connected: ConnectedPeers,
@@ -149,7 +136,7 @@ async fn run_unix(
 }
 
 // ---------------------------------------------------------------------------
-// Per-connection handler (generic over AsyncRead + AsyncWrite)
+// Per-connection handler
 // ---------------------------------------------------------------------------
 
 async fn handle_connection<S>(
@@ -224,10 +211,13 @@ async fn dispatch(
         "tunnel_unregister" => {
             return handle_tunnel_unregister(params, tunnel_table);
         }
+        "ping" => {
+            return serde_json::json!({ "ok": true });
+        }
         _ => {}
     }
 
-    crate::network::handle(
+    crate::network_tools::handle(
         method,
         Some(params),
         table,

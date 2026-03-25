@@ -110,7 +110,7 @@ pub async fn handle_expose(
         "port": port,
         "peers": peers,
     });
-    if let Err(e) = clawshake_tools::client::send_request("tunnel_register", ipc_params).await {
+    if let Err(e) = clawshake_core::ipc::send_request("tunnel_register", ipc_params).await {
         tracing::warn!("Failed to notify bridge about expose '{name}': {e:#}");
     }
 
@@ -154,7 +154,7 @@ pub async fn handle_unexpose(
 
     // Notify the bridge daemon.
     let ipc_params = json!({ "name": name });
-    if let Err(e) = clawshake_tools::client::send_request("tunnel_unregister", ipc_params).await {
+    if let Err(e) = clawshake_core::ipc::send_request("tunnel_unregister", ipc_params).await {
         tracing::warn!("Failed to notify bridge about unexpose '{name}': {e:#}");
     }
 

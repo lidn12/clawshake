@@ -1,12 +1,8 @@
 //! `network_*` tool handlers.
 //!
 //! This module owns all handler logic for the built-in P2P network tools.
-//! The MCP schemas for these tools live in [`crate::schema`].
-//!
-//! Called by:
-//! - `clawshake-bridge::ipc` — inbound from any local process via the IPC socket
-//! - `clawshake-bridge`'s inbound proxy path — remote P2P callers (subject to
-//!   permission store; `network_*` is blocked for remote callers by default)
+//! Called from the IPC server when the broker dispatches a `network_*` tool
+//! call via the bridge socket.
 
 use clawshake_core::{
     network_channel::{ConnectedPeers, DhtLookupTx, OutboundCall, OutboundCallTx},
@@ -23,9 +19,6 @@ use tokio::sync::oneshot;
 ///
 /// Returns the result value to embed in the MCP `tools/call` response content.
 /// Never panics — all errors are returned as `{ "error": "..." }`.
-///
-/// `call_tx` must be `Some` for `network_call`; `dht_tx` must be `Some` for
-/// `network_tools` and `network_record` (live DHT queries).
 pub async fn handle(
     method: &str,
     params: Option<&Value>,
@@ -73,11 +66,6 @@ fn peers(table: &PeerTable) -> Value {
 }
 
 /// Progressive tool discovery for a remote peer.
-///
-/// Without `query`: returns a flat list of the peer's published tool names.
-///
-/// With `query`: returns matching tools with full name, description, and
-/// inputSchema — just enough to call them via network_call.
 fn tools<'a>(
     params: &'a Value,
     table: &'a PeerTable,
@@ -91,7 +79,6 @@ fn tools<'a>(
             None => return err("missing required parameter: peer_id"),
         };
 
-        // Try a live DHT lookup first; fall back to the cached peer table.
         let peer = match dht_lookup_peer(&peer_id, dht_tx).await {
             Some(p) => p,
             None => match table.get(&peer_id) {
@@ -108,7 +95,6 @@ fn tools<'a>(
 
         match query {
             Some(q) => {
-                // Filtered mode: return matching tools with full schemas.
                 let q_lower = q.to_lowercase();
                 let matched: Vec<Value> = tools
                     .iter()
@@ -136,7 +122,6 @@ fn tools<'a>(
                 }
             }
             None => {
-                // Flat list of tool names — no grouping heuristics.
                 let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
                 let summary = format!(
                     "Peer {} has {} tool(s). Use network_tools with a query to see full schemas for specific tools.",
@@ -184,7 +169,6 @@ fn record<'a>(
             None => return err("missing required parameter: peer_id"),
         };
 
-        // Try a live DHT lookup first; fall back to the cached peer table.
         let peer = match dht_lookup_peer(&peer_id, dht_tx).await {
             Some(p) => p,
             None => match table.get(&peer_id) {
@@ -227,7 +211,6 @@ async fn call(params: &Value, call_tx: Option<&OutboundCallTx>) -> Value {
         .cloned()
         .unwrap_or_else(|| json!({}));
 
-    // Build a standards-compliant MCP tools/call JSON-RPC request.
     let mcp_request = json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -262,18 +245,11 @@ async fn call(params: &Value, call_tx: Option<&OutboundCallTx>) -> Value {
         Err(_) => return err("network_call: response channel dropped unexpectedly"),
     };
 
-    // Unwrap the MCP JSON-RPC envelope so the caller sees the same content
-    // shape as a local tools/call — plain text (or error text), not a nested
-    // JSON-RPC response serialised inside a string.
-    //
-    // Success: {"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"..."}],"isError":false}}
-    // Error:   {"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"..."}}
     if let Some(result) = raw.get("result") {
         let is_error = result
             .get("isError")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        // Collect text from all content entries.
         let text = result
             .get("content")
             .and_then(|c| c.as_array())
@@ -296,7 +272,6 @@ async fn call(params: &Value, call_tx: Option<&OutboundCallTx>) -> Value {
             .unwrap_or("unknown error");
         err(&format!("Remote node returned JSON-RPC error: {message}"))
     } else {
-        // Unrecognised response shape — return as-is.
         raw
     }
 }
@@ -305,14 +280,7 @@ fn err(msg: &str) -> Value {
     json!({ "error": msg })
 }
 
-// ---------------------------------------------------------------------------
-// network_models
-// ---------------------------------------------------------------------------
-
 /// List AI models available on the P2P network.
-///
-/// Without `peer_id`: aggregates models from all peers in the table.
-/// With `peer_id`: filters to models from that specific peer.
 fn models(params: &Value, table: &PeerTable) -> Value {
     let filter_peer = params["peer_id"].as_str();
 
@@ -349,13 +317,6 @@ fn models(params: &Value, table: &PeerTable) -> Value {
 
 use clawshake_core::{network_channel::DhtLookup, peer_table::PeerInfo};
 
-/// Send a live DHT GET for `peer_id` through the swarm event loop and wait
-/// for the result.  Returns `None` if no `dht_tx` is available (e.g. when
-/// called in-process without the P2P stack) or if the lookup fails/times out.
-///
-/// On success the swarm event loop also upserts the result into the peer
-/// table, so subsequent `network_peers` / `network_search` calls see
-/// fresh data.
 async fn dht_lookup_peer(peer_id: &str, dht_tx: Option<&DhtLookupTx>) -> Option<PeerInfo> {
     let tx = dht_tx?;
     let (response_tx, response_rx) = tokio::sync::oneshot::channel();

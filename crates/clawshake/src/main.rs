@@ -32,8 +32,10 @@ use clawshake_core::{
     mcp_client::{HttpClient, McpClient},
     permissions::PermissionStore,
 };
-use clawshake_tools::cli::{run_network_cmd, NetworkCmd};
 use tracing::info;
+
+mod network_cli;
+use network_cli::{run_network_cmd, NetworkCmd};
 
 // ---------------------------------------------------------------------------
 // CLI definition

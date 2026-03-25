@@ -371,14 +371,14 @@ Both streaming (`stream: true`, SSE) and non-streaming requests are supported. S
 ```
 crates/
   clawshake/           Unified binary — runs broker + bridge in one process
-  clawshake-broker/    MCP server, manifest loading, permission checks
-  clawshake-bridge/    libp2p swarm — Kademlia, relay, mDNS, QUIC/TCP
-  clawshake-core/      Shared types — identity, permissions, protocol, config
+  clawshake-broker/    MCP server, manifest loading, permission checks, tool handlers
+  clawshake-bridge/    libp2p swarm — Kademlia, relay, mDNS, QUIC/TCP, IPC server
+  clawshake-core/      Shared types — identity, permissions, protocol, config, IPC client
   clawshake-models/    Model proxy — OpenAI-compatible HTTP server + P2P streaming backend
-  clawshake-tools/     Network tools + IPC between broker and bridge
   clawshake-channels/  Interactive I/O channels — CLI REPL (chat), future: web, Slack
   clawshake-memory/    Long-term memory — procedural, episodic, semantic (SQLite + FTS5 + vec)
   clawshake-sandbox/   Process-level sandboxing — seccomp, Landlock, Seatbelt, Job objects
+  clawshake-window/    Tauri v2 native window host for the webview UI
 ```
 
 **P2P stack:** libp2p 0.56 with Kademlia DHT, mDNS, relay + DCUtR (hole punching), QUIC and TCP transports, Noise encryption, and libp2p-stream for real-time bidirectional streaming.

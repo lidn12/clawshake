@@ -1,5 +1,6 @@
 pub mod config;
 pub mod identity;
+pub mod ipc;
 pub mod manifest;
 pub mod mcp_client;
 pub mod models;

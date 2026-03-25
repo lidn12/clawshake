@@ -2,11 +2,11 @@
 //!
 //! Instead of writing manifest JSON files to disk, tools are constructed as
 //! `Tool` structs and registered directly in the `ManifestRegistry` at
-//! startup.  Network tools are sourced from `clawshake_tools::schema` and
-//! dispatched via IPC to the bridge daemon — no subprocess spawning required.
+//! startup.  Network tools are dispatched via IPC to the bridge daemon —
+//! no subprocess spawning required.
 
 use clawshake_core::manifest::{InputSchema, InvokeConfig, Tool};
-use serde_json::json;
+use serde_json::{json, Value};
 use tracing::info;
 
 use crate::watcher::ManifestRegistry;
@@ -82,7 +82,7 @@ pub fn register(registry: &ManifestRegistry, code_mode: bool, bridge_available: 
 
 /// Try to contact the bridge daemon over IPC to see if it is running.
 pub async fn detect_bridge() -> bool {
-    match clawshake_tools::client::send_request("ping", json!({})).await {
+    match clawshake_core::ipc::send_request("ping", json!({})).await {
         Ok(_) => {
             info!("Bridge daemon detected via IPC");
             true
@@ -222,13 +222,13 @@ fn codemode_tools() -> Vec<Tool> {
     ]
 }
 
-/// Convert `clawshake_tools::schema::tool_definitions()` into `Tool` structs
-/// with `InvokeConfig::InProcess`.  The router dispatches these via IPC to
-/// the bridge daemon.
+/// Build network tool definitions inline.
+/// Dispatched via IPC to the bridge daemon by the router (except expose/unexpose
+/// which are handled in-process).
 fn network_tools() -> Vec<Tool> {
-    clawshake_tools::schema::tool_definitions()
+    network_tool_schemas()
         .into_iter()
-        .filter_map(|val| {
+        .filter_map(|val: Value| {
             let name = val.get("name")?.as_str()?.to_string();
             let description = val.get("description")?.as_str()?.to_string();
             let schema_val = val.get("inputSchema").cloned().unwrap_or(json!({
@@ -247,10 +247,118 @@ fn network_tools() -> Vec<Tool> {
         .collect()
 }
 
-/// Convert the shell tool definition into a `Tool` struct.
+/// Inline MCP tool schemas for all `network_*` tools.
+fn network_tool_schemas() -> Vec<Value> {
+    vec![
+        json!({
+            "name": "network_peers",
+            "description": "List all discovered bridge nodes on the network with their peer IDs, addresses, and last-seen timestamps.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }),
+        json!({
+            "name": "network_tools",
+            "description": "Progressive tool discovery for a remote peer. Without a query, returns a flat list of the peer's published tool names. With a query, returns matching tools with their full name, description, and inputSchema.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "peer_id": { "type": "string", "description": "libp2p peer ID string (from network_peers)" },
+                    "query": { "type": "string", "description": "Filter tools by name or description substring. Omit for a flat name list." }
+                },
+                "required": ["peer_id"]
+            }
+        }),
+        json!({
+            "name": "network_search",
+            "description": "Search for tools across all known peers by tool name or description substring.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "Case-insensitive substring to match against tool names and descriptions" }
+                },
+                "required": ["query"]
+            }
+        }),
+        json!({
+            "name": "network_ping",
+            "description": "Check whether a peer currently has an active connection to this node.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "peer_id": { "type": "string", "description": "libp2p peer ID string" }
+                },
+                "required": ["peer_id"]
+            }
+        }),
+        json!({
+            "name": "network_call",
+            "description": "Invoke a tool on a specific remote peer over the P2P network and return its result.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "peer_id": { "type": "string", "description": "libp2p peer ID string of the target peer" },
+                    "tool": { "type": "string", "description": "Tool name to invoke on the remote peer" },
+                    "arguments": { "type": "object", "description": "Arguments to pass to the tool. Must match the tool's inputSchema." }
+                },
+                "required": ["peer_id", "tool"]
+            }
+        }),
+        json!({
+            "name": "network_record",
+            "description": "Fetch the raw DHT announcement record for a peer directly from the Kademlia DHT (live, not cached).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "peer_id": { "type": "string", "description": "libp2p peer ID string (from network_peers)" }
+                },
+                "required": ["peer_id"]
+            }
+        }),
+        json!({
+            "name": "network_expose",
+            "description": "Expose a local TCP port to the P2P network. Registers a connect_{name} tool that remote peers can call to establish a tunneled connection.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "port": { "type": "integer", "description": "Local TCP port to expose" },
+                    "name": { "type": "string", "description": "Short name for the expose (e.g. 'jupyter', 'preview')" },
+                    "description": { "type": "string", "description": "Optional human-readable description of the exposed service." },
+                    "peers": { "type": "array", "items": { "type": "string" }, "description": "Optional peer ID allowlist. If omitted, any connected peer can connect." }
+                },
+                "required": ["port", "name"]
+            }
+        }),
+        json!({
+            "name": "network_unexpose",
+            "description": "Stop exposing a previously shared port. Unregisters the connect_{name} tool and tears down any active tunnels.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Name of the expose to remove (the same name passed to network_expose)." }
+                },
+                "required": ["name"]
+            }
+        }),
+        json!({
+            "name": "network_models",
+            "description": "List AI models available on the peer-to-peer network.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "peer_id": { "type": "string", "description": "Filter to models from a specific peer. Omit to list models from all peers." }
+                }
+            }
+        }),
+    ]
+}
+
+/// Build the shell tool from the in-crate definition.
 /// Dispatched in-process (no IPC) by the router.
 fn general_tools() -> Vec<Tool> {
-    let val = clawshake_tools::schema::shell_tool_definition();
+    let val = crate::invoke::shell::tool_definition();
     let name = val
         .get("name")
         .and_then(|v| v.as_str())

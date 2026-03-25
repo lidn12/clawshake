@@ -1,14 +1,11 @@
-//! Shared `network_*` CLI types and dispatch reused by `clawshake-tools` and
-//! `clawshake`.
+//! `network` CLI subcommand types and IPC dispatch.
 //!
-//! Centralises `NetworkCmd` and its IPC dispatch so both binaries expose the
-//! same subcommands without duplicating the mapping logic.
+//! Defines `NetworkCmd` and its dispatch so `clawshake network peers|tools|…`
+//! works by forwarding requests through the bridge IPC socket.
 
 use anyhow::Result;
 use clap::Subcommand;
 use serde_json::json;
-
-use crate::client;
 
 // ---------------------------------------------------------------------------
 // NetworkCmd
@@ -121,7 +118,7 @@ pub async fn run_network_cmd(cmd: &NetworkCmd) -> Result<()> {
         }
     };
 
-    let result = client::send_request(method, params).await?;
+    let result = clawshake_core::ipc::send_request(method, params).await?;
 
     // If the result contains an "error" key (set by network::err()), propagate
     // it as a proper error so the broker's invoke/cli backend sees a non-zero

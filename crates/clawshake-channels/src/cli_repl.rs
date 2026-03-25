@@ -246,7 +246,7 @@ async fn remote_tools_call(peer_id: &str, tool_name: &str, arguments: Value) -> 
         "arguments": arguments,
     });
 
-    let result = clawshake_tools::client::send_request("network_call", params)
+    let result = clawshake_core::ipc::send_request("network_call", params)
         .await
         .map_err(|e| anyhow::anyhow!("bridge IPC error: {e:#}"))?;
 

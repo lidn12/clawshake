@@ -249,13 +249,13 @@ pub fn dispatch<'a>(
                 // Network tools — dispatch via IPC to the bridge daemon.
                 name if name.starts_with("network_") => {
                     let params = arguments.clone();
-                    let resp = clawshake_tools::client::send_request(name, params)
+                    let resp = clawshake_core::ipc::send_request(name, params)
                         .await
                         .map_err(|e| anyhow::anyhow!("bridge IPC error: {e:#}"))?;
                     Ok(serde_json::to_string_pretty(&resp).unwrap_or_else(|_| resp.to_string()))
                 }
                 // General-purpose tools — dispatch in-process.
-                "shell" => clawshake_tools::shell::handle(arguments).await,
+                "shell" => invoke::shell::handle(arguments).await,
                 // Spawn — async wrapper for any tool call.
                 "spawn" => invoke::spawn::handle(arguments, ctx).await,
                 // Cron tools — dispatch to the scheduler.

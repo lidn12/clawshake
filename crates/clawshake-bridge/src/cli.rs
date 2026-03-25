@@ -310,10 +310,10 @@ pub async fn start_bridge(
     // and P2P event loop (reads to accept inbound tunnel streams).
     let tunnel_table = clawshake_core::network_channel::new_tunnel_table();
 
-    // Spawn the IPC socket listener so clawshake-tools CLI (and any other
-    // local process) can reach network_* handlers.
+    // Spawn the IPC socket listener so local processes (broker, CLI) can
+    // reach network_* handlers.
     let call_tx_for_proxy = call_tx.clone();
-    tokio::spawn(clawshake_tools::ipc::run(
+    tokio::spawn(crate::ipc_server::run(
         Arc::clone(&table),
         connected.clone(),
         call_tx,
@@ -399,7 +399,7 @@ pub struct LiveStats {
 ///
 /// Returns `None` if the socket is unreachable (node not running).
 pub async fn probe_node() -> Option<LiveStats> {
-    let resp = clawshake_tools::client::send_request("network_peers", serde_json::json!({}))
+    let resp = clawshake_core::ipc::send_request("network_peers", serde_json::json!({}))
         .await
         .ok()?;
     let peers = resp["peers"].as_array().map(|a| a.len()).unwrap_or(0);

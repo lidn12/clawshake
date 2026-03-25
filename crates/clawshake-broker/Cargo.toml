@@ -20,7 +20,6 @@ memory = ["dep:clawshake-memory"]
 
 [dependencies]
 clawshake-core = { workspace = true }
-clawshake-tools = { workspace = true }
 clawshake-memory = { workspace = true, optional = true }
 tokio = { workspace = true }
 clap = { workspace = true }

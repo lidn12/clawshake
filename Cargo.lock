@@ -847,8 +847,8 @@ dependencies = [
  "clawshake-broker",
  "clawshake-channels",
  "clawshake-core",
- "clawshake-tools",
  "dirs 5.0.1",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -862,7 +862,6 @@ dependencies = [
  "clap",
  "clawshake-core",
  "clawshake-models",
- "clawshake-tools",
  "dirs 5.0.1",
  "futures",
  "libp2p",
@@ -886,7 +885,6 @@ dependencies = [
  "clap",
  "clawshake-core",
  "clawshake-memory",
- "clawshake-tools",
  "dirs 5.0.1",
  "futures",
  "notify",
@@ -909,7 +907,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clawshake-core",
- "clawshake-tools",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -984,19 +981,6 @@ dependencies = [
  "tokio",
  "tracing",
  "windows 0.58.0",
-]
-
-[[package]]
-name = "clawshake-tools"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "clawshake-core",
- "dirs 5.0.1",
- "serde_json",
- "tokio",
- "tracing",
 ]
 
 [[package]]

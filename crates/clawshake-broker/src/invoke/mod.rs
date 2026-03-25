@@ -8,6 +8,7 @@ pub mod http;
 #[cfg(feature = "memory")]
 pub mod memory;
 pub mod script;
+pub mod shell;
 pub mod spawn;
 pub mod webview;
 

@@ -1,26 +1,33 @@
-//! Socket client for the `clawshake-bridge` IPC endpoint.
+//! IPC client and constants for the `clawshake-bridge` daemon socket.
 //!
 //! The bridge daemon listens on a platform-specific local socket:
 //! - **Windows**: named pipe `\\.\pipe\clawshake-bridge`
 //! - **Linux / macOS**: Unix domain socket `/tmp/clawshake-bridge.sock`
 //!
-//! The wire protocol is newline-delimited JSON.
-//! Request:  `{"method":"network_peers","params":{}}\n`
-//! Response: `{ ... }\n`
+//! # Wire protocol
+//!
+//! Newline-delimited JSON over a full-duplex stream connection.
+//!
+//! ```text
+//! → {"method":"network_peers","params":{}}\n
+//! ← {"peers":[...]}\n
+//! ```
 
 use anyhow::{Context, Result};
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-use crate::SOCKET_PATH;
+/// Named pipe path (Windows).
+#[cfg(windows)]
+pub const SOCKET_PATH: &str = r"\\.\pipe\clawshake-bridge";
 
-/// Send a single `network_*` request to the bridge daemon and return the
-/// JSON response.
+/// Unix domain socket path (Linux / macOS).
+#[cfg(not(windows))]
+pub const SOCKET_PATH: &str = "/tmp/clawshake-bridge.sock";
+
+/// Send a single request to the bridge daemon and return the JSON response.
 ///
-/// Opens a fresh connection for each call — connections are short-lived since
-/// this is the client side of a CLI subprocess invocation.  Rust MCP hosts
-/// that call this in a hot path may want to pool connections in the future,
-/// but for now simplicity wins.
+/// Opens a fresh connection for each call — connections are short-lived.
 pub async fn send_request(method: &str, params: Value) -> Result<Value> {
     let body = serde_json::json!({ "method": method, "params": params });
     let line = serde_json::to_string(&body).context("serialize request")? + "\n";
@@ -38,7 +45,6 @@ pub async fn send_request(method: &str, params: Value) -> Result<Value> {
             .write_all(line.as_bytes())
             .await
             .context("write request")?;
-        // Signal end-of-write so the server can start reading (half-close).
         write_half.shutdown().await.context("shutdown write")?;
 
         let mut reader = BufReader::new(read_half);

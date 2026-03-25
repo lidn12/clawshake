@@ -4,7 +4,7 @@
 //! Includes safety guards to block catastrophic commands.
 
 use anyhow::{bail, Result};
-use serde_json::Value;
+use serde_json::{json, Value};
 use tracing::{debug, warn};
 
 // ---------------------------------------------------------------------------
@@ -36,6 +36,36 @@ const BLOCKED_PATTERNS: &[&str] = &[
     "> /dev/nvme",
     "format c:",
 ];
+
+// ---------------------------------------------------------------------------
+// Schema
+// ---------------------------------------------------------------------------
+
+/// Returns the MCP tool schema for the `shell` tool.
+pub fn tool_definition() -> Value {
+    json!({
+        "name": "shell",
+        "description": "Execute a shell command and return stdout/stderr. Commands run in a non-interactive shell (PowerShell on Windows, sh on Unix). Dangerous commands (rm -rf /, mkfs, shutdown, etc.) are blocked by a safety guard. Output is truncated at 1 MB.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": "The shell command to execute."
+                },
+                "workdir": {
+                    "type": "string",
+                    "description": "Working directory. Defaults to user home."
+                },
+                "timeout_secs": {
+                    "type": "number",
+                    "description": "Timeout in seconds (1–300). Default: 30."
+                }
+            },
+            "required": ["command"]
+        }
+    })
+}
 
 // ---------------------------------------------------------------------------
 // Public handler
@@ -179,7 +209,6 @@ fn truncate_output(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     #[test]
     fn blocked_commands() {
