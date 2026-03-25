@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="utf-8">
+    <title>clawshake</title>
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            font-family: system-ui, -apple-system, sans-serif;
+            background: #0f0f13;
+            color: #e0e0e0;
+        }
+
+        #status {
+            padding: 4px 12px;
+            font-size: 11px;
+            color: #555;
+            border-bottom: 1px solid #1e1e2a;
+            background: #0a0a0f;
+        }
+
+        #status.connected {
+            color: #5bf5a8;
+        }
+
+        #status.disconnected {
+            color: #c66;
+        }
+
+        .frame-container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            padding: 12px;
+        }
+
+        .frame-wrapper {
+            border: 1px solid #2a2a3a;
+            border-radius: 8px;
+            overflow: hidden;
+            background: #16161e;
+        }
+
+        .frame-header {
+            padding: 6px 12px;
+            background: #1a1a24;
+            font-size: 12px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid #2a2a3a;
+        }
+
+        .frame-header .title {
+            font-weight: 500;
+            color: #aaa;
+        }
+
+        .frame-header .close {
+            cursor: pointer;
+            opacity: 0.4;
+            font-size: 16px;
+            padding: 0 4px;
+            transition: opacity 0.15s;
+        }
+
+        .frame-header .close:hover {
+            opacity: 1;
+            color: #f55b8a;
+        }
+
+        iframe {
+            border: none;
+            display: block;
+            background: #0f0f13;
+        }
+
+        .empty {
+            padding: 60px 40px;
+            text-align: center;
+            color: #444;
+            font-size: 14px;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="status" class="disconnected">connecting…</div>
+    <div class="frame-container" id="frames">
+        <div class="empty" id="empty-msg">Waiting for agent…</div>
+    </div>
+    <script>
+        const { invoke } = window.__TAURI__.core;
+        const { listen } = window.__TAURI__.event;
+
+        let brokerPort = null;
+        const frames = {};
+
+        const _params = new URLSearchParams(location.search);
+        const frameFilter = _params.get('frame');
+
+        function accepts(fid) { return !frameFilter || frameFilter === fid; }
+
+        function sendToBroker(obj) {
+            invoke('send_to_broker', { msg: JSON.stringify(obj) }).catch(() => { });
+        }
+
+        async function init() {
+            try {
+                brokerPort = await invoke('get_broker_port');
+                document.getElementById('status').textContent = 'connected';
+                document.getElementById('status').className = 'connected';
+            } catch (e) {
+                document.getElementById('status').textContent = 'error: ' + e;
+                return;
+            }
+
+            await listen('broker-msg', (event) => {
+                let msg;
+                try {
+                    msg = typeof event.payload === 'string' ? JSON.parse(event.payload) : event.payload;
+                } catch { return; }
+                if (msg.type === 'render') renderFrame(msg);
+                else if (msg.type === 'push') pushToFrame(msg);
+                else if (msg.type === 'close') closeFrame(msg.frame_id);
+                else if (msg.type === 'snapshot_request') handleSnapshot(msg);
+            });
+
+            await invoke('client_ready');
+        }
+
+        init().catch(console.error);
+
+        // -- Frame management ------------------------------------------------
+
+        function hideEmpty() {
+            const el = document.getElementById('empty-msg');
+            if (el) el.style.display = 'none';
+        }
+
+        function renderFrame({ frame_id, src, title, width, height }) {
+            if (!accepts(frame_id)) return;
+            hideEmpty();
+
+            if (src && !src.startsWith('http') && brokerPort) {
+                src = 'http://127.0.0.1:' + brokerPort + src;
+            }
+
+            let wrapper = frames[frame_id];
+            if (wrapper) {
+                const iframe = wrapper.querySelector('iframe');
+                iframe.src = src;
+                iframe.width = width || 800;
+                iframe.height = height || 600;
+                const t = wrapper.querySelector('.title');
+                if (t) t.textContent = title || 'Agent UI';
+                return;
+            }
+
+            wrapper = document.createElement('div');
+            wrapper.className = 'frame-wrapper';
+            wrapper.dataset.frameId = frame_id;
+
+            const header = document.createElement('div');
+            header.className = 'frame-header';
+            header.innerHTML =
+                '<span class="title">' + (title || 'Agent UI') + '</span>' +
+                '<span class="close" title="Close">&times;</span>';
+            header.querySelector('.close').onclick = () => {
+                closeFrame(frame_id);
+                sendToBroker({ type: 'close', frame_id });
+            };
+
+            const iframe = document.createElement('iframe');
+            iframe.sandbox = 'allow-scripts allow-same-origin';
+            iframe.width = width || 800;
+            iframe.height = height || 600;
+            iframe.src = src;
+
+            wrapper.appendChild(header);
+            wrapper.appendChild(iframe);
+            document.getElementById('frames').appendChild(wrapper);
+            frames[frame_id] = wrapper;
+
+            window.addEventListener('message', function (e) {
+                if (e.source !== iframe.contentWindow) return;
+                if (!e.data || typeof e.data.event !== 'string') return;
+                sendToBroker({
+                    type: 'interaction', frame_id,
+                    event: e.data.event,
+                    id: e.data.id || '',
+                    data: e.data.data || {}
+                });
+            });
+        }
+
+        function pushToFrame({ frame_id, data }) {
+            if (!accepts(frame_id)) return;
+            const w = frames[frame_id]; if (!w) return;
+            const iframe = w.querySelector('iframe');
+            if (iframe && iframe.contentWindow) {
+                iframe.contentWindow.postMessage({ __clawshake_push: true, ...data }, '*');
+            }
+        }
+
+        function closeFrame(fid) {
+            if (!accepts(fid)) return;
+            const w = frames[fid];
+            if (w) { w.remove(); delete frames[fid]; }
+        }
+
+        function handleSnapshot({ frame_id, format, request_id }) {
+            if (!accepts(frame_id)) return;
+            const w = frames[frame_id];
+            if (!w) {
+                sendToBroker({ type: 'snapshot_response', request_id, error: 'frame not found' });
+                return;
+            }
+            const iframe = w.querySelector('iframe');
+            try {
+                const result = format === 'html'
+                    ? iframe.contentDocument.documentElement.outerHTML
+                    : iframe.contentDocument.body.innerText;
+                sendToBroker({ type: 'snapshot_response', request_id, result });
+            } catch {
+                sendToBroker({
+                    type: 'snapshot_response', request_id,
+                    error: 'Cross-origin frame — snapshot unavailable.'
+                });
+            }
+        }
+    </script>
+</body>
+
+</html>

@@ -50,6 +50,12 @@ pub fn register(registry: &ManifestRegistry, code_mode: bool, bridge_available: 
         registry.register_builtin(tool, "webview");
     }
 
+    // -- Window control tools (always available) --
+    for tool in window_tools() {
+        info!(name = %tool.name, "Registered built-in tool");
+        registry.register_builtin(tool, "window");
+    }
+
     // -- Memory tools (always registered; some are hidden) --
     #[cfg(feature = "memory")]
     for (tool, hidden) in memory_tools() {
@@ -365,6 +371,14 @@ fn spawn_tool() -> Tool {
 /// Convert webview tool definitions from `invoke::webview` into `Tool` structs.
 fn webview_tools() -> Vec<Tool> {
     crate::invoke::webview::webview_tool_definitions()
+        .iter()
+        .filter_map(Tool::from_json_schema)
+        .collect()
+}
+
+/// Convert window tool definitions from `invoke::window` into `Tool` structs.
+fn window_tools() -> Vec<Tool> {
+    crate::invoke::window::window_tool_definitions()
         .iter()
         .filter_map(Tool::from_json_schema)
         .collect()

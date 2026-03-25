@@ -19,6 +19,11 @@ pub async fn handle_render(
     frame_store: &FrameStore,
     port: u16,
 ) -> Result<String> {
+    frame_store
+        .ensure_window(port)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
     let html = arguments.get("html").and_then(|v| v.as_str());
     let src = arguments.get("src").and_then(|v| v.as_str());
 
@@ -107,7 +112,11 @@ pub async fn handle_render(
 /// Handle a `ui_push` tool call.
 ///
 /// Push a partial update to an open frame via postMessage.
-pub async fn handle_push(arguments: &Value, frame_store: &FrameStore) -> Result<String> {
+pub async fn handle_push(arguments: &Value, frame_store: &FrameStore, port: u16) -> Result<String> {
+    frame_store
+        .ensure_window(port)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     let frame_id = arguments
         .get("frame_id")
         .and_then(|v| v.as_str())

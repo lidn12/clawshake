@@ -4,10 +4,14 @@
     "version": "0.1.0",
     "identifier": "com.clawshake.desktop",
     "build": {
-        "frontendDist": "../../dist"
+        "frontendDist": "./dist"
     },
     "app": {
-        "withGlobalTauri": false,
+        "withGlobalTauri": true,
+        "security": {
+            "csp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; frame-src http://127.0.0.1:* http://localhost:*; connect-src ipc: http://tauri.localhost",
+            "dangerousDisableAssetCspModification": true
+        },
         "windows": []
     },
     "bundle": {

@@ -11,6 +11,7 @@ pub mod script;
 pub mod shell;
 pub mod spawn;
 pub mod webview;
+pub mod window;
 
 /// Replace every `{{key}}` in `template` with the matching value from `arguments`.
 /// Unresolved placeholders (and any immediately preceding `:` or `=` separator)

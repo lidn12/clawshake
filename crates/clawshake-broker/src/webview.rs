@@ -9,11 +9,13 @@
 //! at `WS /ui/ws`.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::sync::{mpsc, oneshot, RwLock};
+use tokio::sync::{mpsc, oneshot, Notify, RwLock};
+use tracing::{debug, info, warn};
 
 // ---------------------------------------------------------------------------
 // Frame store
@@ -63,6 +65,29 @@ pub enum WsOutgoing {
         format: String,
         request_id: String,
     },
+    // -- Window control messages ------------------------------------------
+    #[serde(rename = "window_open")]
+    WindowOpen {
+        label: String,
+        title: String,
+        url: String,
+        width: u32,
+        height: u32,
+    },
+    #[serde(rename = "window_close")]
+    WindowClose { label: String },
+    #[serde(rename = "window_resize")]
+    WindowResize {
+        label: String,
+        width: u32,
+        height: u32,
+    },
+    #[serde(rename = "window_set_title")]
+    WindowSetTitle { label: String, title: String },
+    #[serde(rename = "window_focus")]
+    WindowFocus { label: String },
+    #[serde(rename = "window_notify")]
+    WindowNotify { title: String, body: String },
 }
 
 /// Incoming message from host page → broker over WebSocket.
@@ -92,13 +117,31 @@ pub enum WsIncoming {
 /// In-memory store of active webview frames.
 ///
 /// Cheaply cloneable — all state is behind `Arc<RwLock<_>>`.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct FrameStore {
     frames: Arc<RwLock<HashMap<String, Frame>>>,
     /// Broadcast senders for connected host pages.
     ws_senders: Arc<RwLock<Vec<mpsc::UnboundedSender<String>>>>,
     /// Pending snapshot requests awaiting a response from the host page.
     snapshot_waiters: Arc<RwLock<HashMap<String, oneshot::Sender<Result<String, String>>>>>,
+    /// Notified whenever a new WS client connects (so `ensure_window` can
+    /// stop waiting).
+    ws_connected: Arc<Notify>,
+    /// True while we've already spawned a window process and are waiting for
+    /// it to connect.  Prevents double-spawning.
+    spawn_in_flight: Arc<AtomicBool>,
+}
+
+impl Default for FrameStore {
+    fn default() -> Self {
+        Self {
+            frames: Default::default(),
+            ws_senders: Default::default(),
+            snapshot_waiters: Default::default(),
+            ws_connected: Arc::new(Notify::new()),
+            spawn_in_flight: Arc::new(AtomicBool::new(false)),
+        }
+    }
 }
 
 impl FrameStore {
@@ -136,6 +179,103 @@ impl FrameStore {
     /// from the host page (unused here — the WS handler reads directly).
     pub async fn add_ws_sender(&self, tx: mpsc::UnboundedSender<String>) {
         self.ws_senders.write().await.push(tx);
+        // Signal anyone waiting in ensure_window().
+        self.spawn_in_flight.store(false, Ordering::SeqCst);
+        self.ws_connected.notify_waiters();
+    }
+
+    /// Returns `true` if at least one live WS client is connected.
+    /// Prunes dead senders as a side-effect.
+    pub async fn has_ws_client(&self) -> bool {
+        let mut senders = self.ws_senders.write().await;
+        senders.retain(|tx| !tx.is_closed());
+        !senders.is_empty()
+    }
+
+    /// Ensure a window process is connected.  If no WS client is alive,
+    /// spawn `clawshake-window --port {port}` and wait up to 5 s for it
+    /// to connect.
+    ///
+    /// This is idempotent: concurrent callers will not double-spawn.
+    pub async fn ensure_window(&self, port: u16) -> Result<(), String> {
+        // Fast path: someone is already connected.
+        if self.has_ws_client().await {
+            return Ok(());
+        }
+
+        // Only one spawn at a time.
+        if self
+            .spawn_in_flight
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            // Another task is already spawning — just wait for it.
+            return self.wait_for_ws_client().await;
+        }
+
+        // Find the window binary next to the broker binary.
+        let window_bin = Self::find_window_binary()?;
+
+        info!(%port, bin = %window_bin.display(), "Spawning clawshake-window");
+
+        let child = std::process::Command::new(&window_bin)
+            .arg("--port")
+            .arg(port.to_string())
+            .spawn()
+            .map_err(|e| format!("Failed to spawn clawshake-window: {e}"))?;
+
+        debug!(pid = child.id(), "Window process spawned");
+
+        self.wait_for_ws_client().await
+    }
+
+    /// Block until a WS client connects, with a 5 s timeout.
+    async fn wait_for_ws_client(&self) -> Result<(), String> {
+        if self.has_ws_client().await {
+            return Ok(());
+        }
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            self.ws_connected.notified(),
+        )
+        .await
+        {
+            Ok(_) => {
+                debug!("Window connected");
+                Ok(())
+            }
+            Err(_) => {
+                self.spawn_in_flight.store(false, Ordering::SeqCst);
+                Err("Timed out waiting for clawshake-window to connect".into())
+            }
+        }
+    }
+
+    /// Locate the `clawshake-window` binary.  Searches:
+    /// 1. Same directory as the running broker binary
+    /// 2. PATH
+    fn find_window_binary() -> Result<std::path::PathBuf, String> {
+        // 1. Sibling of current executable.
+        if let Ok(exe) = std::env::current_exe() {
+            let dir = exe.parent().unwrap_or(std::path::Path::new("."));
+            let candidate = if cfg!(windows) {
+                dir.join("clawshake-window.exe")
+            } else {
+                dir.join("clawshake-window")
+            };
+            if candidate.exists() {
+                return Ok(candidate);
+            }
+        }
+
+        // 2. Fallback: rely on PATH.
+        let name = if cfg!(windows) {
+            "clawshake-window.exe"
+        } else {
+            "clawshake-window"
+        };
+        warn!("clawshake-window not found next to broker binary, trying PATH");
+        Ok(std::path::PathBuf::from(name))
     }
 
     /// Broadcast a message to all connected host pages.
@@ -217,13 +357,27 @@ pub const HOST_PAGE: &str = r##"<!DOCTYPE html>
     let ws;
     const frames = {};
 
+    // Frame filter: /ui?frame=abc limits this host page to only frame "abc".
+    // /ui with no param shows all frames (compositor mode).
+    const _params = new URLSearchParams(location.search);
+    const frameFilter = _params.get('frame'); // null = show all
+
+    function accepts(frame_id) {
+      return !frameFilter || frameFilter === frame_id;
+    }
+
     function connect() {
       const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-      ws = new WebSocket(proto + '//' + location.host + '/ui/ws');
+      const wsUrl = proto + '//' + location.host + '/ui/ws';
+      document.getElementById('status').textContent = 'connecting…';
+      ws = new WebSocket(wsUrl);
 
       ws.onopen = () => {
         document.getElementById('status').textContent = 'connected';
         document.getElementById('status').className = 'connected';
+      };
+      ws.onerror = () => {
+        document.getElementById('status').textContent = 'connection error';
       };
       ws.onclose = () => {
         document.getElementById('status').textContent = 'disconnected — reconnecting…';
@@ -237,9 +391,109 @@ pub const HOST_PAGE: &str = r##"<!DOCTYPE html>
         else if (msg.type === 'push') pushToFrame(msg);
         else if (msg.type === 'close') closeFrame(msg.frame_id);
         else if (msg.type === 'snapshot_request') handleSnapshot(msg);
+        // Window control messages
+        else if (msg.type === 'window_open') handleWindowOpen(msg);
+        else if (msg.type === 'window_close') handleWindowClose(msg);
+        else if (msg.type === 'window_resize') handleWindowResize(msg);
+        else if (msg.type === 'window_set_title') handleWindowSetTitle(msg);
+        else if (msg.type === 'window_focus') handleWindowFocus(msg);
+        else if (msg.type === 'window_notify') handleWindowNotify(msg);
       };
     }
     connect();
+
+    // -----------------------------------------------------------------------
+    // Window control handlers
+    // -----------------------------------------------------------------------
+
+    const isTauri = !!(window.__TAURI__);
+
+    async function handleWindowOpen({ label, title, url, width, height }) {
+      if (isTauri) {
+        try {
+          const { WebviewWindow } = window.__TAURI__.webviewWindow;
+          const webview = new WebviewWindow(label, {
+            title: title || 'clawshake',
+            url: url || ('/ui'),
+            width: width || 1200,
+            height: height || 800,
+          });
+          webview.once('tauri://error', (e) => console.error('window_open error:', e));
+        } catch (e) { console.error('window_open failed:', e); }
+      } else {
+        // Browser fallback: open a new tab/popup.
+        const target = url || location.href;
+        window.open(target, label || '_blank', `width=${width||1200},height=${height||800}`);
+      }
+    }
+
+    async function handleWindowClose({ label }) {
+      if (isTauri) {
+        try {
+          const { WebviewWindow } = window.__TAURI__.webviewWindow;
+          const win = WebviewWindow.getByLabel(label || 'main');
+          if (win) await win.close();
+        } catch (e) { console.error('window_close failed:', e); }
+      }
+      // Browser: no reliable way to close tabs we didn't open.
+    }
+
+    async function handleWindowResize({ label, width, height }) {
+      if (isTauri) {
+        try {
+          const { WebviewWindow } = window.__TAURI__.webviewWindow;
+          const { LogicalSize } = window.__TAURI__.dpi;
+          const win = WebviewWindow.getByLabel(label || 'main');
+          if (win) await win.setSize(new LogicalSize(width, height));
+        } catch (e) { console.error('window_resize failed:', e); }
+      }
+      // Browser: cannot resize window programmatically.
+    }
+
+    async function handleWindowSetTitle({ label, title }) {
+      if (isTauri) {
+        try {
+          const { WebviewWindow } = window.__TAURI__.webviewWindow;
+          const win = WebviewWindow.getByLabel(label || 'main');
+          if (win) await win.setTitle(title);
+        } catch (e) { console.error('window_set_title failed:', e); }
+      } else {
+        // Browser fallback: change document title.
+        document.title = title;
+      }
+    }
+
+    async function handleWindowFocus({ label }) {
+      if (isTauri) {
+        try {
+          const { WebviewWindow } = window.__TAURI__.webviewWindow;
+          const win = WebviewWindow.getByLabel(label || 'main');
+          if (win) await win.setFocus();
+        } catch (e) { console.error('window_focus failed:', e); }
+      } else {
+        window.focus();
+      }
+    }
+
+    async function handleWindowNotify({ title, body }) {
+      if (isTauri) {
+        try {
+          const { sendNotification, isPermissionGranted, requestPermission } = window.__TAURI__.notification;
+          let ok = await isPermissionGranted();
+          if (!ok) ok = (await requestPermission()) === 'granted';
+          if (ok) sendNotification({ title, body: body || '' });
+        } catch (e) { console.error('window_notify failed:', e); }
+      } else {
+        // Browser Web Notifications API.
+        if (Notification.permission === 'granted') {
+          new Notification(title, { body: body || '' });
+        } else if (Notification.permission !== 'denied') {
+          Notification.requestPermission().then(p => {
+            if (p === 'granted') new Notification(title, { body: body || '' });
+          });
+        }
+      }
+    }
 
     function hideEmpty() {
       const el = document.getElementById('empty-msg');
@@ -247,6 +501,7 @@ pub const HOST_PAGE: &str = r##"<!DOCTYPE html>
     }
 
     function renderFrame({ frame_id, src, title, width, height }) {
+      if (!accepts(frame_id)) return;
       hideEmpty();
       let wrapper = frames[frame_id];
       if (wrapper) {
@@ -306,6 +561,7 @@ pub const HOST_PAGE: &str = r##"<!DOCTYPE html>
     }
 
     function pushToFrame({ frame_id, data }) {
+      if (!accepts(frame_id)) return;
       const wrapper = frames[frame_id];
       if (!wrapper) return;
       const iframe = wrapper.querySelector('iframe');
@@ -317,6 +573,7 @@ pub const HOST_PAGE: &str = r##"<!DOCTYPE html>
     }
 
     function closeFrame(frame_id) {
+      if (!accepts(frame_id)) return;
       const wrapper = frames[frame_id];
       if (wrapper) {
         wrapper.remove();
@@ -325,6 +582,7 @@ pub const HOST_PAGE: &str = r##"<!DOCTYPE html>
     }
 
     function handleSnapshot({ frame_id, format, request_id }) {
+      if (!accepts(frame_id)) return; // not our frame — another host page will respond
       const wrapper = frames[frame_id];
       if (!wrapper) {
         ws.send(JSON.stringify({
