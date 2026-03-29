@@ -145,6 +145,9 @@ async fn main() -> Result<()> {
             };
 
             if port.is_some() {
+                // Spawn the persistent window server process (connects back
+                // via WS once the HTTP server is ready).
+                clawshake_broker::webview::spawn_window_server(effective_port);
                 http_server::serve(broker, Some(sse_rx)).await?;
             } else {
                 // In stdio mode there is no HTTP notification loop, so

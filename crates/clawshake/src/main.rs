@@ -267,20 +267,17 @@ async fn main() -> Result<()> {
                     }
                 });
 
+                // Spawn the persistent window server (connects back via WS).
+                clawshake_broker::webview::spawn_window_server(port);
+
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 Some(McpClient::Http(HttpClient::new(format!(
                     "http://127.0.0.1:{port}"
                 ))))
             };
 
-            clawshake_bridge::cli::start_bridge(
-                p2p,
-                backend,
-                &db_path,
-                announce_tx,
-                announce_rx,
-            )
-            .await?;
+            clawshake_bridge::cli::start_bridge(p2p, backend, &db_path, announce_tx, announce_rx)
+                .await?;
         }
     }
 

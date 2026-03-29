@@ -44,6 +44,11 @@
             border-radius: 8px;
             overflow: hidden;
             background: #16161e;
+            display: flex;
+            flex-direction: column;
+            resize: both;
+            min-width: 200px;
+            min-height: 120px;
         }
 
         .frame-header {
@@ -78,6 +83,9 @@
             border: none;
             display: block;
             background: #0f0f13;
+            flex: 1;
+            width: 100%;
+            min-height: 0;
         }
 
         .empty {
@@ -110,6 +118,13 @@
             invoke('send_to_broker', { msg: JSON.stringify(obj) }).catch(() => { });
         }
 
+        function handleMsg(msg) {
+            if (msg.type === 'render') renderFrame(msg);
+            else if (msg.type === 'push') pushToFrame(msg);
+            else if (msg.type === 'close') closeFrame(msg.frame_id);
+            else if (msg.type === 'snapshot_request') handleSnapshot(msg);
+        }
+
         async function init() {
             try {
                 brokerPort = await invoke('get_broker_port');
@@ -125,13 +140,15 @@
                 try {
                     msg = typeof event.payload === 'string' ? JSON.parse(event.payload) : event.payload;
                 } catch { return; }
-                if (msg.type === 'render') renderFrame(msg);
-                else if (msg.type === 'push') pushToFrame(msg);
-                else if (msg.type === 'close') closeFrame(msg.frame_id);
-                else if (msg.type === 'snapshot_request') handleSnapshot(msg);
+                handleMsg(msg);
             });
 
-            await invoke('client_ready');
+            // client_ready returns any messages buffered before our listener
+            // was registered — process them directly (no emit race).
+            const pending = await invoke('client_ready');
+            for (const raw of pending) {
+                try { handleMsg(JSON.parse(raw)); } catch { }
+            }
         }
 
         init().catch(console.error);
@@ -155,8 +172,8 @@
             if (wrapper) {
                 const iframe = wrapper.querySelector('iframe');
                 iframe.src = src;
-                iframe.width = width || 800;
-                iframe.height = height || 600;
+                wrapper.style.width = (width || 800) + 'px';
+                wrapper.style.height = (height || 600) + 'px';
                 const t = wrapper.querySelector('.title');
                 if (t) t.textContent = title || 'Agent UI';
                 return;
@@ -165,6 +182,8 @@
             wrapper = document.createElement('div');
             wrapper.className = 'frame-wrapper';
             wrapper.dataset.frameId = frame_id;
+            wrapper.style.width = (width || 800) + 'px';
+            wrapper.style.height = (height || 600) + 'px';
 
             const header = document.createElement('div');
             header.className = 'frame-header';
@@ -178,8 +197,6 @@
 
             const iframe = document.createElement('iframe');
             iframe.sandbox = 'allow-scripts allow-same-origin';
-            iframe.width = width || 800;
-            iframe.height = height || 600;
             iframe.src = src;
 
             wrapper.appendChild(header);
@@ -204,7 +221,7 @@
             const w = frames[frame_id]; if (!w) return;
             const iframe = w.querySelector('iframe');
             if (iframe && iframe.contentWindow) {
-                iframe.contentWindow.postMessage({ __clawshake_push: true, ...data }, '*');
+                iframe.contentWindow.postMessage(data, '*');
             }
         }
 

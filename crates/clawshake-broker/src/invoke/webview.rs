@@ -19,11 +19,6 @@ pub async fn handle_render(
     frame_store: &FrameStore,
     port: u16,
 ) -> Result<String> {
-    frame_store
-        .ensure_window(port)
-        .await
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-
     let html = arguments.get("html").and_then(|v| v.as_str());
     let src = arguments.get("src").and_then(|v| v.as_str());
 
@@ -112,11 +107,7 @@ pub async fn handle_render(
 /// Handle a `ui_push` tool call.
 ///
 /// Push a partial update to an open frame via postMessage.
-pub async fn handle_push(arguments: &Value, frame_store: &FrameStore, port: u16) -> Result<String> {
-    frame_store
-        .ensure_window(port)
-        .await
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+pub async fn handle_push(arguments: &Value, frame_store: &FrameStore) -> Result<String> {
     let frame_id = arguments
         .get("frame_id")
         .and_then(|v| v.as_str())
@@ -127,18 +118,10 @@ pub async fn handle_push(arguments: &Value, frame_store: &FrameStore, port: u16)
         bail!("no open frame with id '{frame_id}' — call ui_render first");
     }
 
-    let mut data = arguments
+    let data = arguments
         .get("data")
         .cloned()
         .unwrap_or(Value::Object(Default::default()));
-
-    // If selector is provided, include it in the push payload so the bridge
-    // script can do a shortcut innerHTML replacement.
-    if let Some(selector) = arguments.get("selector").and_then(|v| v.as_str()) {
-        if let Some(obj) = data.as_object_mut() {
-            obj.insert("selector".into(), Value::String(selector.to_string()));
-        }
-    }
 
     frame_store
         .broadcast(&WsOutgoing::Push {
@@ -233,38 +216,43 @@ pub fn webview_tool_definitions() -> Vec<Value> {
     vec![
         json!({
             "name": "ui_render",
-            "description": "Render HTML content or a local URL in a sandboxed webview frame. \
-                Returns a frame_id for subsequent updates or snapshots. The webview opens in \
-                the user's browser at the /ui endpoint. Use 'html' for agent-generated content \
-                (forms, tables, charts) or 'src' for dev server previews (e.g. http://localhost:5173). \
-                Elements with a data-emit attribute automatically send click events back — \
-                no JavaScript required for basic interactivity.",
+            "description": "Render HTML in the agent window. Returns a frame_id for updates/snapshots. \
+                Use 'html' for agent-generated content or 'src' for a local dev server URL. \
+                \n\nSending events to the agent from your HTML: \
+                window.parent.postMessage({event: 'myevent', data: {key: 'value'}}, '*') \
+                — the agent receives these via listen(topics=['channel.ui']). \
+                \n\nReceiving data from the agent (via ui_push): \
+                window.addEventListener('message', (e) => { /* e.data is the pushed JSON */ })",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "html": {
                         "type": "string",
-                        "description": "Raw HTML content to render. Mutually exclusive with 'src'."
+                        "description": "HTML content to render. Write standard HTML/CSS/JS. \
+                            To send events back to the agent, use: \
+                            window.parent.postMessage({event: 'name', data: {...}}, '*'). \
+                            Mutually exclusive with 'src'."
                     },
                     "css": {
                         "type": "string",
-                        "description": "CSS to inject as a <style> block. Only used with 'html'."
+                        "description": "CSS injected as a <style> block. Only used with 'html'."
                     },
                     "js": {
                         "type": "string",
-                        "description": "JavaScript to inject. Only used with 'html'. Receives ui_push payloads via window.addEventListener('clawshake', e => e.detail)."
+                        "description": "JavaScript injected as a <script> block. Only used with 'html'. \
+                            Receive ui_push data via: window.addEventListener('message', (e) => { ... })."
                     },
                     "src": {
                         "type": "string",
-                        "description": "Local URL to render (e.g. 'http://localhost:5173' for a dev server). Mutually exclusive with 'html'."
+                        "description": "URL to render directly (e.g. 'http://localhost:5173'). Mutually exclusive with 'html'."
                     },
                     "title": {
                         "type": "string",
-                        "description": "Display title for the frame tab. Default: 'Agent UI'."
+                        "description": "Display title for the frame. Default: 'Agent UI'."
                     },
                     "frame_id": {
                         "type": "string",
-                        "description": "Reuse an existing frame instead of creating a new one. If omitted, a new frame_id is generated."
+                        "description": "Reuse an existing frame. If omitted, a new frame_id is generated."
                     },
                     "width": {
                         "type": "number",
@@ -279,11 +267,9 @@ pub fn webview_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "ui_push",
-            "description": "Push a partial update to an open webview frame without re-rendering. \
-                The data is delivered via postMessage to the frame's JavaScript. If 'selector' is \
-                provided, the matched element's innerHTML is replaced with data.html automatically. \
-                For custom handling, listen for the 'clawshake' event: \
-                window.addEventListener('clawshake', e => console.log(e.detail)).",
+            "description": "Push a JSON update to an open webview frame without re-rendering. \
+                The data is delivered as a standard 'message' event on the iframe's window. \
+                The frame receives it via: window.addEventListener('message', (e) => { /* e.data */ }).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -292,11 +278,7 @@ pub fn webview_tool_definitions() -> Vec<Value> {
                         "description": "Target frame ID from a prior ui_render call."
                     },
                     "data": {
-                        "description": "Arbitrary JSON payload delivered to the frame."
-                    },
-                    "selector": {
-                        "type": "string",
-                        "description": "Optional CSS selector. If provided along with data.html, replaces the element's innerHTML."
+                        "description": "Arbitrary JSON payload delivered to the frame via postMessage."
                     }
                 },
                 "required": ["frame_id", "data"]

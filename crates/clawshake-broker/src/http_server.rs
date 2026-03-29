@@ -462,6 +462,12 @@ async fn ui_websocket(socket: WebSocket, state: AppState) {
                 };
                 frame_store.resolve_snapshot(&request_id, res).await;
             }
+            WsIncoming::WindowListResponse {
+                request_id,
+                windows,
+            } => {
+                frame_store.resolve_list_request(&request_id, windows).await;
+            }
         }
     }
 

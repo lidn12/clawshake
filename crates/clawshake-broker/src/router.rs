@@ -287,18 +287,18 @@ pub fn dispatch<'a>(
                 "ui_render" => {
                     invoke::webview::handle_render(arguments, ctx.frame_store, ctx.port).await
                 }
-                "ui_push" => invoke::webview::handle_push(arguments, ctx.frame_store, ctx.port).await,
+                "ui_push" => invoke::webview::handle_push(arguments, ctx.frame_store).await,
                 "ui_snapshot" => invoke::webview::handle_snapshot(arguments, ctx.frame_store).await,
                 "ui_close" => invoke::webview::handle_close(arguments, ctx.frame_store).await,
                 // Window control tools.
-                "window_open" => invoke::window::handle_open(arguments, ctx.frame_store, ctx.port).await,
-                "window_close" => invoke::window::handle_close(arguments, ctx.frame_store, ctx.port).await,
-                "window_resize" => invoke::window::handle_resize(arguments, ctx.frame_store, ctx.port).await,
+                "window_open" => invoke::window::handle_open(arguments, ctx.frame_store).await,
+                "window_close" => invoke::window::handle_close(arguments, ctx.frame_store).await,
+                "window_resize" => invoke::window::handle_resize(arguments, ctx.frame_store).await,
                 "window_set_title" => {
-                    invoke::window::handle_set_title(arguments, ctx.frame_store, ctx.port).await
+                    invoke::window::handle_set_title(arguments, ctx.frame_store).await
                 }
-                "window_focus" => invoke::window::handle_focus(arguments, ctx.frame_store, ctx.port).await,
-                "window_notify" => invoke::window::handle_notify(arguments, ctx.frame_store, ctx.port).await,
+                "window_focus" => invoke::window::handle_focus(arguments, ctx.frame_store).await,
+                "window_notify" => invoke::window::handle_notify(arguments, ctx.frame_store).await,
                 "window_list" => invoke::window::handle_list(arguments, ctx.frame_store).await,
                 _ => anyhow::bail!(
                     "in-process tool '{tool_name}' has no registered handler in the router"

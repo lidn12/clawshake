@@ -20,11 +20,7 @@ use serde_json::{json, Value};
 use crate::webview::{FrameStore, WsOutgoing};
 
 /// Handle `window_open` — open a new native window or browser tab.
-pub async fn handle_open(arguments: &Value, frame_store: &FrameStore, port: u16) -> Result<String> {
-    frame_store
-        .ensure_window(port)
-        .await
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+pub async fn handle_open(arguments: &Value, frame_store: &FrameStore) -> Result<String> {
     let title = arguments
         .get("title")
         .and_then(|v| v.as_str())
@@ -63,15 +59,7 @@ pub async fn handle_open(arguments: &Value, frame_store: &FrameStore, port: u16)
 }
 
 /// Handle `window_close` — close a window by label.
-pub async fn handle_close(
-    arguments: &Value,
-    frame_store: &FrameStore,
-    port: u16,
-) -> Result<String> {
-    frame_store
-        .ensure_window(port)
-        .await
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+pub async fn handle_close(arguments: &Value, frame_store: &FrameStore) -> Result<String> {
     let label = arguments
         .get("label")
         .and_then(|v| v.as_str())
@@ -88,15 +76,7 @@ pub async fn handle_close(
 }
 
 /// Handle `window_resize` — resize a window by label.
-pub async fn handle_resize(
-    arguments: &Value,
-    frame_store: &FrameStore,
-    port: u16,
-) -> Result<String> {
-    frame_store
-        .ensure_window(port)
-        .await
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+pub async fn handle_resize(arguments: &Value, frame_store: &FrameStore) -> Result<String> {
     let label = arguments
         .get("label")
         .and_then(|v| v.as_str())
@@ -123,15 +103,7 @@ pub async fn handle_resize(
 }
 
 /// Handle `window_set_title` — change a window's title bar text.
-pub async fn handle_set_title(
-    arguments: &Value,
-    frame_store: &FrameStore,
-    port: u16,
-) -> Result<String> {
-    frame_store
-        .ensure_window(port)
-        .await
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+pub async fn handle_set_title(arguments: &Value, frame_store: &FrameStore) -> Result<String> {
     let label = arguments
         .get("label")
         .and_then(|v| v.as_str())
@@ -151,15 +123,7 @@ pub async fn handle_set_title(
 }
 
 /// Handle `window_focus` — bring a window to front.
-pub async fn handle_focus(
-    arguments: &Value,
-    frame_store: &FrameStore,
-    port: u16,
-) -> Result<String> {
-    frame_store
-        .ensure_window(port)
-        .await
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+pub async fn handle_focus(arguments: &Value, frame_store: &FrameStore) -> Result<String> {
     let label = arguments
         .get("label")
         .and_then(|v| v.as_str())
@@ -174,15 +138,7 @@ pub async fn handle_focus(
 }
 
 /// Handle `window_notify` — show a system notification.
-pub async fn handle_notify(
-    arguments: &Value,
-    frame_store: &FrameStore,
-    port: u16,
-) -> Result<String> {
-    frame_store
-        .ensure_window(port)
-        .await
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+pub async fn handle_notify(arguments: &Value, frame_store: &FrameStore) -> Result<String> {
     let title = arguments
         .get("title")
         .and_then(|v| v.as_str())
@@ -203,14 +159,26 @@ pub async fn handle_notify(
 
 /// Handle `window_list` — return the list of open windows.
 ///
-/// This is a request-response: we send a list request and wait for the host
-/// page to respond.  Falls back to reporting just "main" if no response.
+/// Sends a `WindowListRequest` to the window server over WS and waits for
+/// its `WindowListResponse`.  Falls back to an empty list on timeout.
 pub async fn handle_list(_arguments: &Value, frame_store: &FrameStore) -> Result<String> {
-    // For now, report a static list — the host page can't easily enumerate
-    // Tauri windows without a round-trip.  We'll return the known main window
-    // and let the host page enhance this later.
-    let _ = frame_store;
-    Ok(json!({"windows": [{"label": "main", "note": "Window enumeration requires native host (clawshake-window). In browser mode, only the main tab is known."}]}).to_string())
+    if !frame_store.has_ws_client().await {
+        return Ok(json!({"windows": []}).to_string());
+    }
+
+    let request_id = uuid::Uuid::new_v4().to_string();
+    let rx = frame_store.register_list_request(request_id.clone()).await;
+
+    frame_store
+        .broadcast(&WsOutgoing::WindowListRequest {
+            request_id: request_id.clone(),
+        })
+        .await;
+
+    match tokio::time::timeout(std::time::Duration::from_secs(3), rx).await {
+        Ok(Ok(windows)) => Ok(json!({"windows": windows}).to_string()),
+        _ => Ok(json!({"windows": [], "note": "timeout"}).to_string()),
+    }
 }
 
 // ---------------------------------------------------------------------------

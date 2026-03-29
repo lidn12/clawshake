@@ -78,21 +78,18 @@ fn get_broker_port(state: tauri::State<'_, BridgeState>) -> u16 {
 }
 
 /// Called by JS after it registers its `listen('broker-msg')` handler.
-/// Flushes any messages that arrived before the listener was ready.
+/// Returns any messages that arrived before the listener was ready so JS
+/// can process them synchronously — avoids the race where `app.emit` in a
+/// command handler doesn't reach a just-registered Tauri event listener.
 #[tauri::command]
-async fn client_ready(app: AppHandle, state: tauri::State<'_, BridgeState>) -> Result<(), String> {
+async fn client_ready(state: tauri::State<'_, BridgeState>) -> Result<Vec<String>, String> {
     state.ready.store(true, Ordering::SeqCst);
     let pending: Vec<String> = {
         let mut buf = state.pending.lock().await;
         std::mem::take(&mut *buf)
     };
-    info!("JS ready — flushing {} buffered messages", pending.len());
-    for msg in pending {
-        if let Err(e) = app.emit("broker-msg", &msg) {
-            warn!("Failed to emit buffered broker-msg: {e}");
-        }
-    }
-    Ok(())
+    info!("JS ready — returning {} buffered messages", pending.len());
+    Ok(pending)
 }
 
 // ---------------------------------------------------------------------------
@@ -115,6 +112,8 @@ struct BrokerMsg {
     height: Option<u32>,
     #[serde(default)]
     body: Option<String>,
+    #[serde(default)]
+    request_id: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -170,9 +169,16 @@ async fn ws_bridge(app: AppHandle, port: u16, ws_tx: WsTx) {
                                     "window_notify" => {
                                         handle_window_notify(&app, &msg);
                                     }
+                                    "window_list_request" => {
+                                        handle_window_list(&app, &msg, &ws_tx).await;
+                                    }
                                     // All other messages (render, push, close, snapshot_request)
                                     // → forward to JS via Tauri event, or buffer if not ready.
+                                    // If it's a render/push, ensure a window exists first.
                                     _ => {
+                                        if msg.r#type == "render" || msg.r#type == "push" {
+                                            ensure_main_window(&app);
+                                        }
                                         emit_or_buffer(&app, text.clone()).await;
                                     }
                                 }
@@ -222,16 +228,36 @@ async fn emit_or_buffer(app: &AppHandle, text: String) {
     }
 }
 
+/// Ensure the main window exists.  Called lazily when the first
+/// render/push arrives.  No-op if `"main"` already exists.
+fn ensure_main_window(app: &AppHandle) {
+    if app.get_webview_window("main").is_some() {
+        return;
+    }
+    match WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+        .title("clawshake")
+        .inner_size(1200.0, 800.0)
+        .min_inner_size(600.0, 400.0)
+        .build()
+    {
+        Ok(_) => info!("Created main window on first render"),
+        Err(e) => error!("Failed to create main window: {e}"),
+    }
+}
+
 fn handle_window_open(app: &AppHandle, msg: &BrokerMsg) {
     let label = msg.label.as_deref().unwrap_or("secondary");
     let title = msg.title.as_deref().unwrap_or("clawshake");
     let width = msg.width.unwrap_or(1200) as f64;
     let height = msg.height.unwrap_or(800) as f64;
 
-    // New windows also load the Tauri frontend (asset protocol).
-    // Optionally with a frame filter query param.
+    // Guard: skip if a window with this label already exists.
+    if app.get_webview_window(label).is_some() {
+        debug!("Window '{label}' already exists — skipping open");
+        return;
+    }
+
     let url = if let Some(u) = &msg.url {
-        // External URL — open it directly.
         match u.parse::<url::Url>() {
             Ok(parsed) => WebviewUrl::External(parsed),
             Err(_) => WebviewUrl::App("index.html".into()),
@@ -301,6 +327,37 @@ fn handle_window_notify(app: &AppHandle, msg: &BrokerMsg) {
     }
 }
 
+/// Respond to the broker's `window_list_request` with actual Tauri window data.
+async fn handle_window_list(app: &AppHandle, msg: &BrokerMsg, ws_tx: &WsTx) {
+    let request_id = msg.request_id.as_deref().unwrap_or("");
+    let windows: Vec<serde_json::Value> = app
+        .webview_windows()
+        .iter()
+        .map(|(label, win)| {
+            let (w, h) = win
+                .inner_size()
+                .map(|s| (s.width, s.height))
+                .unwrap_or((0, 0));
+            let title = win.title().unwrap_or_default();
+            serde_json::json!({
+                "label": label,
+                "title": title,
+                "width": w,
+                "height": h,
+            })
+        })
+        .collect();
+    let resp = serde_json::json!({
+        "type": "window_list_response",
+        "request_id": request_id,
+        "windows": windows,
+    });
+    let mut guard = ws_tx.lock().await;
+    if let Some(tx) = guard.as_mut() {
+        let _ = tx.send(Message::Text(resp.to_string().into())).await;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
@@ -336,12 +393,8 @@ fn main() {
             client_ready
         ])
         .setup(move |app| {
-            // Create the main window loading our IPC-based frontend.
-            WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
-                .title("clawshake")
-                .inner_size(1200.0, 800.0)
-                .min_inner_size(600.0, 400.0)
-                .build()?;
+            // No default window — we're a window server.
+            // Windows are created on demand via broker messages (window_open / ui_render).
 
             // Spawn the WS bridge task on Tauri's async runtime.
             let handle = app.handle().clone();
@@ -349,6 +402,13 @@ fn main() {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("failed to run clawshake-window");
+        .build(tauri::generate_context!())
+        .expect("failed to build clawshake-window")
+        .run(|_app, event| {
+            // Prevent exit when all windows are closed — we're a persistent
+            // window server that creates/destroys windows on demand.
+            if let tauri::RunEvent::ExitRequested { api, .. } = event {
+                api.prevent_exit();
+            }
+        });
 }
