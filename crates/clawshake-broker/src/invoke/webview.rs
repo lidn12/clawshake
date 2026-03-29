@@ -58,6 +58,10 @@ pub async fn handle_render(
         .and_then(|v| v.as_str())
         .map(String::from)
         .unwrap_or_else(|| Uuid::new_v4().to_string());
+    let window = arguments
+        .get("window_label")
+        .and_then(|v| v.as_str())
+        .map(String::from);
 
     let (content, serve_src) = if let Some(html_str) = html {
         // Inline mode — broker serves the content at /ui/frame/<id>
@@ -80,6 +84,7 @@ pub async fn handle_render(
         title: title.clone(),
         width,
         height,
+        window: window.clone(),
     };
 
     frame_store.insert(frame_id.clone(), frame).await;
@@ -92,6 +97,7 @@ pub async fn handle_render(
             title,
             width,
             height,
+            window,
         })
         .await;
 
@@ -168,7 +174,7 @@ pub async fn handle_snapshot(arguments: &Value, frame_store: &FrameStore) -> Res
     frame_store
         .broadcast(&WsOutgoing::SnapshotRequest {
             frame_id: frame_id.to_string(),
-            format,
+            format: format.clone(),
             request_id: request_id.clone(),
         })
         .await;
@@ -178,13 +184,39 @@ pub async fn handle_snapshot(arguments: &Value, frame_store: &FrameStore) -> Res
 
     match result {
         Ok(Ok(Ok(text))) => {
-            let resp = json!({ "snapshot": text });
+            // Return under both `.snapshot` (stable) and the format-named key
+            // (`.text` or `.html`) so agents can use the intuitive field name.
+            let resp = match format.as_str() {
+                "html" => json!({ "snapshot": text, "html": text }),
+                _ => json!({ "snapshot": text, "text": text }),
+            };
             Ok(serde_json::to_string_pretty(&resp).unwrap_or_else(|_| resp.to_string()))
         }
         Ok(Ok(Err(err))) => bail!("snapshot failed: {err}"),
         Ok(Err(_)) => bail!("snapshot response channel closed — host page disconnected"),
         Err(_) => bail!("snapshot timed out after 10s — is the /ui page open in a browser?"),
     }
+}
+
+/// Handle a `ui_list` tool call.
+///
+/// Returns all currently stored frames and their metadata.
+pub async fn handle_list(_arguments: &Value, frame_store: &FrameStore) -> Result<String> {
+    let frames: Vec<Value> = frame_store
+        .list_all()
+        .await
+        .into_iter()
+        .map(|(frame_id, frame)| {
+            json!({
+                "frame_id": frame_id,
+                "title": frame.title,
+                "width": frame.width,
+                "height": frame.height,
+                "window_label": frame.window,
+            })
+        })
+        .collect();
+    Ok(json!({ "frames": frames }).to_string())
 }
 
 /// Handle a `ui_close` tool call.
@@ -261,6 +293,12 @@ pub fn webview_tool_definitions() -> Vec<Value> {
                     "height": {
                         "type": "number",
                         "description": "Frame height in pixels. Default: 600."
+                    },
+                    "window_label": {
+                        "type": "string",
+                        "description": "Target window label (matches the 'label' used in window_open). \
+                            When set, only the host page running in that window displays this frame. \
+                            Omit to broadcast to all connected windows (compositor/browser mode)."
                     }
                 }
             }
@@ -286,9 +324,11 @@ pub fn webview_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "ui_snapshot",
-            "description": "Capture the current content of an open webview frame. Returns DOM \
-                text or HTML for verification. Only works for broker-served frames (html mode), \
-                not external src URLs due to cross-origin restrictions.",
+            "description": "Capture the current content of an open webview frame. \
+                Returns an object with two keys containing the same value: `.snapshot` (always \
+                present) and the format-named key — `.text` when format is 'text', `.html` when \
+                format is 'html'. Use either; they are identical. Only works for broker-served \
+                frames (inline html), not external src URLs due to cross-origin restrictions.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -303,6 +343,16 @@ pub fn webview_tool_definitions() -> Vec<Value> {
                     }
                 },
                 "required": ["frame_id"]
+            }
+        }),
+        json!({
+            "name": "ui_list",
+            "description": "List all currently open frames and their metadata (frame_id, title, \
+                dimensions, window_label). Use this to recover frame IDs after a restart or \
+                to inspect the current frame layout.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {}
             }
         }),
         json!({

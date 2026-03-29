@@ -44,6 +44,9 @@ pub struct Frame {
     pub title: String,
     pub width: u32,
     pub height: u32,
+    /// Optional window label — when set, only host pages running in that
+    /// window will display this frame.  `None` means broadcast to all.
+    pub window: Option<String>,
 }
 
 /// Outgoing message from broker → host page over WebSocket.
@@ -57,6 +60,9 @@ pub enum WsOutgoing {
         title: String,
         width: u32,
         height: u32,
+        /// When set, only the host page in this window displays the frame.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        window: Option<String>,
     },
     #[serde(rename = "push")]
     Push { frame_id: String, data: Value },
@@ -123,6 +129,10 @@ pub enum WsIncoming {
         #[serde(default)]
         windows: Value,
     },
+    /// Request a full replay of all stored frames.  Sent by `clawshake-window`
+    /// when a new Tauri window opens so it receives the current frame state.
+    #[serde(rename = "replay_request")]
+    ReplayRequest,
 }
 
 /// In-memory store of active webview frames.
@@ -309,27 +319,37 @@ pub const HOST_PAGE: &str = r##"<!DOCTYPE html>
   <title>clawshake ui</title>
   <style>
     * { box-sizing: border-box; }
+    html, body { height: 100%; overflow: hidden; }
     body { margin: 0; font-family: system-ui, -apple-system, sans-serif;
            background: #1a1a1a; color: #e0e0e0; }
-    #status { padding: 6px 12px; font-size: 12px; color: #888;
-              border-bottom: 1px solid #333; }
-    #status.connected { color: #6c6; }
-    #status.disconnected { color: #c66; }
-    .frame-container { display: flex; flex-wrap: wrap; gap: 12px; padding: 12px; }
+    /* Status: fixed dot, invisible when connected */
+    #status { position: fixed; bottom: 10px; right: 10px;
+              width: 8px; height: 8px; border-radius: 50%;
+              font-size: 0; background: #555;
+              opacity: 0; transition: opacity 0.4s;
+              z-index: 1000; pointer-events: none; }
+    #status.connected   { opacity: 0; background: #6c6; }
+    #status.disconnected { opacity: 1; background: #c66; }
+    .frame-container { display: flex; flex-wrap: wrap; gap: 12px; padding: 12px; height: 100vh; }
+    /* Single frame: fill viewport */
+    .frame-container:has(.frame-wrapper:only-child) { padding: 0; gap: 0; }
+    .frame-container:has(.frame-wrapper:only-child) .frame-wrapper {
+      border: none; border-radius: 0; resize: none; width: 100vw; height: 100vh; }
     .frame-wrapper { border: 1px solid #333; border-radius: 6px;
                      display: flex; flex-direction: column;
-                     resize: both; overflow: hidden;
-                     min-width: 200px; min-height: 120px;
-                     background: #222; }
-    .frame-header { padding: 6px 10px; background: #2a2a2a; font-size: 13px;
-                    display: flex; justify-content: space-between;
-                    align-items: center; border-bottom: 1px solid #333; }
+                     resize: both; overflow: hidden; position: relative;
+                     min-width: 200px; min-height: 120px; background: #1a1a1a; }
+    /* Frame header: hover-only overlay */
+    .frame-header { position: absolute; top: 0; left: 0; right: 0; z-index: 10;
+                    padding: 5px 10px; background: rgba(20,20,20,0.82);
+                    backdrop-filter: blur(6px); font-size: 13px;
+                    display: flex; justify-content: space-between; align-items: center;
+                    opacity: 0; transition: opacity 0.18s; pointer-events: none; }
+    .frame-wrapper:hover .frame-header { opacity: 1; pointer-events: auto; }
     .frame-header .title { font-weight: 500; }
-    .frame-header .close { cursor: pointer; opacity: 0.5; font-size: 16px;
-                           padding: 0 4px; }
+    .frame-header .close { cursor: pointer; opacity: 0.5; font-size: 16px; padding: 0 4px; }
     .frame-header .close:hover { opacity: 1; }
-    iframe { border: none; display: block; background: #fff;
-             flex: 1; width: 100%; min-height: 0; }
+    iframe { border: none; display: block; background: #fff; flex: 1; width: 100%; min-height: 0; }
     .empty { padding: 40px; text-align: center; color: #555; }
   </style>
 </head>
@@ -342,13 +362,20 @@ pub const HOST_PAGE: &str = r##"<!DOCTYPE html>
     let ws;
     const frames = {};
 
-    // Frame filter: /ui?frame=abc limits this host page to only frame "abc".
-    // /ui with no param shows all frames (compositor mode).
+    // Filters:
+    //   ?frame=abc  — show only that one frame
+    //   ?window=xyz — show frames targeted at xyz + broadcast frames
+    //   (no params) — compositor mode: broadcast frames only (targeted frames excluded)
     const _params = new URLSearchParams(location.search);
-    const frameFilter = _params.get('frame'); // null = show all
+    const frameFilter = _params.get('frame'); // null = no restriction
+    const windowFilter = _params.get('window'); // null = untagged/broadcast only
 
-    function accepts(frame_id) {
-      return !frameFilter || frameFilter === frame_id;
+    function accepts(frame_id, target_window) {
+      if (frameFilter && frameFilter !== frame_id) return false;
+      // Targeted frames only appear in their designated window.
+      // Broadcast frames (target_window == null) appear everywhere.
+      if (target_window && target_window !== windowFilter) return false;
+      return true;
     }
 
     function connect() {
@@ -485,8 +512,8 @@ pub const HOST_PAGE: &str = r##"<!DOCTYPE html>
       if (el) el.style.display = 'none';
     }
 
-    function renderFrame({ frame_id, src, title, width, height }) {
-      if (!accepts(frame_id)) return;
+    function renderFrame({ frame_id, src, title, width, height, window: targetWindow }) {
+      if (!accepts(frame_id, targetWindow)) return;
       hideEmpty();
       let wrapper = frames[frame_id];
       if (wrapper) {
@@ -575,6 +602,7 @@ pub const HOST_PAGE: &str = r##"<!DOCTYPE html>
         return;
       }
       const iframe = wrapper.querySelector('iframe');
+      // Try direct same-origin access first (only works if allow-same-origin is set).
       try {
         let result;
         if (format === 'html') {
@@ -583,12 +611,31 @@ pub const HOST_PAGE: &str = r##"<!DOCTYPE html>
           result = iframe.contentDocument.body.innerText;
         }
         ws.send(JSON.stringify({ type: 'snapshot_response', request_id, result }));
-      } catch (e) {
-        ws.send(JSON.stringify({
-          type: 'snapshot_response', request_id,
-          error: 'Cross-origin frame — use text/html snapshot only for broker-served content, not external src URLs.'
-        }));
-      }
+        return;
+      } catch (_) { /* sandboxed null-origin — fall through to postMessage */ }
+      // Cross-origin fallback via postMessage bridge injected into inline frames.
+      let settled = false;
+      const listener = function(e) {
+        if (e.source !== iframe.contentWindow) return;
+        if (!e.data || e.data.type !== 'snapshot_response') return;
+        if (e.data.request_id !== request_id) return;
+        if (settled) return;
+        settled = true;
+        window.removeEventListener('message', listener);
+        if (e.data.error) {
+          ws.send(JSON.stringify({ type: 'snapshot_response', request_id, error: e.data.error }));
+        } else {
+          ws.send(JSON.stringify({ type: 'snapshot_response', request_id, result: e.data.result }));
+        }
+      };
+      window.addEventListener('message', listener);
+      iframe.contentWindow.postMessage({ type: 'snapshot_request', request_id, format: format || 'text' }, '*');
+      setTimeout(function() {
+        if (settled) return;
+        settled = true;
+        window.removeEventListener('message', listener);
+        ws.send(JSON.stringify({ type: 'snapshot_response', request_id, error: 'snapshot timed out' }));
+      }, 5000);
     }
   </script>
 </body>
@@ -620,6 +667,26 @@ pub fn build_inline_frame(html: &str, css: &str, js: &str) -> String {
         format!("<script>{js}</script>")
     };
 
+    // Bridge script: lets the host page request a DOM snapshot via postMessage
+    // even when the host page and the frame are cross-origin (Tauri mode).
+    let bridge = r#"<script>
+(function() {
+  window.addEventListener('message', function(e) {
+    if (e.source !== window.parent) return;
+    var msg = e.data;
+    if (!msg || msg.type !== 'snapshot_request') return;
+    try {
+      var result = msg.format === 'html'
+        ? document.documentElement.outerHTML
+        : (document.body ? document.body.innerText : '');
+      window.parent.postMessage({ type: 'snapshot_response', request_id: msg.request_id, result: result }, '*');
+    } catch(err) {
+      window.parent.postMessage({ type: 'snapshot_response', request_id: msg.request_id, error: String(err) }, '*');
+    }
+  });
+})();
+</script>"#;
+
     format!(
         r#"<!DOCTYPE html>
 <html>
@@ -630,12 +697,14 @@ pub fn build_inline_frame(html: &str, css: &str, js: &str) -> String {
 </head>
 <body>
 {html}
+{bridge}
 {js_block}
 </body>
 </html>"#,
         csp = INLINE_CSP,
         css_block = css_block,
         html = html,
+        bridge = bridge,
         js_block = js_block,
     )
 }

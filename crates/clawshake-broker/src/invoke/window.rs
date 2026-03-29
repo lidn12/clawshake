@@ -21,6 +21,11 @@ use crate::webview::{FrameStore, WsOutgoing};
 
 /// Handle `window_open` — open a new native window or browser tab.
 pub async fn handle_open(arguments: &Value, frame_store: &FrameStore) -> Result<String> {
+    let label = arguments
+        .get("label")
+        .and_then(|v| v.as_str())
+        .unwrap_or("new")
+        .to_string();
     let title = arguments
         .get("title")
         .and_then(|v| v.as_str())
@@ -31,6 +36,13 @@ pub async fn handle_open(arguments: &Value, frame_store: &FrameStore) -> Result<
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
+    // If no URL is provided, use /ui?window=<label> so the host page
+    // only renders frames targeted at this window (plus untagged ones).
+    let url = if url.is_empty() {
+        format!("/ui?window={label}")
+    } else {
+        url
+    };
     let width = arguments
         .get("width")
         .and_then(|v| v.as_u64())
@@ -39,11 +51,6 @@ pub async fn handle_open(arguments: &Value, frame_store: &FrameStore) -> Result<
         .get("height")
         .and_then(|v| v.as_u64())
         .unwrap_or(800) as u32;
-    let label = arguments
-        .get("label")
-        .and_then(|v| v.as_str())
-        .unwrap_or("new")
-        .to_string();
 
     frame_store
         .broadcast(&WsOutgoing::WindowOpen {
@@ -206,7 +213,8 @@ pub fn window_tool_definitions() -> Vec<Value> {
                     },
                     "url": {
                         "type": "string",
-                        "description": "URL to load in the window. If empty, loads the /ui host page."
+                        "description": "URL to load in the window. Defaults to /ui?window=<label>, which \
+                            shows only frames targeted at this window (plus untagged frames)."
                     },
                     "width": {
                         "type": "number",

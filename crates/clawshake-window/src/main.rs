@@ -120,13 +120,26 @@ struct BrokerMsg {
 // WebSocket bridge task
 // ---------------------------------------------------------------------------
 
+/// How long to keep retrying after losing broker connection before exiting.
+///
+/// A short grace period tolerates broker restarts / recompiles without
+/// killing open windows. If the broker doesn't come back within this window
+/// the daemon exits — the next broker start will spawn a fresh instance.
+const BROKER_GRACE_SECS: u64 = 10;
+
 /// Connect to the broker's WS endpoint and bridge messages.
 ///
 /// - Broker → Window: window_* messages handled in Rust; everything else
 ///   emitted as a `broker-msg` Tauri event for the JS host page.
 /// - Window → Broker: the `send_to_broker` command writes to `ws_tx`.
+///
+/// Exits the process if the broker cannot be reached for longer than
+/// [`BROKER_GRACE_SECS`], enforcing a 1:1 broker ↔ window daemon lifetime.
 async fn ws_bridge(app: AppHandle, port: u16, ws_tx: WsTx) {
+    use std::time::Instant;
+
     let url = format!("ws://127.0.0.1:{port}/ui/ws");
+    let mut disconnected_since: Option<Instant> = None;
 
     loop {
         info!("Connecting to broker at {url}");
@@ -135,6 +148,7 @@ async fn ws_bridge(app: AppHandle, port: u16, ws_tx: WsTx) {
         match conn {
             Ok((stream, _response)) => {
                 info!("Connected to broker WebSocket");
+
                 let (write, mut read) = stream.split();
 
                 // Store the write half so Tauri commands can send messages.
@@ -174,11 +188,7 @@ async fn ws_bridge(app: AppHandle, port: u16, ws_tx: WsTx) {
                                     }
                                     // All other messages (render, push, close, snapshot_request)
                                     // → forward to JS via Tauri event, or buffer if not ready.
-                                    // If it's a render/push, ensure a window exists first.
                                     _ => {
-                                        if msg.r#type == "render" || msg.r#type == "push" {
-                                            ensure_main_window(&app);
-                                        }
                                         emit_or_buffer(&app, text.clone()).await;
                                     }
                                 }
@@ -201,10 +211,21 @@ async fn ws_bridge(app: AppHandle, port: u16, ws_tx: WsTx) {
                     let mut guard = ws_tx.lock().await;
                     *guard = None;
                 }
-                warn!("Disconnected from broker, reconnecting in 2s…");
+                warn!("Disconnected from broker — will retry for {BROKER_GRACE_SECS}s then exit");
+                disconnected_since = Some(Instant::now());
             }
             Err(e) => {
                 warn!("Failed to connect to broker: {e}");
+                disconnected_since.get_or_insert_with(Instant::now);
+            }
+        }
+
+        // Exit if we've been disconnected longer than the grace period.
+        if let Some(since) = disconnected_since {
+            if since.elapsed().as_secs() >= BROKER_GRACE_SECS {
+                info!("Broker unreachable for >{BROKER_GRACE_SECS}s — exiting window daemon");
+                app.exit(0);
+                return;
             }
         }
 
@@ -228,23 +249,6 @@ async fn emit_or_buffer(app: &AppHandle, text: String) {
     }
 }
 
-/// Ensure the main window exists.  Called lazily when the first
-/// render/push arrives.  No-op if `"main"` already exists.
-fn ensure_main_window(app: &AppHandle) {
-    if app.get_webview_window("main").is_some() {
-        return;
-    }
-    match WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
-        .title("clawshake")
-        .inner_size(1200.0, 800.0)
-        .min_inner_size(600.0, 400.0)
-        .build()
-    {
-        Ok(_) => info!("Created main window on first render"),
-        Err(e) => error!("Failed to create main window: {e}"),
-    }
-}
-
 fn handle_window_open(app: &AppHandle, msg: &BrokerMsg) {
     let label = msg.label.as_deref().unwrap_or("secondary");
     let title = msg.title.as_deref().unwrap_or("clawshake");
@@ -258,9 +262,16 @@ fn handle_window_open(app: &AppHandle, msg: &BrokerMsg) {
     }
 
     let url = if let Some(u) = &msg.url {
-        match u.parse::<url::Url>() {
-            Ok(parsed) => WebviewUrl::External(parsed),
-            Err(_) => WebviewUrl::App("index.html".into()),
+        if u.starts_with('/') {
+            // Relative path — use as Tauri App URL (e.g. /ui?window=mywin → index.html?window=mywin)
+            let qs = u.find('?').map(|i| &u[i..]).unwrap_or("");
+            let path = format!("index.html{qs}");
+            WebviewUrl::App(path.into())
+        } else {
+            match u.parse::<url::Url>() {
+                Ok(parsed) => WebviewUrl::External(parsed),
+                Err(_) => WebviewUrl::App("index.html".into()),
+            }
         }
     } else {
         WebviewUrl::App("index.html".into())

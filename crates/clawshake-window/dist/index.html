@@ -7,91 +7,87 @@
     <style>
         * {
             box-sizing: border-box;
-        }
-
-        body {
             margin: 0;
-            font-family: system-ui, -apple-system, sans-serif;
+            padding: 0;
+        }
+
+        html,
+        body {
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
             background: #0f0f13;
-            color: #e0e0e0;
         }
 
+        /* Disconnect indicator: tiny red dot bottom-right, invisible when ok */
         #status {
-            padding: 4px 12px;
-            font-size: 11px;
-            color: #555;
-            border-bottom: 1px solid #1e1e2a;
-            background: #0a0a0f;
-        }
-
-        #status.connected {
-            color: #5bf5a8;
+            position: fixed;
+            bottom: 8px;
+            right: 8px;
+            z-index: 9999;
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: #c66;
+            opacity: 0;
+            transition: opacity 0.4s;
+            pointer-events: none;
+            font-size: 0;
         }
 
         #status.disconnected {
-            color: #c66;
+            opacity: 1;
         }
 
+        /* Frame container: CSS grid that fills full viewport */
         .frame-container {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 12px;
-            padding: 12px;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            grid-auto-rows: 1fr;
+            width: 100vw;
+            height: 100vh;
+            gap: 1px;
+            background: #1a1a2a;
+            /* gap colour */
+        }
+
+        /* Single frame: force single cell, no gap, no seam — truly edge-to-edge */
+        .frame-container:has(.frame-wrapper:only-child) {
+            gap: 0;
+            background: transparent;
+            grid-template-columns: 1fr;
+            grid-template-rows: 1fr;
         }
 
         .frame-wrapper {
-            border: 1px solid #2a2a3a;
-            border-radius: 8px;
             overflow: hidden;
-            background: #16161e;
             display: flex;
             flex-direction: column;
-            resize: both;
-            min-width: 200px;
-            min-height: 120px;
+            background: #0f0f13;
+            position: relative;
         }
 
+        /* Frame header: hidden in Tauri — OS window chrome is sufficient */
         .frame-header {
-            padding: 6px 12px;
-            background: #1a1a24;
-            font-size: 12px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            border-bottom: 1px solid #2a2a3a;
-        }
-
-        .frame-header .title {
-            font-weight: 500;
-            color: #aaa;
-        }
-
-        .frame-header .close {
-            cursor: pointer;
-            opacity: 0.4;
-            font-size: 16px;
-            padding: 0 4px;
-            transition: opacity 0.15s;
-        }
-
-        .frame-header .close:hover {
-            opacity: 1;
-            color: #f55b8a;
+            display: none;
         }
 
         iframe {
             border: none;
-            display: block;
-            background: #0f0f13;
             flex: 1;
             width: 100%;
-            min-height: 0;
+            height: 100%;
+            display: block;
         }
 
         .empty {
-            padding: 60px 40px;
-            text-align: center;
-            color: #444;
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #333;
+            font-family: system-ui;
             font-size: 14px;
         }
     </style>
@@ -111,8 +107,15 @@
 
         const _params = new URLSearchParams(location.search);
         const frameFilter = _params.get('frame');
+        const windowFilter = _params.get('window');
 
-        function accepts(fid) { return !frameFilter || frameFilter === fid; }
+        function accepts(fid, targetWindow) {
+            if (frameFilter && frameFilter !== fid) return false;
+            // Targeted frames only appear in their designated window.
+            // Broadcast frames (targetWindow == null/undefined) appear everywhere.
+            if (targetWindow && targetWindow !== windowFilter) return false;
+            return true;
+        }
 
         function sendToBroker(obj) {
             invoke('send_to_broker', { msg: JSON.stringify(obj) }).catch(() => { });
@@ -143,6 +146,10 @@
                 handleMsg(msg);
             });
 
+            // Request a replay of all existing frames — sent after the listener
+            // is registered so no messages are missed.
+            invoke('send_to_broker', { msg: JSON.stringify({ type: 'replay_request' }) }).catch(() => { });
+
             // client_ready returns any messages buffered before our listener
             // was registered — process them directly (no emit race).
             const pending = await invoke('client_ready');
@@ -160,8 +167,8 @@
             if (el) el.style.display = 'none';
         }
 
-        function renderFrame({ frame_id, src, title, width, height }) {
-            if (!accepts(frame_id)) return;
+        function renderFrame({ frame_id, src, title, width, height, window: targetWindow }) {
+            if (!accepts(frame_id, targetWindow)) return;
             hideEmpty();
 
             if (src && !src.startsWith('http') && brokerPort) {
@@ -172,8 +179,6 @@
             if (wrapper) {
                 const iframe = wrapper.querySelector('iframe');
                 iframe.src = src;
-                wrapper.style.width = (width || 800) + 'px';
-                wrapper.style.height = (height || 600) + 'px';
                 const t = wrapper.querySelector('.title');
                 if (t) t.textContent = title || 'Agent UI';
                 return;
@@ -182,8 +187,6 @@
             wrapper = document.createElement('div');
             wrapper.className = 'frame-wrapper';
             wrapper.dataset.frameId = frame_id;
-            wrapper.style.width = (width || 800) + 'px';
-            wrapper.style.height = (height || 600) + 'px';
 
             const header = document.createElement('div');
             header.className = 'frame-header';
@@ -239,17 +242,38 @@
                 return;
             }
             const iframe = w.querySelector('iframe');
+            // Try direct same-origin access first (browser mode).
             try {
                 const result = format === 'html'
                     ? iframe.contentDocument.documentElement.outerHTML
                     : iframe.contentDocument.body.innerText;
                 sendToBroker({ type: 'snapshot_response', request_id, result });
-            } catch {
-                sendToBroker({
-                    type: 'snapshot_response', request_id,
-                    error: 'Cross-origin frame — snapshot unavailable.'
-                });
-            }
+                return;
+            } catch (_) { /* cross-origin — fall through to postMessage */ }
+            // Cross-origin fallback: ask the frame via postMessage.
+            // The frame bridge script responds with a snapshot_response message.
+            let settled = false;
+            const listener = function (e) {
+                if (e.source !== iframe.contentWindow) return;
+                if (!e.data || e.data.type !== 'snapshot_response') return;
+                if (e.data.request_id !== request_id) return;
+                if (settled) return;
+                settled = true;
+                window.removeEventListener('message', listener);
+                if (e.data.error) {
+                    sendToBroker({ type: 'snapshot_response', request_id, error: e.data.error });
+                } else {
+                    sendToBroker({ type: 'snapshot_response', request_id, result: e.data.result });
+                }
+            };
+            window.addEventListener('message', listener);
+            iframe.contentWindow.postMessage({ type: 'snapshot_request', request_id, format: format || 'text' }, '*');
+            setTimeout(function () {
+                if (settled) return;
+                settled = true;
+                window.removeEventListener('message', listener);
+                sendToBroker({ type: 'snapshot_response', request_id, error: 'snapshot timed out' });
+            }, 5000);
         }
     </script>
 </body>

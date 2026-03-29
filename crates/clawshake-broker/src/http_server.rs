@@ -391,6 +391,7 @@ async fn ui_websocket(socket: WebSocket, state: AppState) {
             title: frame.title,
             width: frame.width,
             height: frame.height,
+            window: frame.window,
         };
         if let Ok(json) = serde_json::to_string(&msg) {
             let _ = tx.send(json);
@@ -467,6 +468,29 @@ async fn ui_websocket(socket: WebSocket, state: AppState) {
                 windows,
             } => {
                 frame_store.resolve_list_request(&request_id, windows).await;
+            }
+            WsIncoming::ReplayRequest => {
+                // Re-send all stored frames so a newly opened window can
+                // pick up existing content via its accepts() filter.
+                let port = state.ctx.port;
+                let existing = state.ctx.frame_store.list_all().await;
+                for (frame_id, frame) in existing {
+                    let src = match &frame.content {
+                        webview::FrameContent::Inline { .. } => {
+                            format!("http://127.0.0.1:{port}/ui/frame/{frame_id}")
+                        }
+                        webview::FrameContent::Src(url) => url.clone(),
+                    };
+                    let msg = webview::WsOutgoing::Render {
+                        frame_id,
+                        src,
+                        title: frame.title,
+                        width: frame.width,
+                        height: frame.height,
+                        window: frame.window,
+                    };
+                    frame_store.broadcast(&msg).await;
+                }
             }
         }
     }

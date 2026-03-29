@@ -289,6 +289,7 @@ pub fn dispatch<'a>(
                 }
                 "ui_push" => invoke::webview::handle_push(arguments, ctx.frame_store).await,
                 "ui_snapshot" => invoke::webview::handle_snapshot(arguments, ctx.frame_store).await,
+                "ui_list" => invoke::webview::handle_list(arguments, ctx.frame_store).await,
                 "ui_close" => invoke::webview::handle_close(arguments, ctx.frame_store).await,
                 // Window control tools.
                 "window_open" => invoke::window::handle_open(arguments, ctx.frame_store).await,
