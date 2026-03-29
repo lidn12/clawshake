@@ -103,10 +103,11 @@ pub(crate) async fn handle(
                     if lt.hidden {
                         return false;
                     }
-                    // In code mode, hide manifest/MCP-backed tools — only
-                    // show built-in (InProcess) tools.  Manifest tools are
-                    // still callable by name via run_code.
-                    if ctx.code_mode && !lt.tool.invoke.is_in_process() {
+                    // In code mode, only expose describe_tools + run_code.
+                    // Everything else (builtins, manifest, MCP) is still
+                    // callable by name via run_code — agents discover them
+                    // through describe_tools.
+                    if ctx.code_mode && lt.source != "codemode" {
                         return false;
                     }
                     true
