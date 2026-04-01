@@ -165,8 +165,10 @@ mod tests {
         let cron = crate::invoke::cron::CronScheduler::new();
         let frame_store = crate::webview::FrameStore::new();
         let expose_table = crate::expose::ExposeTable::new();
+        let config = clawshake_core::config::Config::default();
 
         let ctx = router::DispatchContext {
+            config: &config,
             registry: &registry,
             servers: &servers,
             event_queue: &eq,
@@ -199,8 +201,10 @@ mod tests {
         let cron = crate::invoke::cron::CronScheduler::new();
         let frame_store = crate::webview::FrameStore::new();
         let expose_table = crate::expose::ExposeTable::new();
+        let config = clawshake_core::config::Config::default();
 
         let ctx = router::DispatchContext {
+            config: &config,
             registry: &registry,
             servers: &servers,
             event_queue: &eq,
@@ -233,8 +237,10 @@ mod tests {
         let cron = crate::invoke::cron::CronScheduler::new();
         let frame_store = crate::webview::FrameStore::new();
         let expose_table = crate::expose::ExposeTable::new();
+        let config = clawshake_core::config::Config::default();
 
         let ctx = router::DispatchContext {
+            config: &config,
             registry: &registry,
             servers: &servers,
             event_queue: &eq,

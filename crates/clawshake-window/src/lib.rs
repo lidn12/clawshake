@@ -1,0 +1,410 @@
+//! Tauri v2 window shell for clawshake — library interface.
+//!
+//! Provides the WebSocket bridge, Tauri IPC commands, and window control
+//! handlers.  Both the standalone `clawshake-window` binary and the
+//! `ashby-app` distribution binary reuse this crate as a library.
+//!
+//! # Quick start (standalone)
+//!
+//! ```no_run
+//! clawshake_window::run(7475).expect("window shell failed");
+//! ```
+
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
+
+use futures_util::{SinkExt, StreamExt};
+use serde::Deserialize;
+use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+use tokio::sync::Mutex;
+use tokio_tungstenite::tungstenite::Message;
+use tracing::{debug, error, info, warn};
+
+// ---------------------------------------------------------------------------
+// State shared between Tauri commands and the WS bridge task
+// ---------------------------------------------------------------------------
+
+/// A handle to send messages from JS → broker over the WebSocket.
+pub type WsTx = Arc<
+    Mutex<
+        Option<
+            futures_util::stream::SplitSink<
+                tokio_tungstenite::WebSocketStream<
+                    tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+                >,
+                Message,
+            >,
+        >,
+    >,
+>;
+
+pub struct BridgeState {
+    pub ws_tx: WsTx,
+    pub broker_port: u16,
+    /// Messages buffered before JS registered its listener.
+    pub pending: Mutex<Vec<String>>,
+    /// Set to true once JS calls `client_ready`.
+    pub ready: AtomicBool,
+}
+
+// ---------------------------------------------------------------------------
+// Tauri commands (JS → Rust)
+//
+// Wrapped in a module so the `#[tauri::command]` proc-macro's auxiliary
+// items don't collide with the `pub` re-exports at the crate root.
+// ---------------------------------------------------------------------------
+
+pub mod commands {
+    use super::*;
+    use tokio_tungstenite::tungstenite::Message;
+
+    /// Send a raw JSON string from the host page to the broker via WS.
+    #[tauri::command]
+    pub async fn send_to_broker(
+        state: tauri::State<'_, BridgeState>,
+        msg: String,
+    ) -> Result<(), String> {
+        let mut guard = state.ws_tx.lock().await;
+        if let Some(tx) = guard.as_mut() {
+            tx.send(Message::Text(msg.into()))
+                .await
+                .map_err(|e| e.to_string())
+        } else {
+            Err("WebSocket not connected".into())
+        }
+    }
+
+    /// Return the broker port so the host page can construct iframe src URLs.
+    #[tauri::command]
+    pub fn get_broker_port(state: tauri::State<'_, BridgeState>) -> u16 {
+        state.broker_port
+    }
+
+    /// Called by JS after it registers its `listen('broker-msg')` handler.
+    /// Returns any messages that arrived before the listener was ready so JS
+    /// can process them synchronously — avoids the race where `app.emit` in a
+    /// command handler doesn't reach a just-registered Tauri event listener.
+    #[tauri::command]
+    pub async fn client_ready(state: tauri::State<'_, BridgeState>) -> Result<Vec<String>, String> {
+        state.ready.store(true, Ordering::SeqCst);
+        let pending: Vec<String> = {
+            let mut buf = state.pending.lock().await;
+            std::mem::take(&mut *buf)
+        };
+        info!("JS ready — returning {} buffered messages", pending.len());
+        Ok(pending)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Broker message types (subset needed for window control)
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize, Debug)]
+pub struct BrokerMsg {
+    pub r#type: String,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub width: Option<u32>,
+    #[serde(default)]
+    pub height: Option<u32>,
+    #[serde(default)]
+    pub body: Option<String>,
+    #[serde(default)]
+    pub request_id: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// WebSocket bridge task
+// ---------------------------------------------------------------------------
+
+/// How long to keep retrying after losing broker connection before exiting.
+///
+/// A short grace period tolerates broker restarts / recompiles without
+/// killing open windows. If the broker doesn't come back within this window
+/// the daemon exits — the next broker start will spawn a fresh instance.
+pub const BROKER_GRACE_SECS: u64 = 10;
+
+/// Connect to the broker's WS endpoint and bridge messages.
+///
+/// - Broker → Window: window_* messages handled in Rust; everything else
+///   emitted as a `broker-msg` Tauri event for the JS host page.
+/// - Window → Broker: the `send_to_broker` command writes to `ws_tx`.
+///
+/// Exits the process if the broker cannot be reached for longer than
+/// [`BROKER_GRACE_SECS`], enforcing a 1:1 broker ↔ window daemon lifetime.
+pub async fn ws_bridge(app: AppHandle, port: u16, ws_tx: WsTx) {
+    use std::time::Instant;
+
+    let url = format!("ws://127.0.0.1:{port}/ui/ws");
+    let mut disconnected_since: Option<Instant> = None;
+
+    loop {
+        info!("Connecting to broker at {url}");
+        let conn = tokio_tungstenite::connect_async(&url).await;
+
+        match conn {
+            Ok((stream, _response)) => {
+                info!("Connected to broker WebSocket");
+
+                let (write, mut read) = stream.split();
+
+                // Store the write half so Tauri commands can send messages.
+                {
+                    let mut guard = ws_tx.lock().await;
+                    *guard = Some(write);
+                }
+
+                // Read messages from broker.
+                while let Some(result) = read.next().await {
+                    match result {
+                        Ok(Message::Text(text)) => {
+                            let text = text.to_string();
+                            if let Ok(msg) = serde_json::from_str::<BrokerMsg>(&text) {
+                                match msg.r#type.as_str() {
+                                    "window_open" => {
+                                        handle_window_open(&app, &msg);
+                                    }
+                                    "window_close" => {
+                                        handle_window_close(&app, &msg);
+                                    }
+                                    "window_resize" => {
+                                        handle_window_resize(&app, &msg);
+                                    }
+                                    "window_set_title" => {
+                                        handle_window_set_title(&app, &msg);
+                                    }
+                                    "window_focus" => {
+                                        handle_window_focus(&app, &msg);
+                                    }
+                                    "window_notify" => {
+                                        handle_window_notify(&app, &msg);
+                                    }
+                                    "window_list_request" => {
+                                        handle_window_list(&app, &msg, &ws_tx).await;
+                                    }
+                                    _ => {
+                                        emit_or_buffer(&app, text.clone()).await;
+                                    }
+                                }
+                            }
+                        }
+                        Ok(Message::Close(_)) => {
+                            info!("Broker closed WebSocket");
+                            break;
+                        }
+                        Err(e) => {
+                            warn!("WebSocket read error: {e}");
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+
+                // Clear the write half on disconnect.
+                {
+                    let mut guard = ws_tx.lock().await;
+                    *guard = None;
+                }
+                warn!("Disconnected from broker — will retry for {BROKER_GRACE_SECS}s then exit");
+                disconnected_since = Some(Instant::now());
+            }
+            Err(e) => {
+                warn!("Failed to connect to broker: {e}");
+                disconnected_since.get_or_insert_with(Instant::now);
+            }
+        }
+
+        // Exit if we've been disconnected longer than the grace period.
+        if let Some(since) = disconnected_since {
+            if since.elapsed().as_secs() >= BROKER_GRACE_SECS {
+                info!("Broker unreachable for >{BROKER_GRACE_SECS}s — exiting window daemon");
+                app.exit(0);
+                return;
+            }
+        }
+
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Window control handlers (Rust-native, no JS involvement)
+// ---------------------------------------------------------------------------
+
+/// Emit a broker message to JS, or buffer it if JS isn't ready yet.
+pub async fn emit_or_buffer(app: &AppHandle, text: String) {
+    let state: tauri::State<'_, BridgeState> = app.state();
+    if state.ready.load(Ordering::SeqCst) {
+        if let Err(e) = app.emit("broker-msg", &text) {
+            warn!("Failed to emit broker-msg: {e}");
+        }
+    } else {
+        state.pending.lock().await.push(text);
+    }
+}
+
+pub fn handle_window_open(app: &AppHandle, msg: &BrokerMsg) {
+    let label = msg.label.as_deref().unwrap_or("secondary");
+    let title = msg.title.as_deref().unwrap_or("clawshake");
+    let width = msg.width.unwrap_or(1200) as f64;
+    let height = msg.height.unwrap_or(800) as f64;
+
+    if app.get_webview_window(label).is_some() {
+        debug!("Window '{label}' already exists — skipping open");
+        return;
+    }
+
+    let url = if let Some(u) = &msg.url {
+        if u.starts_with('/') {
+            let qs = u.find('?').map(|i| &u[i..]).unwrap_or("");
+            let path = format!("index.html{qs}");
+            WebviewUrl::App(path.into())
+        } else {
+            match u.parse::<url::Url>() {
+                Ok(parsed) => WebviewUrl::External(parsed),
+                Err(_) => WebviewUrl::App("index.html".into()),
+            }
+        }
+    } else {
+        WebviewUrl::App("index.html".into())
+    };
+
+    match WebviewWindowBuilder::new(app, label, url)
+        .title(title)
+        .inner_size(width, height)
+        .build()
+    {
+        Ok(_) => debug!("Opened window '{label}'"),
+        Err(e) => error!("Failed to open window '{label}': {e}"),
+    }
+}
+
+pub fn handle_window_close(app: &AppHandle, msg: &BrokerMsg) {
+    let label = msg.label.as_deref().unwrap_or("main");
+    if let Some(win) = app.get_webview_window(label) {
+        if let Err(e) = win.close() {
+            error!("Failed to close window '{label}': {e}");
+        }
+    }
+}
+
+pub fn handle_window_resize(app: &AppHandle, msg: &BrokerMsg) {
+    let label = msg.label.as_deref().unwrap_or("main");
+    let width = msg.width.unwrap_or(1200);
+    let height = msg.height.unwrap_or(800);
+    if let Some(win) = app.get_webview_window(label) {
+        let size = tauri::LogicalSize::new(width as f64, height as f64);
+        if let Err(e) = win.set_size(tauri::Size::Logical(size)) {
+            error!("Failed to resize window '{label}': {e}");
+        }
+    }
+}
+
+pub fn handle_window_set_title(app: &AppHandle, msg: &BrokerMsg) {
+    let label = msg.label.as_deref().unwrap_or("main");
+    let title = msg.title.as_deref().unwrap_or("clawshake");
+    if let Some(win) = app.get_webview_window(label) {
+        if let Err(e) = win.set_title(title) {
+            error!("Failed to set title on '{label}': {e}");
+        }
+    }
+}
+
+pub fn handle_window_focus(app: &AppHandle, msg: &BrokerMsg) {
+    let label = msg.label.as_deref().unwrap_or("main");
+    if let Some(win) = app.get_webview_window(label) {
+        if let Err(e) = win.set_focus() {
+            error!("Failed to focus window '{label}': {e}");
+        }
+    }
+}
+
+pub fn handle_window_notify(app: &AppHandle, msg: &BrokerMsg) {
+    let title = msg.title.as_deref().unwrap_or("clawshake");
+    let body = msg.body.as_deref().unwrap_or("");
+
+    use tauri_plugin_notification::NotificationExt;
+    if let Err(e) = app.notification().builder().title(title).body(body).show() {
+        error!("Failed to show notification: {e}");
+    }
+}
+
+/// Respond to the broker's `window_list_request` with actual Tauri window data.
+pub async fn handle_window_list(app: &AppHandle, msg: &BrokerMsg, ws_tx: &WsTx) {
+    let request_id = msg.request_id.as_deref().unwrap_or("");
+    let windows: Vec<serde_json::Value> = app
+        .webview_windows()
+        .iter()
+        .map(|(label, win)| {
+            let (w, h) = win
+                .inner_size()
+                .map(|s| (s.width, s.height))
+                .unwrap_or((0, 0));
+            let title = win.title().unwrap_or_default();
+            serde_json::json!({
+                "label": label,
+                "title": title,
+                "width": w,
+                "height": h,
+            })
+        })
+        .collect();
+    let resp = serde_json::json!({
+        "type": "window_list_response",
+        "request_id": request_id,
+        "windows": windows,
+    });
+    let mut guard = ws_tx.lock().await;
+    if let Some(tx) = guard.as_mut() {
+        let _ = tx.send(Message::Text(resp.to_string().into())).await;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Standalone runner
+// ---------------------------------------------------------------------------
+
+/// Run the clawshake-window shell as a standalone Tauri application.
+///
+/// This is the entry point used by the `clawshake-window` binary.
+/// `ashby-app` reuses the individual components (bridge, commands, handlers)
+/// directly rather than calling this function.
+pub fn run(port: u16) -> Result<(), Box<dyn std::error::Error>> {
+    let ws_tx: WsTx = Arc::new(Mutex::new(None));
+
+    tauri::Builder::default()
+        .plugin(tauri_plugin_notification::init())
+        .manage(BridgeState {
+            ws_tx: ws_tx.clone(),
+            broker_port: port,
+            pending: Mutex::new(Vec::new()),
+            ready: AtomicBool::new(false),
+        })
+        .invoke_handler(tauri::generate_handler![
+            commands::send_to_broker,
+            commands::get_broker_port,
+            commands::client_ready
+        ])
+        .setup(move |app| {
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(ws_bridge(handle, port, ws_tx));
+            Ok(())
+        })
+        .build(tauri::generate_context!())
+        .expect("failed to build clawshake-window")
+        .run(|_app, event| {
+            if let tauri::RunEvent::ExitRequested { api, .. } = event {
+                api.prevent_exit();
+            }
+        });
+
+    Ok(())
+}

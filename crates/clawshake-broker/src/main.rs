@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use clawshake_broker::{builtins, cli, http_server, invoke, mcp_server, router, watcher};
@@ -110,8 +112,8 @@ async fn main() -> Result<()> {
             )?;
             info!(tools = registry.tool_count(), "Broker ready");
 
-            // ── Memory subsystem ────────────────────────────────────────
-            let config = core_config::load(None)?;
+            // ── Config + Memory subsystem ───────────────────────────────
+            let config = Arc::new(core_config::load(None)?);
             #[cfg(feature = "memory")]
             let memory = if config.memory.enabled {
                 let mem_ctx = invoke::memory::build_memory_context(&clawshake_dir, &config.memory);
@@ -122,14 +124,12 @@ async fn main() -> Result<()> {
                 None
             };
             #[cfg(not(feature = "memory"))]
-            let memory: Option<router::MemoryContext> = {
-                let _ = &config;
-                None
-            };
+            let memory: Option<router::MemoryContext> = None;
 
             // stdio mode has no HTTP port for /invoke callbacks.
             let effective_port = port.unwrap_or(0);
             let broker = router::BrokerContext {
+                config,
                 registry,
                 permissions,
                 servers,

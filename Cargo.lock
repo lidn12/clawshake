@@ -965,6 +965,7 @@ dependencies = [
  "dirs 5.0.1",
  "serde_json",
  "tokio",
+ "toml 0.8.23",
  "tracing",
  "tracing-subscriber",
 ]

@@ -1,7 +1,9 @@
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 
 use anyhow::Result;
+use clawshake_core::config::Config;
 use clawshake_core::identity::AgentId;
 use clawshake_core::manifest::InvokeConfig;
 use clawshake_core::permissions::{Decision, PermissionStore};
@@ -27,6 +29,8 @@ pub struct MemoryContext;
 
 /// Everything the router needs to dispatch any tool call.
 pub struct DispatchContext<'a> {
+    /// Node-level configuration.
+    pub config: &'a Config,
     pub registry: &'a ManifestRegistry,
     pub servers: &'a McpServerMap,
     pub event_queue: &'a EventQueue,
@@ -52,6 +56,8 @@ pub struct DispatchContext<'a> {
 /// (`serve_stdio`, `http_server::serve`) that need to own their state.
 #[derive(Clone)]
 pub struct BrokerContext {
+    /// Node-level configuration.
+    pub config: Arc<Config>,
     pub registry: ManifestRegistry,
     pub permissions: PermissionStore,
     pub servers: McpServerMap,
@@ -75,6 +81,7 @@ impl BrokerContext {
     /// Borrow as a [`DispatchContext`].
     pub fn as_dispatch(&self) -> DispatchContext<'_> {
         DispatchContext {
+            config: &self.config,
             registry: &self.registry,
             servers: &self.servers,
             event_queue: &self.event_queue,
@@ -95,6 +102,7 @@ impl<'a> DispatchContext<'a> {
     /// Clone all borrowed fields into an owned [`BrokerContext`].
     pub fn to_owned(&self) -> BrokerContext {
         BrokerContext {
+            config: Arc::new(self.config.clone()),
             registry: self.registry.clone(),
             permissions: self.permissions.clone(),
             servers: self.servers.clone(),
@@ -255,7 +263,7 @@ pub fn dispatch<'a>(
                     Ok(serde_json::to_string_pretty(&resp).unwrap_or_else(|_| resp.to_string()))
                 }
                 // General-purpose tools — dispatch in-process.
-                "shell" => invoke::shell::handle(arguments).await,
+                "shell" => invoke::shell::handle(arguments, &ctx.config.tools.shell).await,
                 // Spawn — async wrapper for any tool call.
                 "spawn" => invoke::spawn::handle(arguments, ctx).await,
                 // Cron tools — dispatch to the scheduler.

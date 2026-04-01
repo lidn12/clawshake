@@ -18,17 +18,18 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
 /// Top-level config file structure.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub network: NetworkConfig,
     pub models: ModelsConfig,
     pub tools: ToolsConfig,
     pub memory: MemoryConfig,
+    pub sandbox: SandboxDefaults,
 }
 
 /// `[memory]` — long-term memory subsystem settings.
@@ -53,7 +54,7 @@ pub struct Config {
 /// chunk_max_chars = 1600
 /// chunk_overlap_chars = 320
 /// ```
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MemoryConfig {
     /// When false, memory tools are not registered and the watcher is not
@@ -99,7 +100,7 @@ impl Default for MemoryConfig {
 }
 
 /// `[memory.watch]` — file-system watcher settings.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MemoryWatchConfig {
     /// Debounce interval in seconds.
@@ -118,7 +119,7 @@ impl Default for MemoryWatchConfig {
 }
 
 /// `[memory.ingest]` — chunking parameters for file-source ingestion.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MemoryIngestConfig {
     /// Maximum characters per chunk (sliding-window).
@@ -146,7 +147,7 @@ impl Default for MemoryIngestConfig {
 /// default_timeout_secs = 30
 /// max_output_bytes = 1048576
 /// ```
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ToolsConfig {
     /// Shell tool settings.
@@ -162,7 +163,7 @@ impl Default for ToolsConfig {
 }
 
 /// Shell tool configuration.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ShellConfig {
     /// Additional blocked command patterns (appended to the built-in list).
@@ -184,7 +185,7 @@ impl Default for ShellConfig {
 }
 
 /// Network-related settings.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct NetworkConfig {
     /// Human-readable description of this node, e.g. "work laptop" or
@@ -197,6 +198,19 @@ pub struct NetworkConfig {
     /// When empty (or absent), the node operates in local-only mode — peers
     /// are discovered via mDNS but no external connections are made.
     pub bootstrap: Vec<String>,
+
+    /// TCP port for inbound P2P connections.  `0` means pick a random port.
+    /// In relay-server mode this defaults to 7474 instead of 0.
+    pub listen_port: Option<u16>,
+
+    /// Enable relay-server mode: this node will forward traffic between peers
+    /// behind NAT.
+    #[serde(default)]
+    pub relay_server: bool,
+
+    /// Path to the Ed25519 keypair file.  When absent, defaults to
+    /// `~/.clawshake/identity.key`.
+    pub identity_path: Option<PathBuf>,
 }
 
 /// Model proxy settings.
@@ -212,7 +226,7 @@ pub struct NetworkConfig {
 /// advertise = "all"
 /// proxy_port = 11435
 /// ```
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ModelsConfig {
     /// Local model server endpoint (Ollama, vLLM, llama.cpp, etc.).
@@ -250,7 +264,7 @@ impl ModelsConfig {
 }
 
 /// Controls which models are advertised on the network.
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum AdvertiseModels {
     /// Advertise all models discovered from the backend.
@@ -262,14 +276,14 @@ pub enum AdvertiseModels {
 }
 
 /// Helper for deserializing the string `"all"`.
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum AdvertiseAll {
     #[serde(rename = "all")]
     All,
 }
 
 /// Helper for deserializing the string `"none"`.
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum AdvertiseNone {
     #[serde(rename = "none")]
     None,
@@ -285,6 +299,126 @@ impl AdvertiseModels {
     /// Returns `true` if no models should be advertised.
     pub fn is_none(&self) -> bool {
         matches!(self, Self::None(_))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Sandbox defaults
+// ---------------------------------------------------------------------------
+
+/// `[sandbox]` — default process-isolation policy for tool execution.
+///
+/// These are **node-level defaults** applied by the broker when spawning
+/// sandboxed processes.  Individual tool manifests can override per-tool.
+///
+/// # Example
+///
+/// ```toml
+/// [sandbox]
+/// enabled = false
+/// network = "none"
+/// memory_bytes = 536870912
+/// timeout_secs = 300
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SandboxDefaults {
+    /// Apply sandboxing to CLI-invoked tools by default.  Default: false
+    /// (opt-in).  When true the broker wraps child processes with the
+    /// platform sandbox unless the manifest explicitly opts out.
+    pub enabled: bool,
+
+    /// Default network policy for sandboxed processes.
+    /// One of `"none"`, `"allow"`, or `"outbound_only"`.
+    pub network: SandboxNetworkPolicy,
+
+    /// Maximum resident memory in bytes (0 = unlimited).
+    pub memory_bytes: u64,
+
+    /// Maximum wall-clock runtime in seconds before the process is killed
+    /// (0 = unlimited).
+    pub timeout_secs: u64,
+
+    /// Additional host paths to mount read-only in every sandbox.
+    pub read_only_mounts: Vec<PathBuf>,
+}
+
+impl Default for SandboxDefaults {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            network: SandboxNetworkPolicy::None,
+            memory_bytes: 0,
+            timeout_secs: 0,
+            read_only_mounts: vec![],
+        }
+    }
+}
+
+/// Network policy for sandboxed processes — TOML-friendly enum.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SandboxNetworkPolicy {
+    /// Block all network access.
+    None,
+    /// Allow unrestricted network access.
+    Allow,
+    /// Allow outbound connections, block inbound listen/bind.
+    OutboundOnly,
+}
+
+impl Default for SandboxNetworkPolicy {
+    fn default() -> Self {
+        Self::None
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CLI override merging
+// ---------------------------------------------------------------------------
+
+impl Config {
+    /// Merge CLI flag overrides into the loaded config.
+    ///
+    /// CLI flags take precedence over `config.toml` values; absent (default)
+    /// flags leave config values intact.  This implements the priority stack:
+    /// compiled defaults → config.toml → CLI flags.
+    ///
+    /// `p2p_port`, `boot_peers`, `relay_server`, `identity` come from
+    /// `P2pArgs`; `models_endpoint` from `McpArgs` (future).
+    pub fn apply_p2p_overrides(
+        &mut self,
+        p2p_port: u16,
+        boot_peers: &[String],
+        relay_server: bool,
+        identity: Option<&Path>,
+    ) {
+        // Port: CLI 0 means "not specified" — use config value or default.
+        if p2p_port != 0 {
+            self.network.listen_port = Some(p2p_port);
+        }
+        // Bootstrap: non-empty CLI list replaces config entirely.
+        if !boot_peers.is_empty() {
+            self.network.bootstrap = boot_peers.to_vec();
+        }
+        // Relay server: CLI flag is additive (if set, enable; config can also
+        // enable it even without the flag).
+        if relay_server {
+            self.network.relay_server = true;
+        }
+        // Identity: CLI path overrides config path.
+        if let Some(path) = identity {
+            self.network.identity_path = Some(path.to_path_buf());
+        }
+    }
+
+    /// Effective P2P listen port after defaults and relay-server logic.
+    pub fn effective_p2p_port(&self, relay_default: u16) -> u16 {
+        match self.network.listen_port {
+            Some(p) => p,
+            None if self.network.relay_server => relay_default,
+            None => 0,
+        }
     }
 }
 
@@ -421,5 +555,148 @@ max_output_bytes = 2097152
         assert_eq!(c.tools.shell.blocked_patterns, ["custom_danger"]);
         assert_eq!(c.tools.shell.default_timeout_secs, 60);
         assert_eq!(c.tools.shell.max_output_bytes, 2_097_152);
+    }
+
+    // ── Sandbox config tests ──────────────────────────────────────────
+
+    #[test]
+    fn default_sandbox() {
+        let c = Config::default();
+        assert!(!c.sandbox.enabled);
+        assert_eq!(c.sandbox.network, SandboxNetworkPolicy::None);
+        assert_eq!(c.sandbox.memory_bytes, 0);
+        assert_eq!(c.sandbox.timeout_secs, 0);
+        assert!(c.sandbox.read_only_mounts.is_empty());
+    }
+
+    #[test]
+    fn parse_sandbox_config() {
+        let toml = r#"
+[sandbox]
+enabled = true
+network = "outbound_only"
+memory_bytes = 536870912
+timeout_secs = 300
+read_only_mounts = ["/usr/share/ca-certificates"]
+"#;
+        let c: Config = toml::from_str(toml).unwrap();
+        assert!(c.sandbox.enabled);
+        assert_eq!(c.sandbox.network, SandboxNetworkPolicy::OutboundOnly);
+        assert_eq!(c.sandbox.memory_bytes, 536_870_912);
+        assert_eq!(c.sandbox.timeout_secs, 300);
+        assert_eq!(
+            c.sandbox.read_only_mounts,
+            [std::path::PathBuf::from("/usr/share/ca-certificates")]
+        );
+    }
+
+    #[test]
+    fn parse_sandbox_network_allow() {
+        let toml = r#"
+[sandbox]
+network = "allow"
+"#;
+        let c: Config = toml::from_str(toml).unwrap();
+        assert_eq!(c.sandbox.network, SandboxNetworkPolicy::Allow);
+    }
+
+    // ── Network config tests ──────────────────────────────────────────
+
+    #[test]
+    fn parse_network_listen_port() {
+        let toml = r#"
+[network]
+listen_port = 9999
+relay_server = true
+identity_path = "/tmp/test.key"
+"#;
+        let c: Config = toml::from_str(toml).unwrap();
+        assert_eq!(c.network.listen_port, Some(9999));
+        assert!(c.network.relay_server);
+        assert_eq!(
+            c.network.identity_path,
+            Some(std::path::PathBuf::from("/tmp/test.key"))
+        );
+    }
+
+    // ── CLI override merging tests ────────────────────────────────────
+
+    #[test]
+    fn apply_p2p_overrides_port() {
+        let mut c = Config::default();
+        // 0 means "not specified" — should not override.
+        c.network.listen_port = Some(8888);
+        c.apply_p2p_overrides(0, &[], false, None);
+        assert_eq!(c.network.listen_port, Some(8888));
+        // Non-zero overrides.
+        c.apply_p2p_overrides(9999, &[], false, None);
+        assert_eq!(c.network.listen_port, Some(9999));
+    }
+
+    #[test]
+    fn apply_p2p_overrides_boot_peers() {
+        let mut c = Config::default();
+        c.network.bootstrap = vec!["old".into()];
+        // Empty CLI list leaves config intact.
+        c.apply_p2p_overrides(0, &[], false, None);
+        assert_eq!(c.network.bootstrap, ["old"]);
+        // Non-empty replaces entirely.
+        c.apply_p2p_overrides(0, &["new1".into(), "new2".into()], false, None);
+        assert_eq!(c.network.bootstrap, ["new1", "new2"]);
+    }
+
+    #[test]
+    fn apply_p2p_overrides_relay_and_identity() {
+        let mut c = Config::default();
+        assert!(!c.network.relay_server);
+        assert!(c.network.identity_path.is_none());
+
+        c.apply_p2p_overrides(0, &[], true, Some(std::path::Path::new("/k.key")));
+        assert!(c.network.relay_server);
+        assert_eq!(
+            c.network.identity_path,
+            Some(std::path::PathBuf::from("/k.key"))
+        );
+    }
+
+    // ── effective_p2p_port tests ──────────────────────────────────────
+
+    #[test]
+    fn effective_p2p_port_explicit() {
+        let mut c = Config::default();
+        c.network.listen_port = Some(5555);
+        assert_eq!(c.effective_p2p_port(7474), 5555);
+    }
+
+    #[test]
+    fn effective_p2p_port_relay_default() {
+        let mut c = Config::default();
+        c.network.relay_server = true;
+        // No explicit port + relay_server → relay default.
+        assert_eq!(c.effective_p2p_port(7474), 7474);
+    }
+
+    #[test]
+    fn effective_p2p_port_random() {
+        let c = Config::default();
+        // No port, no relay → 0 (random).
+        assert_eq!(c.effective_p2p_port(7474), 0);
+    }
+
+    // ── Serialization round-trip ──────────────────────────────────────
+
+    #[test]
+    fn config_round_trip() {
+        let original = Config::default();
+        let toml_str = toml::to_string_pretty(&original).unwrap();
+        let parsed: Config = toml::from_str(&toml_str).unwrap();
+        // Spot-check key fields survived the round-trip.
+        assert_eq!(parsed.models.proxy_port, original.models.proxy_port);
+        assert_eq!(parsed.sandbox.enabled, original.sandbox.enabled);
+        assert_eq!(parsed.sandbox.network, original.sandbox.network);
+        assert_eq!(
+            parsed.tools.shell.default_timeout_secs,
+            original.tools.shell.default_timeout_secs
+        );
     }
 }

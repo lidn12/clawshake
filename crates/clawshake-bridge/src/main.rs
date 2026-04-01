@@ -78,14 +78,22 @@ async fn main() -> Result<()> {
         }
 
         Command::Status { json } => {
-            clawshake_bridge::cli::show_status(json, None).await?;
+            clawshake_bridge::cli::show_status(json, None, None).await?;
         }
 
         Command::Run { p2p, mcp } => {
+            let mut config = clawshake_core::config::load(None)?;
+            config.apply_p2p_overrides(
+                p2p.p2p_port,
+                &p2p.boot_peers,
+                p2p.relay_server,
+                p2p.identity.as_deref(),
+            );
+
             let backend = mcp.build("clawshake-bridge").await?;
             let (announce_tx, announce_rx) = tokio::sync::mpsc::channel::<()>(4);
             clawshake_bridge::cli::start_bridge(
-                p2p,
+                config,
                 backend,
                 &db_path,
                 announce_tx,

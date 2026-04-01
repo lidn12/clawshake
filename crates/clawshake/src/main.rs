@@ -24,6 +24,8 @@
 //! clawshake tools validate <file>     # validate a manifest
 //! ```
 
+use std::sync::Arc;
+
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use clawshake_bridge::cli::{run_permissions_action, McpArgs, P2pArgs, PermissionsAction};
@@ -140,6 +142,29 @@ enum Command {
         #[arg(long, value_name = "PEER_ID")]
         peer: Option<String>,
     },
+
+    /// Inspect node configuration.
+    ///
+    /// Examples:
+    ///   clawshake config dump              # print effective config as TOML
+    ///   clawshake config path              # print config file path
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
+}
+
+/// `clawshake config` sub-actions.
+#[derive(Subcommand, Debug)]
+enum ConfigAction {
+    /// Print the effective (merged) configuration as TOML.
+    ///
+    /// Shows compiled defaults merged with ~/.clawshake/config.toml.
+    /// Useful for verifying what the node actually sees.
+    Dump,
+
+    /// Print the config file path.
+    Path,
 }
 
 // ---------------------------------------------------------------------------
@@ -186,11 +211,23 @@ async fn main() -> Result<()> {
             clawshake_broker::cli::run_tools_action(&action, &manifests_dir, &db_path).await?;
         }
 
+        Command::Config { action } => match action {
+            ConfigAction::Dump => {
+                let config = core_config::load(None)?;
+                let toml_str = toml::to_string_pretty(&config)?;
+                println!("{toml_str}");
+            }
+            ConfigAction::Path => match core_config::config_path() {
+                Some(p) => println!("{}", p.display()),
+                None => println!("(cannot determine home directory)"),
+            },
+        },
+
         Command::Status { json } => {
             let manifests_dir = clawshake_dir.join("manifests");
             let (total, published) =
                 clawshake_broker::cli::tool_counts(&manifests_dir, &db_path).await;
-            clawshake_bridge::cli::show_status(json, Some((total, published))).await?;
+            clawshake_bridge::cli::show_status(json, Some((total, published)), None).await?;
         }
 
         // ---- Node startup -------------------------------------------------
@@ -200,6 +237,15 @@ async fn main() -> Result<()> {
             p2p,
             mcp,
         } => {
+            // ── Single config load + CLI override merge ─────────────
+            let mut config = core_config::load(None)?;
+            config.apply_p2p_overrides(
+                p2p.p2p_port,
+                &p2p.boot_peers,
+                p2p.relay_server,
+                p2p.identity.as_deref(),
+            );
+
             let (announce_tx, announce_rx) = tokio::sync::mpsc::channel::<()>(4);
             let backend: Option<McpClient> = if mcp.is_track1() {
                 mcp.build("clawshake-bridge").await?
@@ -224,27 +270,28 @@ async fn main() -> Result<()> {
                 )?;
                 info!(tools = registry.tool_count(), "Broker ready on :{port}");
 
-                // ── Memory subsystem ────────────────────────────────────
-                let config = core_config::load(None)?;
+                // ── Memory subsystem ────────────────────────────────
+                let broker_config = Arc::new(config.clone());
                 #[cfg(feature = "memory")]
-                let memory = if config.memory.enabled {
+                let memory = if broker_config.memory.enabled {
                     let mem_ctx = clawshake_broker::invoke::memory::build_memory_context(
                         &clawshake_dir,
-                        &config.memory,
+                        &broker_config.memory,
                     );
-                    clawshake_broker::invoke::memory::start_watcher(&clawshake_dir, &config.memory);
+                    clawshake_broker::invoke::memory::start_watcher(
+                        &clawshake_dir,
+                        &broker_config.memory,
+                    );
                     Some(mem_ctx)
                 } else {
                     info!("Memory subsystem disabled");
                     None
                 };
                 #[cfg(not(feature = "memory"))]
-                let memory: Option<clawshake_broker::router::MemoryContext> = {
-                    let _ = &config;
-                    None
-                };
+                let memory: Option<clawshake_broker::router::MemoryContext> = None;
 
                 let broker = clawshake_broker::router::BrokerContext {
+                    config: broker_config,
                     registry,
                     permissions,
                     servers,
@@ -276,8 +323,14 @@ async fn main() -> Result<()> {
                 ))))
             };
 
-            clawshake_bridge::cli::start_bridge(p2p, backend, &db_path, announce_tx, announce_rx)
-                .await?;
+            clawshake_bridge::cli::start_bridge(
+                config,
+                backend,
+                &db_path,
+                announce_tx,
+                announce_rx,
+            )
+            .await?;
         }
     }
 

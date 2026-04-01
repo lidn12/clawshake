@@ -4,24 +4,20 @@
 //! Includes safety guards to block catastrophic commands.
 
 use anyhow::{bail, Result};
+use clawshake_core::config::ShellConfig;
 use serde_json::{json, Value};
 use tracing::{debug, warn};
 
 // ---------------------------------------------------------------------------
-// Configuration defaults
+// Hard safety ceilings (not overridable by config)
 // ---------------------------------------------------------------------------
-
-/// Default timeout in seconds.
-const DEFAULT_TIMEOUT_SECS: u64 = 30;
 
 /// Maximum timeout a caller can request.
 const MAX_TIMEOUT_SECS: u64 = 300;
 
-/// Maximum output size in bytes before truncation.
-const MAX_OUTPUT_BYTES: usize = 1_048_576; // 1 MB
-
-/// Blocked command patterns (case-insensitive substring match).
-const BLOCKED_PATTERNS: &[&str] = &[
+/// Built-in blocked command patterns (always enforced, case-insensitive
+/// substring match). User config can add to this list but never remove.
+const BUILTIN_BLOCKED_PATTERNS: &[&str] = &[
     "rm -rf /",
     "rm -rf /*",
     "mkfs",
@@ -77,8 +73,9 @@ pub fn tool_definition() -> Value {
 ///
 /// - `command` (required): The command string to execute.
 /// - `workdir` (optional): Working directory. Defaults to user home.
-/// - `timeout_secs` (optional): Timeout in seconds. Default 30, max 300.
-pub async fn handle(arguments: &Value) -> Result<String> {
+/// - `timeout_secs` (optional): Timeout in seconds. Default and max come
+///   from `ShellConfig`, hard-capped at `MAX_TIMEOUT_SECS`.
+pub async fn handle(arguments: &Value, cfg: &ShellConfig) -> Result<String> {
     let command = arguments
         .get("command")
         .and_then(|v| v.as_str())
@@ -87,7 +84,7 @@ pub async fn handle(arguments: &Value) -> Result<String> {
     let timeout_secs = arguments
         .get("timeout_secs")
         .and_then(|v| v.as_u64())
-        .unwrap_or(DEFAULT_TIMEOUT_SECS)
+        .unwrap_or(cfg.default_timeout_secs)
         .min(MAX_TIMEOUT_SECS);
 
     let workdir = arguments
@@ -95,8 +92,8 @@ pub async fn handle(arguments: &Value) -> Result<String> {
         .and_then(|v| v.as_str())
         .map(std::path::PathBuf::from);
 
-    // Safety check.
-    check_blocked(command)?;
+    // Safety check — built-in patterns + user-configured extras.
+    check_blocked(command, &cfg.blocked_patterns)?;
 
     debug!(command, timeout_secs, ?workdir, "shell: executing");
 
@@ -141,8 +138,8 @@ pub async fn handle(arguments: &Value) -> Result<String> {
         .map_err(|e| anyhow::anyhow!("failed to execute command: {e}"))?;
 
     let exit_code = output.status.code().unwrap_or(-1);
-    let stdout = truncate_output(&output.stdout);
-    let stderr = truncate_output(&output.stderr);
+    let stdout = truncate_output(&output.stdout, cfg.max_output_bytes);
+    let stderr = truncate_output(&output.stderr, cfg.max_output_bytes);
 
     debug!(
         exit_code,
@@ -177,9 +174,11 @@ pub async fn handle(arguments: &Value) -> Result<String> {
 // ---------------------------------------------------------------------------
 
 /// Check if a command matches any blocked pattern.
-fn check_blocked(command: &str) -> Result<()> {
+///
+/// Checks the built-in deny list first, then any user-configured extras.
+fn check_blocked(command: &str, extra_patterns: &[String]) -> Result<()> {
     let lower = command.to_lowercase();
-    for pattern in BLOCKED_PATTERNS {
+    for pattern in BUILTIN_BLOCKED_PATTERNS {
         if lower.contains(pattern) {
             warn!(command, pattern, "shell: blocked dangerous command");
             bail!(
@@ -188,15 +187,25 @@ fn check_blocked(command: &str) -> Result<()> {
             );
         }
     }
+    for pattern in extra_patterns {
+        let p = pattern.to_lowercase();
+        if lower.contains(&p) {
+            warn!(command, %pattern, "shell: blocked by user-configured pattern");
+            bail!(
+                "Command blocked by safety guard: matches user-configured pattern \"{pattern}\". \
+                 Edit [tools.shell].blocked_patterns in config.toml to change."
+            );
+        }
+    }
     Ok(())
 }
 
 /// Convert raw output bytes to a UTF-8 string, truncating if necessary.
-fn truncate_output(bytes: &[u8]) -> String {
+fn truncate_output(bytes: &[u8], max_bytes: usize) -> String {
     let s = String::from_utf8_lossy(bytes);
-    if s.len() > MAX_OUTPUT_BYTES {
-        let truncated: String = s.chars().take(MAX_OUTPUT_BYTES).collect();
-        format!("{truncated}\n\n... (output truncated at {MAX_OUTPUT_BYTES} bytes)")
+    if s.len() > max_bytes {
+        let truncated: String = s.chars().take(max_bytes).collect();
+        format!("{truncated}\n\n... (output truncated at {max_bytes} bytes)")
     } else {
         s.to_string()
     }
@@ -209,54 +218,67 @@ fn truncate_output(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clawshake_core::config::ShellConfig;
 
     #[test]
     fn blocked_commands() {
-        assert!(check_blocked("rm -rf /").is_err());
-        assert!(check_blocked("sudo rm -RF /").is_err()); // case insensitive
-        assert!(check_blocked("mkfs.ext4 /dev/sda1").is_err());
-        assert!(check_blocked("dd if=/dev/zero of=/dev/sda").is_err());
-        assert!(check_blocked("shutdown -h now").is_err());
+        assert!(check_blocked("rm -rf /", &[]).is_err());
+        assert!(check_blocked("sudo rm -RF /", &[]).is_err()); // case insensitive
+        assert!(check_blocked("mkfs.ext4 /dev/sda1", &[]).is_err());
+        assert!(check_blocked("dd if=/dev/zero of=/dev/sda", &[]).is_err());
+        assert!(check_blocked("shutdown -h now", &[]).is_err());
     }
 
     #[test]
     fn allowed_commands() {
-        assert!(check_blocked("ls -la").is_ok());
-        assert!(check_blocked("rm -rf ./temp").is_ok()); // relative path is fine
-        assert!(check_blocked("echo hello").is_ok());
-        assert!(check_blocked("cargo build").is_ok());
-        assert!(check_blocked("pip install requests").is_ok());
+        assert!(check_blocked("ls -la", &[]).is_ok());
+        assert!(check_blocked("rm -rf ./temp", &[]).is_ok()); // relative path is fine
+        assert!(check_blocked("echo hello", &[]).is_ok());
+        assert!(check_blocked("cargo build", &[]).is_ok());
+        assert!(check_blocked("pip install requests", &[]).is_ok());
+    }
+
+    #[test]
+    fn user_blocked_patterns() {
+        let extras = vec!["deploy --force".to_string(), "DROP TABLE".to_string()];
+        assert!(check_blocked("deploy --force staging", &extras).is_err());
+        assert!(check_blocked("DROP TABLE users", &extras).is_err());
+        assert!(check_blocked("deploy staging", &extras).is_ok());
     }
 
     #[test]
     fn truncation() {
-        let long = "x".repeat(MAX_OUTPUT_BYTES + 100);
-        let result = truncate_output(long.as_bytes());
+        let max = ShellConfig::default().max_output_bytes;
+        let long = "x".repeat(max + 100);
+        let result = truncate_output(long.as_bytes(), max);
         assert!(result.len() < long.len());
         assert!(result.contains("truncated"));
     }
 
     #[tokio::test]
     async fn basic_execution() {
+        let cfg = ShellConfig::default();
         let cmd = if cfg!(windows) {
             "echo hello"
         } else {
             "echo hello"
         };
-        let result = handle(&json!({"command": cmd})).await.unwrap();
+        let result = handle(&json!({"command": cmd}), &cfg).await.unwrap();
         assert!(result.contains("hello"));
     }
 
     #[tokio::test]
     async fn missing_command() {
-        let result = handle(&json!({})).await;
+        let cfg = ShellConfig::default();
+        let result = handle(&json!({}), &cfg).await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn nonzero_exit_code() {
+        let cfg = ShellConfig::default();
         // `exit 1` works in both PowerShell and sh.
-        let result = handle(&json!({"command": "exit 1"})).await.unwrap();
+        let result = handle(&json!({"command": "exit 1"}), &cfg).await.unwrap();
         assert!(result.contains("exit code: 1"));
     }
 }

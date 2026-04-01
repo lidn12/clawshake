@@ -615,7 +615,9 @@ mod tests {
 
         let frame_store = crate::webview::FrameStore::new();
         let expose_table = crate::expose::ExposeTable::new();
+        let config = clawshake_core::config::Config::default();
         let ctx = crate::router::DispatchContext {
+            config: &config,
             registry: &registry,
             servers: &servers,
             event_queue: &event_queue,
@@ -679,7 +681,9 @@ mod tests {
 
         let frame_store = crate::webview::FrameStore::new();
         let expose_table = crate::expose::ExposeTable::new();
+        let config = clawshake_core::config::Config::default();
         let ctx = crate::router::DispatchContext {
+            config: &config,
             registry: &registry,
             servers: &servers,
             event_queue: &event_queue,
@@ -723,7 +727,9 @@ mod tests {
 
         let frame_store = crate::webview::FrameStore::new();
         let expose_table = crate::expose::ExposeTable::new();
+        let config = clawshake_core::config::Config::default();
         let ctx = crate::router::DispatchContext {
+            config: &config,
             registry: &registry,
             servers: &servers,
             event_queue: &event_queue,

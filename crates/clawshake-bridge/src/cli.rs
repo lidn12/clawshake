@@ -128,6 +128,8 @@ pub enum PermissionsAction {
     },
     /// List all permission rules.
     List,
+    /// Remove redundant rules that are shadowed by broader rules.
+    Consolidate,
 }
 
 /// Resolve `pattern` to a list of tool names to act on.
@@ -203,6 +205,7 @@ pub async fn run_permissions_action(
             for name in &names {
                 store.set(agent_id, name, Decision::Allow).await?;
             }
+            let removed = store.consolidate().await?;
             if names.len() == 1 {
                 println!("✓ allow  {agent_id}  {}", names[0]);
             } else {
@@ -210,6 +213,9 @@ pub async fn run_permissions_action(
                 for name in &names {
                     println!("    {name}");
                 }
+            }
+            if removed > 0 {
+                println!("  ({removed} redundant rule(s) removed)");
             }
         }
         PermissionsAction::Deny {
@@ -220,6 +226,7 @@ pub async fn run_permissions_action(
             for name in &names {
                 store.set(agent_id, name, Decision::Deny).await?;
             }
+            let removed = store.consolidate().await?;
             if names.len() == 1 {
                 println!("✓ deny   {agent_id}  {}", names[0]);
             } else {
@@ -227,6 +234,9 @@ pub async fn run_permissions_action(
                 for name in &names {
                     println!("    {name}");
                 }
+            }
+            if removed > 0 {
+                println!("  ({removed} redundant rule(s) removed)");
             }
         }
         PermissionsAction::Remove {
@@ -244,6 +254,14 @@ pub async fn run_permissions_action(
                 for name in &names {
                     println!("    {name}");
                 }
+            }
+        }
+        PermissionsAction::Consolidate => {
+            let removed = store.consolidate().await?;
+            if removed == 0 {
+                println!("No redundant rules found.");
+            } else {
+                println!("✓ removed {removed} redundant rule(s)");
             }
         }
         PermissionsAction::List => {
@@ -273,18 +291,17 @@ pub async fn run_permissions_action(
 /// building the MCP backend.  The caller creates the `reannounce` channel so
 /// it can clone `tx` for other watchers (e.g. the broker manifest watcher)
 /// before handing it in here.
+///
+/// The caller is responsible for loading the config and merging any CLI
+/// overrides via [`Config::apply_p2p_overrides`] before passing it here.
 pub async fn start_bridge(
-    p2p_args: P2pArgs,
+    config: clawshake_core::config::Config,
     backend: Option<McpClient>,
     db_path: &Path,
     announce_tx: mpsc::Sender<()>,
     announce_rx: mpsc::Receiver<()>,
 ) -> Result<()> {
-    let p2p_port = if p2p_args.relay_server && p2p_args.p2p_port == 0 {
-        crate::p2p::RELAY_DEFAULT_PORT
-    } else {
-        p2p_args.p2p_port
-    };
+    let p2p_port = config.effective_p2p_port(crate::p2p::RELAY_DEFAULT_PORT);
 
     // Open the permission store (creates DB + schema if absent).
     let store = PermissionStore::open(db_path).await?;
@@ -322,8 +339,7 @@ pub async fn start_bridge(
     ));
 
     // -- Model proxy --------------------------------------------------------
-    // Load config to check for [models] section.
-    let config = clawshake_core::config::load(None).unwrap_or_default();
+    // Use the pre-loaded config for [models] section.
     let model_backend = if config.models.is_enabled() {
         let endpoint = config
             .models
@@ -370,13 +386,13 @@ pub async fn start_bridge(
 
     crate::p2p::run(crate::p2p::P2pConfig {
         port: p2p_port,
-        boot_peers: p2p_args.boot_peers,
-        identity: p2p_args.identity,
+        boot_peers: config.network.bootstrap.clone(),
+        identity: config.network.identity_path.clone(),
         backend,
         permissions: store,
         peer_table: table,
         connected,
-        relay_server: p2p_args.relay_server,
+        relay_server: config.network.relay_server,
         call_rx,
         announce_tx,
         announce_rx,
@@ -413,7 +429,14 @@ pub async fn probe_node() -> Option<LiveStats> {
 /// `tool_info` is an optional `(total, published)` pair — the unified binary
 /// passes manifest/permission counts here; the bridge-only binary passes
 /// `None`.
-pub async fn show_status(json: bool, tool_info: Option<(usize, usize)>) -> Result<()> {
+///
+/// When `config` is `None` the function loads the config from disk itself
+/// (backwards-compat for callers that don't pre-load).
+pub async fn show_status(
+    json: bool,
+    tool_info: Option<(usize, usize)>,
+    config: Option<clawshake_core::config::Config>,
+) -> Result<()> {
     // ---- Peer ID (always available from disk) -----
     let peer_id = match crate::p2p::peer_id_from_disk(None) {
         Ok(id) => Some(id.to_string()),
@@ -424,7 +447,7 @@ pub async fn show_status(json: bool, tool_info: Option<(usize, usize)>) -> Resul
     let live = probe_node().await;
 
     // ---- Model info from config + backend probe -----
-    let config = clawshake_core::config::load(None).unwrap_or_default();
+    let config = config.unwrap_or_else(|| clawshake_core::config::load(None).unwrap_or_default());
     let model_names = if let Some(endpoint) = &config.models.endpoint {
         let backend = clawshake_models::backend::ModelBackend::new(endpoint);
         match backend.list_models().await {

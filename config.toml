@@ -33,6 +33,22 @@
 #   "/ip4/<your-relay-ip>/tcp/7474/p2p/<your-relay-peer-id>",
 # ]
 
+# TCP port for inbound P2P connections. 0 means pick a random port.
+# In relay-server mode this defaults to 7474 instead of 0.
+#
+# listen_port = 0
+
+# Enable relay-server mode: this node will forward traffic between peers
+# behind NAT.  Uses a fixed port (default 7474) and prints a copy-ready
+# multiaddr banner on startup.
+#
+# relay_server = false
+
+# Path to the Ed25519 keypair file (default ~/.clawshake/identity.key).
+# Useful for running multiple nodes on the same machine during testing.
+#
+# identity_path = "/path/to/identity.key"
+
 # ──────────────────────────────────────────────────────────────────────
 
 [models]
@@ -100,3 +116,39 @@
 # Default: 1048576 (1 MB)
 #
 # max_output_bytes = 1048576
+
+# ──────────────────────────────────────────────────────────────────────
+
+[sandbox]
+
+# Process-isolation defaults for tool execution.
+#
+# When enabled, the broker wraps child processes with the platform sandbox
+# (seccomp+Landlock on Linux, Seatbelt on macOS, Job objects on Windows)
+# unless the tool manifest explicitly opts out.
+#
+# Default: disabled (opt-in).
+#
+# enabled = false
+
+# Default network policy for sandboxed processes.
+# One of: "none" (block all), "allow" (unrestricted), "outbound_only".
+# Default: "none"
+#
+# network = "none"
+
+# Maximum resident memory in bytes (0 = unlimited).
+# Default: 0
+#
+# memory_bytes = 0
+
+# Maximum wall-clock runtime in seconds before the process is killed
+# (0 = unlimited).
+# Default: 0
+#
+# timeout_secs = 0
+
+# Additional host paths to mount read-only in every sandbox.
+# Default: []
+#
+# read_only_mounts = ["/usr/share/ca-certificates"]

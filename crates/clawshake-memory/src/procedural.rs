@@ -184,12 +184,6 @@ for the next task. Pass a one-line note like "wrote comparison doc to docs/foo.m
 checkpoint, you will only see the progress summary and your most recent turn — earlier tool
 results and reasoning will be gone.
 
-## Recalled memories
-
-When your system prompt includes a "Recalled memories" section, these are facts retrieved
-from your long-term memory that may be relevant to the current conversation. Use them
-naturally — they are things you know. Do not call attention to the retrieval mechanism.
-
 ## Other guidance
 
 - Use tools to get things done rather than asking the user to do it for you.

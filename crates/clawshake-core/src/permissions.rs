@@ -144,10 +144,9 @@ impl PermissionStore {
                  LIMIT 1",
             )?;
             let decision = stmt
-                .query_row(
-                    params![exact_agent, wildcard_agent, tool_name],
-                    |row| row.get::<_, String>(0),
-                )
+                .query_row(params![exact_agent, wildcard_agent, tool_name], |row| {
+                    row.get::<_, String>(0)
+                })
                 .ok();
             Ok(decision)
         })
@@ -264,6 +263,33 @@ impl PermissionStore {
         .context("spawn_blocking join")?
     }
 
+    /// Count distinct P2P peers that have at least one `allow` rule.
+    ///
+    /// Counts individual `p2p:<id>` agent_ids only — the class wildcard
+    /// `p2p:*` is excluded because it doesn't represent a specific peer.
+    pub async fn count_allowed_peers(&self) -> usize {
+        let db = self.db.clone();
+
+        let result = tokio::task::spawn_blocking(move || -> Result<usize> {
+            let conn = db.lock().unwrap();
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(DISTINCT agent_id) FROM permissions
+                 WHERE agent_id LIKE 'p2p:%'
+                   AND agent_id != 'p2p:*'
+                   AND decision = 'allow'",
+                [],
+                |row| row.get(0),
+            )?;
+            Ok(count as usize)
+        })
+        .await;
+
+        match result {
+            Ok(Ok(n)) => n,
+            _ => 0,
+        }
+    }
+
     /// Check whether a tool should be published to the DHT.
     ///
     /// Returns `true` if at least one P2P agent — either the class wildcard
@@ -311,6 +337,148 @@ impl PermissionStore {
         .await;
 
         matches!(result, Ok(Ok(true)))
+    }
+
+    /// Remove redundant rules whose removal does not change any query result.
+    ///
+    /// Uses an **ordered sweep** (standard firewall-rule optimization): rules
+    /// are processed from most-specific (Level 1) to broadest (Level 4),
+    /// maintaining a live lookup that reflects removals as they happen.
+    /// This correctly handles **shielded redundancy** — a Level 1 rule that
+    /// survives the sweep is a genuine shield, safe to rely on when analysing
+    /// Level 2.
+    ///
+    /// Waterfall levels (same as `check()`):
+    ///   1. (exact agent, exact tool)
+    ///   2. (exact agent, `*`)
+    ///   3. (class wildcard, exact tool)
+    ///   4. (class wildcard, `*`)          — never redundant
+    ///
+    /// Complexity: O(R + |L2|×|L3|) where L2 = per-agent wildcard-tool rules
+    /// and L3 = class-level tool-specific rules.  Worst case O(R²), but
+    /// real rule sets are small.  Single DB read, one batched delete.
+    pub async fn consolidate(&self) -> Result<usize> {
+        use std::collections::HashMap;
+
+        let rules = self.list().await?;
+        if rules.is_empty() {
+            return Ok(0);
+        }
+
+        // Live lookup — entries are removed as rules are found redundant.
+        let mut live: HashMap<(&str, &str), &Decision> = rules
+            .iter()
+            .map(|r| ((r.agent_id.as_str(), r.tool_name.as_str()), &r.decision))
+            .collect();
+
+        // Partition rule indices by waterfall level.
+        let (mut l1, mut l2, mut l3) = (Vec::new(), Vec::new(), Vec::new());
+        for (i, r) in rules.iter().enumerate() {
+            let a = r.agent_id.as_str();
+            let t = r.tool_name.as_str();
+            match (t, class_wildcard(a)) {
+                (t, Some(_)) if t != "*" => l1.push(i),
+                ("*", Some(_)) => l2.push(i),
+                (t, None) if t != "*" && (a.ends_with(":*") || a == "local") => l3.push(i),
+                _ => {} // L4 — never redundant
+            }
+        }
+
+        let mut to_remove: Vec<(&str, &str)> = Vec::new();
+
+        // --- Level 1: (exact agent, exact tool) ---
+        // Redundant if the first broader match in the live lookup has the
+        // same decision.  Removals here update the live set BEFORE Level 2
+        // is analysed, so L2's shield check sees only genuine survivors.
+        for &i in &l1 {
+            let (a, t) = (rules[i].agent_id.as_str(), rules[i].tool_name.as_str());
+            let d = &rules[i].decision;
+            let wa = class_wildcard(a).unwrap();
+
+            let next = live
+                .get(&(a, "*"))
+                .or_else(|| live.get(&(wa, t)))
+                .or_else(|| live.get(&(wa, "*")))
+                .copied();
+
+            if next == Some(d) {
+                live.remove(&(a, t));
+                to_remove.push((a, t));
+            }
+        }
+
+        // --- Level 2: (exact agent, wildcard tool) ---
+        // Removing L2 exposes queries to L3/L4.  Redundant iff:
+        //  1. L4 (class, *) exists with the same decision, AND
+        //  2. every L3 rule for tools not shielded by a surviving L1 also
+        //     carries the same decision.
+        for &i in &l2 {
+            let a = rules[i].agent_id.as_str();
+            let d = &rules[i].decision;
+            let wa = class_wildcard(a).unwrap();
+
+            let dominated = live.get(&(wa, "*")).copied().map_or(false, |l4_d| {
+                l4_d == d
+                    && l3.iter().all(|&j| {
+                        let r3 = &rules[j];
+                        // Different class — irrelevant.
+                        if r3.agent_id.as_str() != wa {
+                            return true;
+                        }
+                        // A surviving L1 shields this tool for this agent.
+                        if live.contains_key(&(a, r3.tool_name.as_str())) {
+                            return true;
+                        }
+                        // No shield — L3 must agree.
+                        &r3.decision == d
+                    })
+            });
+
+            if dominated {
+                live.remove(&(a, "*"));
+                to_remove.push((a, "*"));
+            }
+        }
+
+        // --- Level 3: (class/local, exact tool) ---
+        // Redundant if L4 (same agent, *) carries the same decision.
+        for &i in &l3 {
+            let (a, t) = (rules[i].agent_id.as_str(), rules[i].tool_name.as_str());
+            let d = &rules[i].decision;
+
+            if live.get(&(a, "*")).copied() == Some(d) {
+                live.remove(&(a, t));
+                to_remove.push((a, t));
+            }
+        }
+
+        // L4 is never redundant — nothing broader exists.
+
+        if to_remove.is_empty() {
+            return Ok(0);
+        }
+
+        let count = to_remove.len();
+        for &(a, t) in &to_remove {
+            self.remove(a, t).await?;
+        }
+
+        Ok(count)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Consolidation helpers (module-private)
+// ---------------------------------------------------------------------------
+
+/// Return the class wildcard for a specific agent, e.g. `"p2p:abc"` → `"p2p:*"`.
+fn class_wildcard(agent: &str) -> Option<&'static str> {
+    if agent.starts_with("p2p:") && agent != "p2p:*" {
+        Some("p2p:*")
+    } else if agent.starts_with("tailscale:") && agent != "tailscale:*" {
+        Some("tailscale:*")
+    } else {
+        None
     }
 }
 
@@ -620,5 +788,398 @@ mod tests {
         assert_eq!(Decision::from_db("deny"), Decision::Deny);
         assert_eq!(Decision::from_db("ask"), Decision::Ask);
         assert_eq!(Decision::from_db("unknown"), Decision::Deny);
+    }
+
+    #[tokio::test]
+    async fn count_allowed_peers_excludes_wildcards_and_local() {
+        let (store, _f) = open_temp_store().await;
+        // p2p wildcard and local should not be counted.
+        store.set("p2p:*", "*", Decision::Allow).await.unwrap();
+        store.set("local", "foo", Decision::Allow).await.unwrap();
+        assert_eq!(store.count_allowed_peers().await, 0);
+
+        // Specific peers with allow rules should be counted.
+        store
+            .set("p2p:12D3KooWaaaa", "read_file", Decision::Allow)
+            .await
+            .unwrap();
+        store
+            .set("p2p:12D3KooWbbbb", "*", Decision::Allow)
+            .await
+            .unwrap();
+        assert_eq!(store.count_allowed_peers().await, 2);
+
+        // A peer with only deny rules should not be counted.
+        store
+            .set("p2p:12D3KooWcccc", "read_file", Decision::Deny)
+            .await
+            .unwrap();
+        assert_eq!(store.count_allowed_peers().await, 2);
+
+        // Multiple allow rules for the same peer count as one.
+        store
+            .set("p2p:12D3KooWaaaa", "write_file", Decision::Allow)
+            .await
+            .unwrap();
+        assert_eq!(store.count_allowed_peers().await, 2);
+    }
+
+    // -----------------------------------------------------------------------
+    // Consolidation tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn consolidate_empty_store() {
+        let (store, _f) = open_temp_store().await;
+        assert_eq!(store.consolidate().await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn consolidate_no_redundancy() {
+        let (store, _f) = open_temp_store().await;
+        store.set("p2p:*", "*", Decision::Deny).await.unwrap();
+        store
+            .set("p2p:peer1", "read_file", Decision::Allow)
+            .await
+            .unwrap();
+        assert_eq!(store.consolidate().await.unwrap(), 0);
+        assert_eq!(store.list().await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn consolidate_specific_shadowed_by_agent_wildcard_tool() {
+        let (store, _f) = open_temp_store().await;
+        store.set("p2p:peer1", "*", Decision::Allow).await.unwrap();
+        store
+            .set("p2p:peer1", "read_file", Decision::Allow)
+            .await
+            .unwrap();
+        assert_eq!(store.consolidate().await.unwrap(), 1);
+        let rules = store.list().await.unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].tool_name, "*");
+    }
+
+    #[tokio::test]
+    async fn consolidate_specific_shadowed_by_class_wildcard() {
+        let (store, _f) = open_temp_store().await;
+        store.set("p2p:*", "*", Decision::Deny).await.unwrap();
+        store
+            .set("p2p:peer1", "read_file", Decision::Deny)
+            .await
+            .unwrap();
+        assert_eq!(store.consolidate().await.unwrap(), 1);
+        let rules = store.list().await.unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].agent_id, "p2p:*");
+    }
+
+    #[tokio::test]
+    async fn consolidate_keeps_different_decision() {
+        let (store, _f) = open_temp_store().await;
+        store.set("p2p:*", "*", Decision::Deny).await.unwrap();
+        store
+            .set("p2p:peer1", "read_file", Decision::Allow)
+            .await
+            .unwrap();
+        assert_eq!(store.consolidate().await.unwrap(), 0);
+        assert_eq!(store.list().await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn consolidate_preserves_system_default_baseline() {
+        let (store, _f) = open_temp_store().await;
+        // deny p2p:* * matches the system default for P2P, but since
+        // there's no other explicit rule covering it, it should be kept.
+        store.set("p2p:*", "*", Decision::Deny).await.unwrap();
+        assert_eq!(store.consolidate().await.unwrap(), 0);
+        assert_eq!(store.list().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn consolidate_cascading_removal() {
+        let (store, _f) = open_temp_store().await;
+        // deny p2p:* * → deny p2p:* read_file → deny p2p:peer1 read_file
+        // The most-specific is shadowed by the mid-level, which is shadowed
+        // by the broadest.  Both should be removed in cascading passes.
+        store.set("p2p:*", "*", Decision::Deny).await.unwrap();
+        store
+            .set("p2p:*", "read_file", Decision::Deny)
+            .await
+            .unwrap();
+        store
+            .set("p2p:peer1", "read_file", Decision::Deny)
+            .await
+            .unwrap();
+        assert_eq!(store.consolidate().await.unwrap(), 2);
+        let rules = store.list().await.unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].agent_id, "p2p:*");
+        assert_eq!(rules[0].tool_name, "*");
+    }
+
+    #[tokio::test]
+    async fn consolidate_keeps_peer_wildcard_overriding_class_exception() {
+        let (store, _f) = open_temp_store().await;
+        // allow p2p:* *
+        // deny  p2p:* network_call
+        // allow p2p:peer1 *          ← NOT redundant! Needed to override
+        //                               the deny on network_call for peer1.
+        store.set("p2p:*", "*", Decision::Allow).await.unwrap();
+        store
+            .set("p2p:*", "network_call", Decision::Deny)
+            .await
+            .unwrap();
+        store.set("p2p:peer1", "*", Decision::Allow).await.unwrap();
+        assert_eq!(store.consolidate().await.unwrap(), 0);
+        assert_eq!(store.list().await.unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn consolidate_multiple_peers_mixed() {
+        let (store, _f) = open_temp_store().await;
+        store.set("p2p:*", "*", Decision::Allow).await.unwrap();
+        // These are all shadowed by the class wildcard.
+        store
+            .set("p2p:peer1", "read_file", Decision::Allow)
+            .await
+            .unwrap();
+        store
+            .set("p2p:peer2", "write_file", Decision::Allow)
+            .await
+            .unwrap();
+        store.set("p2p:peer2", "*", Decision::Allow).await.unwrap();
+        // This one is NOT shadowed — different decision.
+        store
+            .set("p2p:peer3", "shell", Decision::Deny)
+            .await
+            .unwrap();
+        assert_eq!(store.consolidate().await.unwrap(), 3);
+        let rules = store.list().await.unwrap();
+        assert_eq!(rules.len(), 2);
+        let names: Vec<&str> = rules.iter().map(|r| r.agent_id.as_str()).collect();
+        assert!(names.contains(&"p2p:*"));
+        assert!(names.contains(&"p2p:peer3"));
+    }
+
+    #[tokio::test]
+    async fn consolidate_tailscale_class() {
+        let (store, _f) = open_temp_store().await;
+        // Tailscale wildcard covers the specific rule.
+        store
+            .set("tailscale:*", "*", Decision::Allow)
+            .await
+            .unwrap();
+        store
+            .set("tailscale:node1", "read_file", Decision::Allow)
+            .await
+            .unwrap();
+        assert_eq!(store.consolidate().await.unwrap(), 1);
+        let rules = store.list().await.unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].agent_id, "tailscale:*");
+    }
+
+    #[tokio::test]
+    async fn consolidate_local_agent() {
+        let (store, _f) = open_temp_store().await;
+        // (local, read_file, allow) is redundant when (local, *, allow) exists.
+        store.set("local", "*", Decision::Allow).await.unwrap();
+        store
+            .set("local", "read_file", Decision::Allow)
+            .await
+            .unwrap();
+        assert_eq!(store.consolidate().await.unwrap(), 1);
+        let rules = store.list().await.unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].agent_id, "local");
+        assert_eq!(rules[0].tool_name, "*");
+    }
+
+    #[tokio::test]
+    async fn consolidate_local_keeps_different_decision() {
+        let (store, _f) = open_temp_store().await;
+        store.set("local", "*", Decision::Allow).await.unwrap();
+        store.set("local", "shell", Decision::Ask).await.unwrap();
+        assert_eq!(store.consolidate().await.unwrap(), 0);
+        assert_eq!(store.list().await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn consolidate_cross_class_isolation() {
+        let (store, _f) = open_temp_store().await;
+        // p2p deny-all, tailscale allow-all.  Neither should affect the other.
+        store.set("p2p:*", "*", Decision::Deny).await.unwrap();
+        store
+            .set("tailscale:*", "*", Decision::Allow)
+            .await
+            .unwrap();
+        // Redundant within its own class.
+        store
+            .set("p2p:peer1", "read_file", Decision::Deny)
+            .await
+            .unwrap();
+        // NOT redundant — different decision from its class wildcard.
+        store
+            .set("tailscale:node1", "shell", Decision::Deny)
+            .await
+            .unwrap();
+        assert_eq!(store.consolidate().await.unwrap(), 1);
+        let rules = store.list().await.unwrap();
+        assert_eq!(rules.len(), 3);
+        // p2p:peer1/read_file removed; tailscale:node1/shell kept.
+        assert!(rules
+            .iter()
+            .any(|r| r.agent_id == "tailscale:node1" && r.tool_name == "shell"));
+    }
+
+    #[tokio::test]
+    async fn consolidate_orphan_l1_no_broader_levels() {
+        let (store, _f) = open_temp_store().await;
+        // Single L1 rule with no L2/L3/L4.  Must be kept.
+        store
+            .set("p2p:peer1", "read_file", Decision::Allow)
+            .await
+            .unwrap();
+        assert_eq!(store.consolidate().await.unwrap(), 0);
+        assert_eq!(store.list().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn consolidate_l1_falls_through_l2_to_l3() {
+        let (store, _f) = open_temp_store().await;
+        // No L2 for peer1.  L1 matches L3 → redundant.
+        store
+            .set("p2p:*", "read_file", Decision::Deny)
+            .await
+            .unwrap();
+        store
+            .set("p2p:peer1", "read_file", Decision::Deny)
+            .await
+            .unwrap();
+        assert_eq!(store.consolidate().await.unwrap(), 1);
+        let rules = store.list().await.unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].agent_id, "p2p:*");
+    }
+
+    #[tokio::test]
+    async fn consolidate_l2_kept_when_one_l3_disagrees() {
+        let (store, _f) = open_temp_store().await;
+        // L4: allow p2p:* *
+        // L3: allow p2p:* read_file   (agrees with L2)
+        // L3: deny  p2p:* shell       (disagrees with L2!)
+        // L2: allow p2p:peer1 *       ← must be kept
+        store.set("p2p:*", "*", Decision::Allow).await.unwrap();
+        store
+            .set("p2p:*", "read_file", Decision::Allow)
+            .await
+            .unwrap();
+        store.set("p2p:*", "shell", Decision::Deny).await.unwrap();
+        store.set("p2p:peer1", "*", Decision::Allow).await.unwrap();
+
+        store.consolidate().await.unwrap();
+
+        // L2 must survive because 'shell' L3 disagrees.
+        let peer1 = AgentId::P2p("peer1".into());
+        assert_eq!(store.check(&peer1, "shell").await, Decision::Allow);
+        assert!(store
+            .list()
+            .await
+            .unwrap()
+            .iter()
+            .any(|r| r.agent_id == "p2p:peer1" && r.tool_name == "*"));
+    }
+
+    #[tokio::test]
+    async fn consolidate_is_idempotent() {
+        let (store, _f) = open_temp_store().await;
+        store.set("p2p:*", "*", Decision::Deny).await.unwrap();
+        store
+            .set("p2p:*", "read_file", Decision::Deny)
+            .await
+            .unwrap();
+        store
+            .set("p2p:peer1", "read_file", Decision::Deny)
+            .await
+            .unwrap();
+        store.set("p2p:peer1", "*", Decision::Deny).await.unwrap();
+
+        let first = store.consolidate().await.unwrap();
+        assert!(first > 0);
+        let second = store.consolidate().await.unwrap();
+        assert_eq!(second, 0, "second consolidation must be a no-op");
+    }
+
+    #[tokio::test]
+    async fn consolidate_l1_shield_must_not_cause_l2_removal() {
+        let (store, _f) = open_temp_store().await;
+        // L4: allow p2p:* *
+        // L3: deny  p2p:* read_file
+        // L2: allow p2p:peer1 *
+        // L1: allow p2p:peer1 read_file
+        //
+        // Before: peer1/read_file → L1 allow.
+        // L1 is redundant (L2 has same decision), but L2 must NOT be removed
+        // because without L1 *and* L2, peer1/read_file falls to L3 (deny).
+        store.set("p2p:*", "*", Decision::Allow).await.unwrap();
+        store
+            .set("p2p:*", "read_file", Decision::Deny)
+            .await
+            .unwrap();
+        store.set("p2p:peer1", "*", Decision::Allow).await.unwrap();
+        store
+            .set("p2p:peer1", "read_file", Decision::Allow)
+            .await
+            .unwrap();
+
+        store.consolidate().await.unwrap();
+
+        // After consolidation, peer1/read_file must still resolve to Allow.
+        let peer1 = AgentId::P2p("peer1".into());
+        assert_eq!(
+            store.check(&peer1, "read_file").await,
+            Decision::Allow,
+            "consolidation must not change effective decisions"
+        );
+    }
+
+    #[tokio::test]
+    async fn consolidate_l2_removed_when_surviving_l1_shields() {
+        let (store, _f) = open_temp_store().await;
+        // L4: allow p2p:* *
+        // L3: deny  p2p:* read_file
+        // L2: allow p2p:peer1 *
+        // L1: deny  p2p:peer1 read_file  ← kept (differs from L2)
+        //
+        // L1 survives because it overrides L2. With L1 still shielding
+        // peer1/read_file, L2 is genuinely redundant — without it,
+        // peer1/read_file → L1 (deny), peer1/other → L4 (allow).
+        store.set("p2p:*", "*", Decision::Allow).await.unwrap();
+        store
+            .set("p2p:*", "read_file", Decision::Deny)
+            .await
+            .unwrap();
+        store.set("p2p:peer1", "*", Decision::Allow).await.unwrap();
+        store
+            .set("p2p:peer1", "read_file", Decision::Deny)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            store.consolidate().await.unwrap(),
+            1,
+            "L2 should be removed"
+        );
+        let rules = store.list().await.unwrap();
+        assert_eq!(rules.len(), 3);
+
+        // Verify effective decisions are preserved.
+        let peer1 = AgentId::P2p("peer1".into());
+        let other = AgentId::P2p("other".into());
+        assert_eq!(store.check(&peer1, "read_file").await, Decision::Deny);
+        assert_eq!(store.check(&peer1, "other_tool").await, Decision::Allow);
+        assert_eq!(store.check(&other, "read_file").await, Decision::Deny);
+        assert_eq!(store.check(&other, "other_tool").await, Decision::Allow);
     }
 }
