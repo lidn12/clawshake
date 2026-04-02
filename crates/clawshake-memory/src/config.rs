@@ -27,10 +27,7 @@ impl Default for Config {
         Self {
             db_path: home.join(".clawshake").join("memory.db"),
             transcript_dir: home.join(".clawshake").join("log"),
-            skill_dirs: vec![
-                home.join(".clawshake").join("skills"),
-                home.join(".agents").join("skills"),
-            ],
+            skill_dirs: vec![home.join(".clawshake").join("skills")],
         }
     }
 }

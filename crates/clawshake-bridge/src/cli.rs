@@ -305,7 +305,15 @@ pub async fn start_bridge(
 
     // Open the permission store (creates DB + schema if absent).
     let store = PermissionStore::open(db_path).await?;
+    store.seed_local_allow_default().await?;
     store.seed_p2p_deny_default().await?;
+
+    // Clean up any per-tool rules that are now shadowed by the wildcard.
+    let removed = store.consolidate().await?;
+    if removed > 0 {
+        tracing::info!("Consolidated {removed} redundant permission rule(s) on startup");
+    }
+
     let store = Arc::new(store);
 
     // Watch permissions.db so DHT re-announces when permissions change.

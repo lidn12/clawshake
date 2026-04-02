@@ -67,7 +67,7 @@ pub struct MemoryConfig {
     /// Override `~/.clawshake/log`.
     pub transcript_dir: Option<PathBuf>,
 
-    /// Override `[~/.clawshake/skills, ~/.agents/skills]`.
+    /// Override `[~/.clawshake/skills]`.
     pub skill_dirs: Option<Vec<PathBuf>>,
 
     /// Override `~/.clawshake/notes`.

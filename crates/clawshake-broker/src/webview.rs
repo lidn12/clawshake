@@ -286,6 +286,39 @@ fn find_window_binary() -> Result<std::path::PathBuf, String> {
     Ok(std::path::PathBuf::from(name))
 }
 
+/// Spawn a background task that routes `channel.ui.<frame_id>.response` events
+/// from the event queue back to the corresponding webview frame via `ui_push`.
+///
+/// This allows agents to respond to UI interactions by simply emitting on the
+/// response topic — no explicit `ui_push` call required.
+pub fn spawn_ui_channel_router(
+    event_queue: crate::event_queue::EventQueue,
+    frame_store: FrameStore,
+) {
+    tokio::spawn(async move {
+        let mut cursor = event_queue.cursor().await;
+        // Listen for all channel.ui.* events (inbound and response).
+        let prefix = clawshake_channels::TOPIC_UI.to_string();
+        loop {
+            let (events, new_cursor) = event_queue.wait_for(&[prefix.clone()], cursor, None).await;
+            cursor = new_cursor;
+            for event in events {
+                let Some(frame_id) = clawshake_channels::parse_ui_response_frame_id(&event.topic)
+                else {
+                    continue; // Not a response topic — skip inbound events
+                };
+
+                frame_store
+                    .broadcast(&WsOutgoing::Push {
+                        frame_id: frame_id.to_string(),
+                        data: event.data,
+                    })
+                    .await;
+            }
+        }
+    });
+}
+
 /// Spawn the `clawshake-window` process at broker startup.
 ///
 /// The window server runs persistently (zero visible windows) and creates

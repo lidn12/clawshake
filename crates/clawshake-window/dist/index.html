@@ -199,7 +199,7 @@
             };
 
             const iframe = document.createElement('iframe');
-            iframe.sandbox = 'allow-scripts allow-same-origin';
+            iframe.sandbox = 'allow-scripts allow-same-origin allow-forms';
             iframe.src = src;
 
             wrapper.appendChild(header);
@@ -224,7 +224,11 @@
             const w = frames[frame_id]; if (!w) return;
             const iframe = w.querySelector('iframe');
             if (iframe && iframe.contentWindow) {
-                iframe.contentWindow.postMessage(data, '*');
+                let payload = data;
+                if (typeof payload === 'string') {
+                    try { payload = JSON.parse(payload); } catch (_) { }
+                }
+                iframe.contentWindow.postMessage(payload, '*');
             }
         }
 

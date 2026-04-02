@@ -35,11 +35,7 @@ struct MemoryContextInner {
 
 impl MemoryContext {
     /// Create a new memory context from resolved paths.
-    pub fn new(
-        config: MemConfig,
-        identity_path: PathBuf,
-        instructions_path: PathBuf,
-    ) -> Self {
+    pub fn new(config: MemConfig, identity_path: PathBuf, instructions_path: PathBuf) -> Self {
         Self {
             inner: Arc::new(MemoryContextInner {
                 config,
@@ -67,17 +63,13 @@ pub async fn invoke_recall(args: &Value, mem: &MemoryContext) -> Result<String> 
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    let limit = args
-        .get("limit")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(10) as usize;
+    let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
 
     let cfg = mem.config().clone();
-    let result =
-        tokio::task::spawn_blocking(move || recall(&cfg, &query, limit))
-            .await
-            .context("memory_recall spawn_blocking join")?
-            .context("memory_recall search")?;
+    let result = tokio::task::spawn_blocking(move || recall(&cfg, &query, limit))
+        .await
+        .context("memory_recall spawn_blocking join")?
+        .context("memory_recall search")?;
 
     serde_json::to_string_pretty(&result).context("serializing recall results")
 }
@@ -93,8 +85,7 @@ pub async fn invoke_procedural(args: &Value, mem: &MemoryContext) -> Result<Stri
     let skill_dirs = mem.config().skill_dirs.clone();
 
     let result = tokio::task::spawn_blocking(move || {
-        Procedural::load(&identity_path, &instructions_path, &skill_dirs)
-            .map(|p| p.render())
+        Procedural::load(&identity_path, &instructions_path, &skill_dirs).map(|p| p.render())
     })
     .await
     .context("memory_procedural spawn_blocking join")?
@@ -307,8 +298,6 @@ pub fn memory_tool_definitions() -> Vec<Value> {
 /// Build a [`MemConfig`] from the node's `[memory]` config section,
 /// resolving all paths relative to `clawshake_dir` (`~/.clawshake`).
 fn resolve_mem_config(clawshake_dir: &Path, cfg: &MemoryConfig) -> MemConfig {
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-
     MemConfig {
         db_path: cfg
             .db_path
@@ -318,12 +307,10 @@ fn resolve_mem_config(clawshake_dir: &Path, cfg: &MemoryConfig) -> MemConfig {
             .transcript_dir
             .clone()
             .unwrap_or_else(|| clawshake_dir.join("log")),
-        skill_dirs: cfg.skill_dirs.clone().unwrap_or_else(|| {
-            vec![
-                clawshake_dir.join("skills"),
-                home.join(".agents").join("skills"),
-            ]
-        }),
+        skill_dirs: cfg
+            .skill_dirs
+            .clone()
+            .unwrap_or_else(|| vec![clawshake_dir.join("skills")]),
     }
 }
 

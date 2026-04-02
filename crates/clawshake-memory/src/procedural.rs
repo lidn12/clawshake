@@ -145,24 +145,10 @@ files, and remote capabilities. Use tools freely to get things done.
 pub const DEFAULT_INSTRUCTIONS: &str = r###"
 ## Event loop
 
-Your execution model is an event loop. Every turn must end with a tool call — never output
-text alone without also calling a tool. If you have nothing else to do, end the turn by
-calling listen() to block until the next event arrives.
-
-## Handling user messages
-
-When listen() returns an event with topic "user.message", the event's data.content field is
-a direct message from the user. Read it, respond directly in your content field, and call
-listen() in the same turn to wait for the next message. Do not narrate that you received a
-message — just respond to it.
-
-Example of correct behaviour:
-  content: "I'm Ashby, your personal assistant. How can I help?"
-  tool_calls: [listen()]
-
-Example of incorrect behaviour (never do this):
-  content: "It looks like you sent a message. Shall I respond?"
-  tool_calls: []   ← missing tool call, wastes a cycle
+Your execution model is an event loop driven by listen(). The runtime calls listen()
+automatically between turns — you only need to call it explicitly if you want to block
+mid-turn waiting for a specific event. The runtime also automatically routes your text
+responses back to the channel that sent the triggering event.
 
 ## Context management
 

@@ -70,6 +70,10 @@ pub async fn serve(
     broker: BrokerContext,
     notify_rx: Option<tokio::sync::mpsc::Receiver<()>>,
 ) -> Result<()> {
+    // Start the UI channel router before anything else so push events are
+    // handled from the moment the first WebSocket client connects.
+    crate::webview::spawn_ui_channel_router(broker.event_queue.clone(), broker.frame_store.clone());
+
     let state = AppState {
         sessions: Arc::new(RwLock::new(HashMap::new())),
         ctx: broker,
@@ -398,6 +402,9 @@ async fn ui_websocket(socket: WebSocket, state: AppState) {
         }
     }
 
+    // Keep a clone for targeted sends (e.g. ReplayRequest) where we must
+    // NOT broadcast to all connections.
+    let this_tx = tx.clone();
     state.ctx.frame_store.add_ws_sender(tx).await;
 
     debug!("Webview WebSocket connected");
@@ -439,14 +446,15 @@ async fn ui_websocket(socket: WebSocket, state: AppState) {
                 id,
                 data,
             } => {
-                // Push into the event queue as a channel.ui event.
+                // Push into the event queue as a channel.ui.<frame_id> event.
                 let payload = serde_json::json!({
                     "frame_id": frame_id,
                     "event": event,
                     "id": id,
                     "data": data,
                 });
-                event_queue.push("channel.ui", "webview", payload).await;
+                let topic = clawshake_channels::ui_topic(&frame_id);
+                event_queue.push(topic, "webview", payload).await;
             }
             WsIncoming::Close { frame_id } => {
                 frame_store.remove(&frame_id).await;
@@ -470,8 +478,9 @@ async fn ui_websocket(socket: WebSocket, state: AppState) {
                 frame_store.resolve_list_request(&request_id, windows).await;
             }
             WsIncoming::ReplayRequest => {
-                // Re-send all stored frames so a newly opened window can
-                // pick up existing content via its accepts() filter.
+                // Re-send all stored frames to THIS connection only — not a
+                // broadcast. Broadcasting would cause other windows to reload
+                // their iframes (e.g. wiping chat history).
                 let port = state.ctx.port;
                 let existing = state.ctx.frame_store.list_all().await;
                 for (frame_id, frame) in existing {
@@ -489,7 +498,9 @@ async fn ui_websocket(socket: WebSocket, state: AppState) {
                         height: frame.height,
                         window: frame.window,
                     };
-                    frame_store.broadcast(&msg).await;
+                    if let Ok(json) = serde_json::to_string(&msg) {
+                        let _ = this_tx.send(json);
+                    }
                 }
             }
         }

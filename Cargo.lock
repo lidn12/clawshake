@@ -999,6 +999,7 @@ dependencies = [
  "anyhow",
  "axum",
  "clap",
+ "clawshake-channels",
  "clawshake-core",
  "clawshake-memory",
  "dirs 5.0.1",

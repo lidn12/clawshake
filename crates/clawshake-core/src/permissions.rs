@@ -243,6 +243,26 @@ impl PermissionStore {
         .context("spawn_blocking join")?
     }
 
+    /// Seed a catch-all allow for the local agent (`local` / `*` / allow) if
+    /// no `local`+`*` row exists yet.  Called on bridge startup so the default
+    /// is open for local tools — the user can restrict individual tools later.
+    pub async fn seed_local_allow_default(&self) -> Result<()> {
+        let db = self.db.clone();
+
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            let conn = db.lock().unwrap();
+            conn.execute(
+                "INSERT OR IGNORE INTO permissions (agent_id, tool_name, decision, granted_at)
+                 VALUES ('local', '*', 'allow', strftime('%s','now'))",
+                [],
+            )
+            .context("seeding local allow default")?;
+            Ok(())
+        })
+        .await
+        .context("spawn_blocking join")?
+    }
+
     /// Seed a catch-all deny for all P2P callers (`p2p:*` / `*` / deny) if no
     /// such row exists yet.  Called on bridge startup so fresh installs are
     /// closed by default — users must explicitly grant access.
