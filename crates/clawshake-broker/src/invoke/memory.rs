@@ -29,18 +29,16 @@ pub struct MemoryContext {
 #[derive(Debug)]
 struct MemoryContextInner {
     pub config: MemConfig,
-    pub identity_path: PathBuf,
-    pub instructions_path: PathBuf,
+    pub system_path: PathBuf,
 }
 
 impl MemoryContext {
     /// Create a new memory context from resolved paths.
-    pub fn new(config: MemConfig, identity_path: PathBuf, instructions_path: PathBuf) -> Self {
+    pub fn new(config: MemConfig, system_path: PathBuf) -> Self {
         Self {
             inner: Arc::new(MemoryContextInner {
                 config,
-                identity_path,
-                instructions_path,
+                system_path,
             }),
         }
     }
@@ -75,17 +73,16 @@ pub async fn invoke_recall(args: &Value, mem: &MemoryContext) -> Result<String> 
 }
 
 /// `memory_procedural` — load and render the agent's procedural memory
-/// (identity + instructions + skills).  Hidden infrastructure tool.
+/// (system prompt + skills).  Hidden infrastructure tool.
 ///
 /// Arguments: `{}` (none required)
 pub async fn invoke_procedural(args: &Value, mem: &MemoryContext) -> Result<String> {
     let _ = args; // no arguments currently used
-    let identity_path = mem.inner.identity_path.clone();
-    let instructions_path = mem.inner.instructions_path.clone();
+    let system_path = mem.inner.system_path.clone();
     let skill_dirs = mem.config().skill_dirs.clone();
 
     let result = tokio::task::spawn_blocking(move || {
-        Procedural::load(&identity_path, &instructions_path, &skill_dirs).map(|p| p.render())
+        Procedural::load(&system_path, &skill_dirs).map(|p| p.render())
     })
     .await
     .context("memory_procedural spawn_blocking join")?
@@ -320,16 +317,12 @@ fn resolve_mem_config(clawshake_dir: &Path, cfg: &MemoryConfig) -> MemConfig {
 pub fn build_memory_context(clawshake_dir: &Path, cfg: &MemoryConfig) -> MemoryContext {
     let mem_config = resolve_mem_config(clawshake_dir, cfg);
 
-    let identity_path = cfg
-        .identity_path
+    let system_path = cfg
+        .system_path
         .clone()
-        .unwrap_or_else(|| clawshake_dir.join("identity.md"));
-    let instructions_path = cfg
-        .instructions_path
-        .clone()
-        .unwrap_or_else(|| clawshake_dir.join("instructions.md"));
+        .unwrap_or_else(|| clawshake_dir.join("system.md"));
 
-    MemoryContext::new(mem_config, identity_path, instructions_path)
+    MemoryContext::new(mem_config, system_path)
 }
 
 /// Spawn the memory file-system watcher on a dedicated OS thread.

@@ -73,11 +73,8 @@ pub struct MemoryConfig {
     /// Override `~/.clawshake/notes`.
     pub notes_dir: Option<PathBuf>,
 
-    /// Override `~/.clawshake/identity.md`.
-    pub identity_path: Option<PathBuf>,
-
-    /// Override `~/.clawshake/instructions.md`.
-    pub instructions_path: Option<PathBuf>,
+    /// Override `~/.clawshake/system.md`.
+    pub system_path: Option<PathBuf>,
 
     pub watch: MemoryWatchConfig,
     pub ingest: MemoryIngestConfig,
@@ -91,8 +88,7 @@ impl Default for MemoryConfig {
             transcript_dir: None,
             skill_dirs: None,
             notes_dir: None,
-            identity_path: None,
-            instructions_path: None,
+            system_path: None,
             watch: MemoryWatchConfig::default(),
             ingest: MemoryIngestConfig::default(),
         }
