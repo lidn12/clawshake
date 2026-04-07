@@ -100,11 +100,16 @@ impl Procedural {
 // ---------------------------------------------------------------------------
 
 /// Read a markdown file, trimming whitespace.
-/// Falls back to `default` if the file is absent, unreadable, or empty.
+/// If the file is absent or empty, seeds it with `default` and returns that.
 fn read_md(path: &Path, default: &str) -> String {
     match std::fs::read_to_string(path) {
         Ok(s) if !s.trim().is_empty() => s.trim().to_string(),
-        _ => default.trim().to_string(),
+        _ => {
+            // Seed the file so the user can discover and edit it.
+            let content = default.trim();
+            let _ = std::fs::write(path, content);
+            content.to_string()
+        }
     }
 }
 
