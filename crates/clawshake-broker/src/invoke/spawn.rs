@@ -79,7 +79,8 @@ pub async fn handle(arguments: &Value, ctx: &router::DispatchContext<'_>) -> Res
         let result = router::dispatch(&tool_name, &inner_args, &dispatch_ctx).await;
 
         match result {
-            Ok(text) => {
+            Ok(content) => {
+                let text = clawshake_core::protocol::McpContent::join_text(&content);
                 debug!(task_id, tool = %tool_name, "spawn: task completed");
                 eq.push(
                     "task.done",

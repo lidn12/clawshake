@@ -31,6 +31,8 @@ use tokio::{
 };
 use tracing::{debug, info, warn};
 
+use crate::protocol::McpContent;
+
 // ---------------------------------------------------------------------------
 // Public top-level enum
 // ---------------------------------------------------------------------------
@@ -122,6 +124,52 @@ impl McpClient {
             anyhow::bail!("{text}");
         }
         Ok(text)
+    }
+
+    /// Send a `tools/call` request and return the full content array.
+    ///
+    /// Unlike [`tools_call`], this preserves image and resource content blocks.
+    pub async fn tools_call_content(
+        &self,
+        tool_name: &str,
+        arguments: &Value,
+    ) -> Result<Vec<McpContent>> {
+        let req = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": tool_name,
+                "arguments": arguments,
+            }
+        });
+        let resp = self.call(req).await?;
+
+        if let Some(err) = resp.get("error") {
+            let msg = err
+                .get("message")
+                .and_then(|m| m.as_str())
+                .unwrap_or("unknown MCP error");
+            anyhow::bail!("MCP error: {msg}");
+        }
+
+        let result = resp.get("result");
+
+        let is_error = result
+            .and_then(|r| r.get("isError"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        let content: Vec<McpContent> = result
+            .and_then(|r| r.get("content"))
+            .and_then(|c| serde_json::from_value(c.clone()).ok())
+            .unwrap_or_default();
+
+        if is_error {
+            let text = McpContent::join_text(&content);
+            anyhow::bail!("{text}");
+        }
+        Ok(content)
     }
 
     /// Forward a raw JSON-RPC request and return the response.

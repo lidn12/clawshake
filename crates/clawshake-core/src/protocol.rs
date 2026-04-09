@@ -140,6 +140,18 @@ impl McpContent {
             mime_type: mime_type.into(),
         }
     }
+
+    /// Join all `Text` items in `content` into one string, discarding non-text.
+    pub fn join_text(content: &[McpContent]) -> String {
+        content
+            .iter()
+            .filter_map(|c| match c {
+                McpContent::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
 }
 
 // ---------------------------------------------------------------------------

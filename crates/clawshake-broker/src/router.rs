@@ -7,6 +7,7 @@ use clawshake_core::config::Config;
 use clawshake_core::identity::AgentId;
 use clawshake_core::manifest::InvokeConfig;
 use clawshake_core::permissions::{Decision, PermissionStore};
+use clawshake_core::protocol::McpContent;
 use serde_json::Value;
 
 use crate::{
@@ -146,7 +147,7 @@ pub async fn dispatch_invoke(body: &str, ctx: &DispatchContext<'_>) -> axum::res
         Value::Object(Default::default())
     };
     let (text, is_error) = match dispatch(&req.tool, &args, ctx).await {
-        Ok(t) => (t, false),
+        Ok(content) => (McpContent::join_text(&content), false),
         Err(e) => (format!("{e}"), true),
     };
     Json(serde_json::json!({"result": text, "is_error": is_error})).into_response()
@@ -155,7 +156,7 @@ pub async fn dispatch_invoke(body: &str, ctx: &DispatchContext<'_>) -> axum::res
 /// Dispatch a `tools/call` for `tool_name` to the correct invoke backend.
 ///
 /// `arguments` is the JSON object from the MCP `tools/call` `arguments` field.
-/// Returns the text content to include in the `CallToolResult`.
+/// Returns the content items to include in the `CallToolResult`.
 ///
 /// Returns a boxed future to break the recursive async type that arises from
 /// run_code → ephemeral_invoke_server → dispatch_invoke → dispatch.
@@ -163,7 +164,7 @@ pub fn dispatch<'a>(
     tool_name: &'a str,
     arguments: &'a Value,
     ctx: &'a DispatchContext<'a>,
-) -> Pin<Box<dyn Future<Output = Result<String>> + Send + 'a>> {
+) -> Pin<Box<dyn Future<Output = Result<Vec<McpContent>>> + Send + 'a>> {
     Box::pin(async move {
         // Permission check (single location for all callers).
         let decision = ctx.permissions.check(&AgentId::Local, tool_name).await;
@@ -188,25 +189,37 @@ pub fn dispatch<'a>(
             )
         })?;
 
+        // Helper: wrap a text-returning invoke backend into Vec<McpContent>.
+        macro_rules! text_invoke {
+            ($expr:expr) => {
+                $expr.await.map(|s| vec![McpContent::text(s)])
+            };
+        }
+
         match &loaded.tool.invoke {
             InvokeConfig::Cli {
                 command,
                 args,
                 shell,
-            } => invoke::cli::invoke(command, args, *shell, arguments).await,
+            } => text_invoke!(invoke::cli::invoke(command, args, *shell, arguments)),
             InvokeConfig::Http {
                 url,
                 method,
                 headers,
-            } => invoke::http::invoke(url, method.as_deref(), headers, arguments).await,
+            } => text_invoke!(invoke::http::invoke(
+                url,
+                method.as_deref(),
+                headers,
+                arguments
+            )),
             InvokeConfig::Deeplink { template } => {
-                invoke::deeplink::invoke(template, arguments).await
+                text_invoke!(invoke::deeplink::invoke(template, arguments))
             }
             InvokeConfig::AppleScript { script } => {
-                invoke::script::invoke_applescript(script, arguments).await
+                text_invoke!(invoke::script::invoke_applescript(script, arguments))
             }
             InvokeConfig::PowerShell { script } => {
-                invoke::script::invoke_powershell(script, arguments).await
+                text_invoke!(invoke::script::invoke_powershell(script, arguments))
             }
             InvokeConfig::Mcp { server_key } => {
                 let server = ctx.servers.get(server_key).ok_or_else(|| {
@@ -215,104 +228,122 @@ pub fn dispatch<'a>(
                      The node operator may need to restart the broker."
                     )
                 })?;
-                server.tools_call(tool_name, arguments).await
+                server.tools_call_content(tool_name, arguments).await
             }
-            InvokeConfig::InProcess => match tool_name {
-                "emit" => invoke::events::invoke_emit(arguments, ctx.event_queue).await,
-                "listen" => invoke::events::invoke_listen(arguments, ctx.event_queue).await,
-                "run_code" => {
-                    let script = arguments
-                        .get("script")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    invoke::codemode::invoke_run_code(script, ctx, 30).await
-                }
-                "describe_tools" => {
-                    let query = arguments.get("query").and_then(|v| v.as_str());
-                    Ok(invoke::codemode::invoke_describe_tools(query, ctx))
-                }
-                // Expose tools — handled in-process (broker-side).
-                "network_expose" => {
-                    invoke::expose::handle_expose(
-                        arguments,
-                        ctx.expose_table,
-                        ctx.registry,
-                        ctx.reannounce_tx,
-                    )
-                    .await
-                }
-                "network_unexpose" => {
-                    invoke::expose::handle_unexpose(
-                        arguments,
-                        ctx.expose_table,
-                        ctx.registry,
-                        ctx.reannounce_tx,
-                    )
-                    .await
-                }
-                // Dynamic connect_* tools — handled in-process.
-                name if name.starts_with("connect_") => {
-                    invoke::expose::handle_connect(name, arguments, ctx.expose_table)
-                }
-                // Network tools — dispatch via IPC to the bridge daemon.
-                name if name.starts_with("network_") => {
-                    let params = arguments.clone();
-                    let resp = clawshake_core::ipc::send_request(name, params)
-                        .await
-                        .map_err(|e| anyhow::anyhow!("bridge IPC error: {e:#}"))?;
-                    Ok(serde_json::to_string_pretty(&resp).unwrap_or_else(|_| resp.to_string()))
-                }
-                // General-purpose tools — dispatch in-process.
-                "shell" => invoke::shell::handle(arguments, &ctx.config.tools.shell).await,
-                // Spawn — async wrapper for any tool call.
-                "spawn" => invoke::spawn::handle(arguments, ctx).await,
-                // Cron tools — dispatch to the scheduler.
-                "cron_add" => ctx.cron.handle_add(arguments, ctx.event_queue).await,
-                "cron_list" => ctx.cron.handle_list(arguments).await,
-                "cron_remove" => ctx.cron.handle_remove(arguments).await,
-                // Memory tools — dispatch to the memory subsystem.
-                #[cfg(feature = "memory")]
-                name if name.starts_with("memory_") => {
-                    let mem = ctx.memory.as_ref().ok_or_else(|| {
-                        anyhow::anyhow!("memory subsystem is disabled (no [memory] config)")
-                    })?;
-                    match name {
-                        "memory_recall" => invoke::memory::invoke_recall(arguments, mem).await,
-                        "memory_procedural" => {
-                            invoke::memory::invoke_procedural(arguments, mem).await
-                        }
-                        "memory_append" => invoke::memory::invoke_append(arguments, mem).await,
-                        "memory_ingest" => invoke::memory::invoke_ingest(arguments, mem).await,
-                        "memory_embed" => invoke::memory::invoke_embed(arguments, mem).await,
-                        _ => anyhow::bail!("unknown memory tool '{name}'"),
+            InvokeConfig::InProcess => {
+                let text_result: Result<String> = match tool_name {
+                    "emit" => invoke::events::invoke_emit(arguments, ctx.event_queue).await,
+                    "listen" => invoke::events::invoke_listen(arguments, ctx.event_queue).await,
+                    "run_code" => {
+                        let script = arguments
+                            .get("script")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        invoke::codemode::invoke_run_code(script, ctx, 30).await
                     }
-                }
-                #[cfg(not(feature = "memory"))]
-                name if name.starts_with("memory_") => {
-                    anyhow::bail!("memory subsystem not compiled in (build with --features memory)")
-                }
-                // Webview UI tools — dispatch to the frame store.
-                "ui_render" => {
-                    invoke::webview::handle_render(arguments, ctx.frame_store, ctx.port).await
-                }
-                "ui_push" => invoke::webview::handle_push(arguments, ctx.frame_store).await,
-                "ui_snapshot" => invoke::webview::handle_snapshot(arguments, ctx.frame_store).await,
-                "ui_list" => invoke::webview::handle_list(arguments, ctx.frame_store).await,
-                "ui_close" => invoke::webview::handle_close(arguments, ctx.frame_store).await,
-                // Window control tools.
-                "window_open" => invoke::window::handle_open(arguments, ctx.frame_store).await,
-                "window_close" => invoke::window::handle_close(arguments, ctx.frame_store).await,
-                "window_resize" => invoke::window::handle_resize(arguments, ctx.frame_store).await,
-                "window_set_title" => {
-                    invoke::window::handle_set_title(arguments, ctx.frame_store).await
-                }
-                "window_focus" => invoke::window::handle_focus(arguments, ctx.frame_store).await,
-                "window_notify" => invoke::window::handle_notify(arguments, ctx.frame_store).await,
-                "window_list" => invoke::window::handle_list(arguments, ctx.frame_store).await,
-                _ => anyhow::bail!(
-                    "in-process tool '{tool_name}' has no registered handler in the router"
-                ),
-            },
+                    "describe_tools" => {
+                        let query = arguments.get("query").and_then(|v| v.as_str());
+                        Ok(invoke::codemode::invoke_describe_tools(query, ctx))
+                    }
+                    // Expose tools — handled in-process (broker-side).
+                    "network_expose" => {
+                        invoke::expose::handle_expose(
+                            arguments,
+                            ctx.expose_table,
+                            ctx.registry,
+                            ctx.reannounce_tx,
+                        )
+                        .await
+                    }
+                    "network_unexpose" => {
+                        invoke::expose::handle_unexpose(
+                            arguments,
+                            ctx.expose_table,
+                            ctx.registry,
+                            ctx.reannounce_tx,
+                        )
+                        .await
+                    }
+                    // Dynamic connect_* tools — handled in-process.
+                    name if name.starts_with("connect_") => {
+                        invoke::expose::handle_connect(name, arguments, ctx.expose_table)
+                    }
+                    // Network tools — dispatch via IPC to the bridge daemon.
+                    name if name.starts_with("network_") => {
+                        let params = arguments.clone();
+                        let resp = clawshake_core::ipc::send_request(name, params)
+                            .await
+                            .map_err(|e| anyhow::anyhow!("bridge IPC error: {e:#}"))?;
+                        Ok(
+                            serde_json::to_string_pretty(&resp)
+                                .unwrap_or_else(|_| resp.to_string()),
+                        )
+                    }
+                    // General-purpose tools — dispatch in-process.
+                    "shell" => invoke::shell::handle(arguments, &ctx.config.tools.shell).await,
+                    // Spawn — async wrapper for any tool call.
+                    "spawn" => invoke::spawn::handle(arguments, ctx).await,
+                    // Cron tools — dispatch to the scheduler.
+                    "cron_add" => ctx.cron.handle_add(arguments, ctx.event_queue).await,
+                    "cron_list" => ctx.cron.handle_list(arguments).await,
+                    "cron_remove" => ctx.cron.handle_remove(arguments).await,
+                    // Memory tools — dispatch to the memory subsystem.
+                    #[cfg(feature = "memory")]
+                    name if name.starts_with("memory_") => {
+                        let mem = ctx.memory.as_ref().ok_or_else(|| {
+                            anyhow::anyhow!("memory subsystem is disabled (no [memory] config)")
+                        })?;
+                        match name {
+                            "memory_recall" => invoke::memory::invoke_recall(arguments, mem).await,
+                            "memory_procedural" => {
+                                invoke::memory::invoke_procedural(arguments, mem).await
+                            }
+                            "memory_append" => invoke::memory::invoke_append(arguments, mem).await,
+                            "memory_ingest" => invoke::memory::invoke_ingest(arguments, mem).await,
+                            "memory_embed" => invoke::memory::invoke_embed(arguments, mem).await,
+                            _ => anyhow::bail!("unknown memory tool '{name}'"),
+                        }
+                    }
+                    #[cfg(not(feature = "memory"))]
+                    name if name.starts_with("memory_") => {
+                        anyhow::bail!(
+                            "memory subsystem not compiled in (build with --features memory)"
+                        )
+                    }
+                    // Webview UI tools — dispatch to the frame store.
+                    "ui_render" => {
+                        invoke::webview::handle_render(arguments, ctx.frame_store, ctx.port).await
+                    }
+                    "ui_push" => invoke::webview::handle_push(arguments, ctx.frame_store).await,
+                    "ui_snapshot" => {
+                        invoke::webview::handle_snapshot(arguments, ctx.frame_store).await
+                    }
+                    "ui_list" => invoke::webview::handle_list(arguments, ctx.frame_store).await,
+                    "ui_close" => invoke::webview::handle_close(arguments, ctx.frame_store).await,
+                    // Window control tools.
+                    "window_open" => invoke::window::handle_open(arguments, ctx.frame_store).await,
+                    "window_close" => {
+                        invoke::window::handle_close(arguments, ctx.frame_store).await
+                    }
+                    "window_resize" => {
+                        invoke::window::handle_resize(arguments, ctx.frame_store).await
+                    }
+                    "window_set_title" => {
+                        invoke::window::handle_set_title(arguments, ctx.frame_store).await
+                    }
+                    "window_focus" => {
+                        invoke::window::handle_focus(arguments, ctx.frame_store).await
+                    }
+                    "window_notify" => {
+                        invoke::window::handle_notify(arguments, ctx.frame_store).await
+                    }
+                    "window_list" => invoke::window::handle_list(arguments, ctx.frame_store).await,
+                    _ => anyhow::bail!(
+                        "in-process tool '{tool_name}' has no registered handler in the router"
+                    ),
+                };
+                text_result.map(|s| vec![McpContent::text(s)])
+            }
         }
     })
 }

@@ -150,7 +150,7 @@ pub(crate) async fn handle(
             let arguments = serde_json::to_value(&params.arguments)
                 .unwrap_or(Value::Object(Default::default()));
             let (content, is_error) = match router::dispatch(&params.name, &arguments, ctx).await {
-                Ok(text) => (vec![McpContent::text(text)], false),
+                Ok(content) => (content, false),
                 Err(e) => (
                     vec![McpContent::text(format!("Tool '{}': {}", params.name, e))],
                     true,
