@@ -11,7 +11,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use serde_json::Value;
 
-use clawshake_core::config::MemoryConfig;
+use clawshake_core::config::{MemoryConfig, MemoryPaths};
 use clawshake_memory::{
     append_entry, recall, ChunkStrategy, Config as MemConfig, FilesSourceConfig, Procedural,
     WatchConfig, WriteEntry,
@@ -294,20 +294,11 @@ pub fn memory_tool_definitions() -> Vec<Value> {
 
 /// Build a [`MemConfig`] from the node's `[memory]` config section,
 /// resolving all paths relative to `clawshake_dir` (`~/.clawshake`).
-fn resolve_mem_config(clawshake_dir: &Path, cfg: &MemoryConfig) -> MemConfig {
+fn resolve_mem_config(paths: &MemoryPaths) -> MemConfig {
     MemConfig {
-        db_path: cfg
-            .db_path
-            .clone()
-            .unwrap_or_else(|| clawshake_dir.join("memory.db")),
-        transcript_dir: cfg
-            .transcript_dir
-            .clone()
-            .unwrap_or_else(|| clawshake_dir.join("log")),
-        skill_dirs: cfg
-            .skill_dirs
-            .clone()
-            .unwrap_or_else(|| vec![clawshake_dir.join("skills")]),
+        db_path: paths.db.clone(),
+        transcript_dir: paths.transcript_dir.clone(),
+        skill_dirs: paths.skill_dirs.clone(),
     }
 }
 
@@ -315,14 +306,10 @@ fn resolve_mem_config(clawshake_dir: &Path, cfg: &MemoryConfig) -> MemConfig {
 ///
 /// Resolves all paths relative to `clawshake_dir` (`~/.clawshake`).
 pub fn build_memory_context(clawshake_dir: &Path, cfg: &MemoryConfig) -> MemoryContext {
-    let mem_config = resolve_mem_config(clawshake_dir, cfg);
+    let paths = cfg.resolve_paths(clawshake_dir);
+    let mem_config = resolve_mem_config(&paths);
 
-    let system_path = cfg
-        .system_path
-        .clone()
-        .unwrap_or_else(|| clawshake_dir.join("system.md"));
-
-    MemoryContext::new(mem_config, system_path)
+    MemoryContext::new(mem_config, paths.prompt)
 }
 
 /// Spawn the memory file-system watcher on a dedicated OS thread.
@@ -330,15 +317,11 @@ pub fn build_memory_context(clawshake_dir: &Path, cfg: &MemoryConfig) -> MemoryC
 /// Watches the transcript directory and optional notes directory for changes,
 /// debounces events, and re-runs ingest + embed.  The thread blocks forever.
 pub fn start_watcher(clawshake_dir: &Path, cfg: &MemoryConfig) {
-    let mem_config = resolve_mem_config(clawshake_dir, cfg);
-
-    let notes_dir = cfg
-        .notes_dir
-        .clone()
-        .unwrap_or_else(|| clawshake_dir.join("notes"));
+    let paths = cfg.resolve_paths(clawshake_dir);
+    let mem_config = resolve_mem_config(&paths);
 
     let notes_src = FilesSourceConfig {
-        paths: vec![notes_dir],
+        paths: vec![paths.notes_dir.clone()],
         chunk_strategy: ChunkStrategy::SlidingWindow {
             max_chars: cfg.ingest.chunk_max_chars,
             overlap_chars: cfg.ingest.chunk_overlap_chars,
@@ -354,7 +337,7 @@ pub fn start_watcher(clawshake_dir: &Path, cfg: &MemoryConfig) {
 
     // Ensure directories exist before the watcher tries to register them.
     let _ = std::fs::create_dir_all(&mem_config.transcript_dir);
-    let _ = std::fs::create_dir_all(clawshake_dir.join("notes"));
+    let _ = std::fs::create_dir_all(&paths.notes_dir);
     for d in &mem_config.skill_dirs {
         let _ = std::fs::create_dir_all(d);
     }

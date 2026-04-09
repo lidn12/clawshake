@@ -69,7 +69,8 @@ async fn main() -> Result<()> {
 
     let clawshake_dir = clawshake_core::config::config_dir()
         .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
-    let db_path = clawshake_dir.join("permissions.db");
+    let db_path = clawshake_core::config::permissions_db_path()
+        .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
 
     match cli.command {
         Command::Permissions { action } => {

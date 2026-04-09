@@ -73,8 +73,10 @@ async fn main() -> Result<()> {
     // Resolve ~/.clawshake paths.
     let clawshake_dir = clawshake_core::config::config_dir()
         .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
-    let manifests_dir = clawshake_dir.join("manifests");
-    let db_path = clawshake_dir.join("permissions.db");
+    let manifests_dir = clawshake_core::config::manifests_dir()
+        .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
+    let db_path = clawshake_core::config::permissions_db_path()
+        .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
 
     match cli.command {
         Command::Tools { action } => {
@@ -86,6 +88,9 @@ async fn main() -> Result<()> {
             code_mode,
             local,
         } => {
+            // ── Load config early so tools.code_mode is available ────
+            let config = core_config::load(None)?;
+
             // Detect bridge daemon (unless --local).
             let bridge_available = if local {
                 info!("--local flag set, skipping network tools");
@@ -94,7 +99,7 @@ async fn main() -> Result<()> {
                 builtins::detect_bridge().await
             };
 
-            let (_, code_mode_active) = cli::detect_code_mode(code_mode);
+            let (_, code_mode_active) = cli::detect_code_mode(code_mode || config.tools.code_mode);
             let permissions = PermissionStore::open(&db_path).await?;
             let shim_cache = clawshake_broker::invoke::codemode::ShimCache::new();
             let event_queue = clawshake_broker::event_queue::EventQueue::new();
@@ -113,7 +118,7 @@ async fn main() -> Result<()> {
             info!(tools = registry.tool_count(), "Broker ready");
 
             // ── Config + Memory subsystem ───────────────────────────────
-            let config = Arc::new(core_config::load(None)?);
+            let config = Arc::new(config);
             #[cfg(feature = "memory")]
             let memory = if config.memory.enabled {
                 let mem_ctx = invoke::memory::build_memory_context(&clawshake_dir, &config.memory);

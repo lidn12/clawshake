@@ -188,7 +188,8 @@ async fn main() -> Result<()> {
     // Shared ~/.clawshake paths.
     let clawshake_dir = clawshake_core::config::config_dir()
         .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
-    let db_path = clawshake_dir.join("permissions.db");
+    let db_path = clawshake_core::config::permissions_db_path()
+        .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
 
     match cli.command {
         // ---- Offline subcommands ------------------------------------------
@@ -207,8 +208,9 @@ async fn main() -> Result<()> {
         },
 
         Command::Tools { action } => {
-            let manifests_dir = clawshake_dir.join("manifests");
-            clawshake_broker::cli::run_tools_action(&action, &manifests_dir, &db_path).await?;
+            let manifests_dir = clawshake_core::config::manifests_dir()
+                .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
+            clawshake_broker::cli::run_tools_action(&action, &manifests_dir, &db_path).await?
         }
 
         Command::Config { action } => match action {
@@ -224,7 +226,8 @@ async fn main() -> Result<()> {
         },
 
         Command::Status { json } => {
-            let manifests_dir = clawshake_dir.join("manifests");
+            let manifests_dir = clawshake_core::config::manifests_dir()
+                .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
             let (total, published) =
                 clawshake_broker::cli::tool_counts(&manifests_dir, &db_path).await;
             clawshake_bridge::cli::show_status(json, Some((total, published)), None).await?;
@@ -250,9 +253,11 @@ async fn main() -> Result<()> {
             let backend: Option<McpClient> = if mcp.is_track1() {
                 mcp.build("clawshake-bridge").await?
             } else {
-                let manifests_dir = clawshake_dir.join("manifests");
+                let manifests_dir = clawshake_core::config::manifests_dir()
+                    .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
 
-                let (_, code_mode_active) = clawshake_broker::cli::detect_code_mode(code_mode);
+                let (_, code_mode_active) =
+                    clawshake_broker::cli::detect_code_mode(code_mode || config.tools.code_mode);
                 let permissions = PermissionStore::open(&db_path).await?;
                 let shim_cache = clawshake_broker::invoke::codemode::ShimCache::new();
                 let event_queue = clawshake_broker::event_queue::EventQueue::new();

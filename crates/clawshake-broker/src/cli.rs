@@ -73,7 +73,7 @@ pub fn detect_code_mode(code_mode_flag: bool) -> (bool, bool) {
         } else {
             info!(
                 "Node.js detected on PATH. \
-                 Pass --code-mode to enable run_code and describe_tools."
+                 Set tools.code_mode = true in config or pass --code-mode to enable."
             );
         }
     }
