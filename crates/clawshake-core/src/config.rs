@@ -73,7 +73,7 @@ pub struct MemoryConfig {
     /// Override `~/.clawshake/notes`.
     pub notes_dir: Option<PathBuf>,
 
-    /// Override `~/.clawshake/system.md`.
+    /// Override `~/.clawshake/prompt.md`.
     pub system_path: Option<PathBuf>,
 
     pub watch: MemoryWatchConfig,
@@ -91,6 +91,50 @@ impl Default for MemoryConfig {
             system_path: None,
             watch: MemoryWatchConfig::default(),
             ingest: MemoryIngestConfig::default(),
+        }
+    }
+}
+
+/// Resolved absolute paths for the memory subsystem.
+///
+/// Produced by [`MemoryConfig::resolve_paths`] — the single source of truth
+/// for every memory-related path in the node.
+#[derive(Debug, Clone)]
+pub struct MemoryPaths {
+    /// SQLite database (`memory.db`).
+    pub db: PathBuf,
+    /// Transcript JSONL directory (`log/`).
+    pub transcript_dir: PathBuf,
+    /// AgentSkills scan directories (`skills/`).
+    pub skill_dirs: Vec<PathBuf>,
+    /// Notes directory for file-source ingestion (`notes/`).
+    pub notes_dir: PathBuf,
+    /// Agent prompt file (`prompt.md`).
+    pub prompt: PathBuf,
+}
+
+impl MemoryConfig {
+    /// Resolve all memory paths against `base` (typically `~/.clawshake`),
+    /// applying any user overrides from the config file.
+    pub fn resolve_paths(&self, base: &Path) -> MemoryPaths {
+        MemoryPaths {
+            db: self
+                .db_path
+                .clone()
+                .unwrap_or_else(|| base.join("memory.db")),
+            transcript_dir: self
+                .transcript_dir
+                .clone()
+                .unwrap_or_else(|| base.join("log")),
+            skill_dirs: self
+                .skill_dirs
+                .clone()
+                .unwrap_or_else(|| vec![base.join("skills")]),
+            notes_dir: self.notes_dir.clone().unwrap_or_else(|| base.join("notes")),
+            prompt: self
+                .system_path
+                .clone()
+                .unwrap_or_else(|| base.join("prompt.md")),
         }
     }
 }
@@ -138,6 +182,9 @@ impl Default for MemoryIngestConfig {
 /// # Example
 ///
 /// ```toml
+/// [tools]
+/// code_mode = true
+///
 /// [tools.shell]
 /// blocked_patterns = ["rm -rf /", "mkfs", "shutdown"]
 /// default_timeout_secs = 30
@@ -146,6 +193,11 @@ impl Default for MemoryIngestConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ToolsConfig {
+    /// Enable code mode: expose only `run_code` and `describe_tools` to the
+    /// LLM instead of listing every tool individually.  Requires Node.js 18+
+    /// on PATH.  Default: false.
+    pub code_mode: bool,
+
     /// Shell tool settings.
     pub shell: ShellConfig,
 }
@@ -153,6 +205,7 @@ pub struct ToolsConfig {
 impl Default for ToolsConfig {
     fn default() -> Self {
         Self {
+            code_mode: false,
             shell: ShellConfig::default(),
         }
     }
@@ -428,6 +481,16 @@ pub fn config_path() -> Option<PathBuf> {
     config_dir().map(|d| d.join("config.toml"))
 }
 
+/// Return the default permissions database path: `~/.clawshake/permissions.db`.
+pub fn permissions_db_path() -> Option<PathBuf> {
+    config_dir().map(|d| d.join("permissions.db"))
+}
+
+/// Return the default manifests directory: `~/.clawshake/manifests`.
+pub fn manifests_dir() -> Option<PathBuf> {
+    config_dir().map(|d| d.join("manifests"))
+}
+
 /// Load configuration from the given path, or the default path if `None`.
 ///
 /// Returns `Config::default()` when the config file does not exist — this
@@ -534,6 +597,7 @@ advertise = "none"
             "default advertise must be None"
         );
         // Tools defaults.
+        assert!(!c.tools.code_mode);
         assert_eq!(c.tools.shell.default_timeout_secs, 30);
         assert_eq!(c.tools.shell.max_output_bytes, 1_048_576);
         assert!(c.tools.shell.blocked_patterns.is_empty());
@@ -542,12 +606,16 @@ advertise = "none"
     #[test]
     fn parse_tools_config() {
         let toml = r#"
+[tools]
+code_mode = true
+
 [tools.shell]
 blocked_patterns = ["custom_danger"]
 default_timeout_secs = 60
 max_output_bytes = 2097152
 "#;
         let c: Config = toml::from_str(toml).unwrap();
+        assert!(c.tools.code_mode);
         assert_eq!(c.tools.shell.blocked_patterns, ["custom_danger"]);
         assert_eq!(c.tools.shell.default_timeout_secs, 60);
         assert_eq!(c.tools.shell.max_output_bytes, 2_097_152);
