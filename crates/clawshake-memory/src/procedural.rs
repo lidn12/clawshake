@@ -2,10 +2,10 @@
 //!
 //! Two segments, mapped to the cognitive taxonomy:
 //!
-//! - **System**: who I am and how I operate — loaded from `system.md`.
+//! - **System**: who I am and how I operate — loaded from `prompt.md`.
 //! - **Skills**: what I know how to do — discovered via AgentSkills spec.
 //!
-//! System is human-authored and loaded from `~/.clawshake/system.md`.
+//! System is human-authored and loaded from `~/.clawshake/prompt.md`.
 //! Skills are discovered from `SKILL.md` folders on disk at startup.
 //! Only the catalog (name + description + location) is loaded into the
 //! system prompt; full skill content is read on demand by the agent.
@@ -31,7 +31,7 @@ use crate::skills;
 pub struct Procedural {
     /// Who I am and how I operate — name, personality, safety rules,
     /// event loop rules, tool conventions.
-    /// Human-authored, loaded from `~/.clawshake/system.md`.
+    /// Human-authored, loaded from `~/.clawshake/prompt.md`.
     pub system: String,
 
     /// Discovered skill catalog — rendered from AgentSkills `SKILL.md` files.
@@ -52,7 +52,7 @@ impl Default for Procedural {
 impl Procedural {
     /// Load procedural memory from the given paths.
     ///
-    /// - `system_path`: path to `system.md`; read if it exists, otherwise
+    /// - `system_path`: path to `prompt.md`; read if it exists, otherwise
     ///   falls back to [`DEFAULT_SYSTEM`].
     /// - `skill_dirs`: directories to scan for AgentSkills folders, in
     ///   precedence order (first wins on name collision).
