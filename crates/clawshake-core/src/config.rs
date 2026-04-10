@@ -26,10 +26,28 @@ use tracing::{debug, info};
 #[serde(default)]
 pub struct Config {
     pub network: NetworkConfig,
-    pub models: ModelsConfig,
     pub tools: ToolsConfig,
     pub memory: MemoryConfig,
     pub sandbox: SandboxDefaults,
+    /// `[[tunnels]]` — declarative tunnel entries registered at bridge startup.
+    #[serde(default)]
+    pub tunnels: Vec<TunnelConfig>,
+}
+
+/// A single `[[tunnels]]` entry.
+///
+/// ```toml
+/// [[tunnels]]
+/// name = "models"
+/// port = 11434
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TunnelConfig {
+    /// Tunnel name — the string used in `connect_{name}` tool and
+    /// `tunnel:{name}` permission resource.
+    pub name: String,
+    /// Local TCP port to forward inbound tunnel connections to.
+    pub port: u16,
 }
 
 /// `[memory]` — long-term memory subsystem settings.
@@ -262,95 +280,6 @@ pub struct NetworkConfig {
     pub identity_path: Option<PathBuf>,
 }
 
-/// Model proxy settings.
-///
-/// When this section is absent the model proxy is completely disabled — no
-/// DHT advertisement, no model handler registered, zero overhead.
-///
-/// # Example
-///
-/// ```toml
-/// [models]
-/// endpoint = "http://127.0.0.1:11434"
-/// advertise = "all"
-/// proxy_port = 11435
-/// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct ModelsConfig {
-    /// Local model server endpoint (Ollama, vLLM, llama.cpp, etc.).
-    /// Must expose an OpenAI-compatible API.
-    pub endpoint: Option<String>,
-
-    /// Which models to advertise on the P2P network.
-    ///
-    /// - `"all"` (default when endpoint is set) — query the backend's
-    ///   `/v1/models` at startup and advertise everything.
-    /// - An explicit list of model names to advertise.
-    /// - Absent or empty — do not advertise any models.
-    pub advertise: AdvertiseModels,
-
-    /// Port for the local OpenAI-compatible proxy server.
-    /// Applications point `OPENAI_BASE_URL` at `http://127.0.0.1:{proxy_port}/v1`.
-    pub proxy_port: u16,
-}
-
-impl Default for ModelsConfig {
-    fn default() -> Self {
-        Self {
-            endpoint: None,
-            advertise: AdvertiseModels::default(),
-            proxy_port: 11435,
-        }
-    }
-}
-
-impl ModelsConfig {
-    /// Returns `true` if a model server endpoint is configured.
-    pub fn is_enabled(&self) -> bool {
-        self.endpoint.is_some()
-    }
-}
-
-/// Controls which models are advertised on the network.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(untagged)]
-pub enum AdvertiseModels {
-    /// Advertise all models discovered from the backend.
-    All(AdvertiseAll),
-    /// Do not advertise any models (explicit `"none"` in config).
-    None(AdvertiseNone),
-    /// Advertise a specific list of model names.
-    List(Vec<String>),
-}
-
-/// Helper for deserializing the string `"all"`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub enum AdvertiseAll {
-    #[serde(rename = "all")]
-    All,
-}
-
-/// Helper for deserializing the string `"none"`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub enum AdvertiseNone {
-    #[serde(rename = "none")]
-    None,
-}
-
-impl Default for AdvertiseModels {
-    fn default() -> Self {
-        Self::None(AdvertiseNone::None)
-    }
-}
-
-impl AdvertiseModels {
-    /// Returns `true` if no models should be advertised.
-    pub fn is_none(&self) -> bool {
-        matches!(self, Self::None(_))
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Sandbox defaults
 // ---------------------------------------------------------------------------
@@ -526,9 +455,6 @@ mod tests {
     fn default_config() {
         let c = Config::default();
         assert!(c.network.bootstrap.is_empty());
-        assert!(c.models.endpoint.is_none());
-        assert_eq!(c.models.proxy_port, 11435);
-        assert!(c.models.advertise.is_none());
     }
 
     #[test]
@@ -536,66 +462,18 @@ mod tests {
         let toml = r#"
 [network]
 bootstrap = ["/ip4/1.2.3.4/tcp/7474/p2p/12D3KooWabc"]
-
-[models]
-endpoint = "http://127.0.0.1:11434"
-advertise = "all"
-proxy_port = 12345
 "#;
         let c: Config = toml::from_str(toml).unwrap();
         assert_eq!(
             c.network.bootstrap,
             ["/ip4/1.2.3.4/tcp/7474/p2p/12D3KooWabc"]
         );
-        assert_eq!(c.models.endpoint.as_deref(), Some("http://127.0.0.1:11434"));
-        // Use a non-default value so the assertion fails if TOML parsing is
-        // silently skipping the key and returning the default (11435) instead.
-        assert_eq!(c.models.proxy_port, 12345);
-        assert!(matches!(c.models.advertise, AdvertiseModels::All(_)));
-    }
-
-    #[test]
-    fn parse_advertise_list() {
-        let toml = r#"
-[models]
-endpoint = "http://localhost:11434"
-advertise = ["llama3", "codellama"]
-"#;
-        let c: Config = toml::from_str(toml).unwrap();
-        match &c.models.advertise {
-            AdvertiseModels::List(names) => {
-                assert_eq!(names, &["llama3", "codellama"]);
-            }
-            other => panic!("expected List, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_advertise_none() {
-        let toml = r#"
-[models]
-endpoint = "http://localhost:11434"
-advertise = "none"
-"#;
-        let c: Config = toml::from_str(toml).unwrap();
-        assert!(matches!(c.models.advertise, AdvertiseModels::None(_)));
     }
 
     #[test]
     fn parse_minimal_config() {
         let c: Config = toml::from_str("").unwrap();
         assert!(c.network.bootstrap.is_empty());
-        assert!(c.models.endpoint.is_none());
-        // proxy_port default must be 11435; a change to the Default impl
-        // would silently break the model proxy without this assertion.
-        assert_eq!(
-            c.models.proxy_port, 11435,
-            "default proxy_port must be 11435"
-        );
-        assert!(
-            c.models.advertise.is_none(),
-            "default advertise must be None"
-        );
         // Tools defaults.
         assert!(!c.tools.code_mode);
         assert_eq!(c.tools.shell.default_timeout_secs, 30);
@@ -755,7 +633,6 @@ identity_path = "/tmp/test.key"
         let toml_str = toml::to_string_pretty(&original).unwrap();
         let parsed: Config = toml::from_str(&toml_str).unwrap();
         // Spot-check key fields survived the round-trip.
-        assert_eq!(parsed.models.proxy_port, original.models.proxy_port);
         assert_eq!(parsed.sandbox.enabled, original.sandbox.enabled);
         assert_eq!(parsed.sandbox.network, original.sandbox.network);
         assert_eq!(

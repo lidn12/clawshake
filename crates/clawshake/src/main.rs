@@ -230,7 +230,7 @@ async fn main() -> Result<()> {
                 .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
             let (total, published) =
                 clawshake_broker::cli::tool_counts(&manifests_dir, &db_path).await;
-            clawshake_bridge::cli::show_status(json, Some((total, published)), None).await?;
+            clawshake_bridge::cli::show_status(json, Some((total, published))).await?;
         }
 
         // ---- Node startup -------------------------------------------------

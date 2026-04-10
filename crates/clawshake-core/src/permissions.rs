@@ -1,11 +1,14 @@
-//! Permission store — SQLite-backed (agent_id, tool_name) → Decision.
+//! Permission store — SQLite-backed (agent_id, resource) → Decision.
 //!
 //! Waterfall lookup (first match wins, most-specific first):
-//!   1. (exact agent,    exact tool)
+//!   1. (exact agent,    exact resource)
 //!   2. (exact agent,    *)
-//!   3. (wildcard agent, exact tool)
+//!   3. (wildcard agent, exact resource)
 //!   4. (wildcard agent, *)
 //!   5. not found → Local: Ask | P2P/Tailscale: Deny
+//!
+//! Resources can be tool names (e.g. `read_file`) or tunnel names
+//! (e.g. `tunnel:models`).  The wildcard `*` matches all resources.
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -20,7 +23,7 @@ use crate::identity::AgentId;
 // Decision
 // ---------------------------------------------------------------------------
 
-/// Permission decision for a single (agent_id, tool_name) pair.
+/// Permission decision for a single (agent_id, resource) pair.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
     Allow,
@@ -57,7 +60,7 @@ impl std::fmt::Display for Decision {
 #[derive(Debug, Clone)]
 pub struct PermissionRecord {
     pub agent_id: String,
-    pub tool_name: String,
+    pub resource: String,
     pub decision: Decision,
     pub granted_at: Option<i64>,
 }
@@ -94,10 +97,10 @@ impl PermissionStore {
             conn.execute_batch(
                 "CREATE TABLE IF NOT EXISTS permissions (
                     agent_id   TEXT NOT NULL,
-                    tool_name  TEXT NOT NULL,
+                    resource   TEXT NOT NULL,
                     decision   TEXT NOT NULL CHECK(decision IN ('allow','deny','ask')),
                     granted_at INTEGER,
-                    PRIMARY KEY (agent_id, tool_name)
+                    PRIMARY KEY (agent_id, resource)
                 )",
             )
             .context("creating permissions table")?;
@@ -118,7 +121,7 @@ impl PermissionStore {
 
     /// Waterfall lookup — returns the first matching `Decision`, falling back
     /// to `Ask` (local) or `Deny` (P2P / Tailscale) when no row matches.
-    pub async fn check(&self, agent_id: &AgentId, tool_name: &str) -> Decision {
+    pub async fn check(&self, agent_id: &AgentId, resource: &str) -> Decision {
         let exact_agent = agent_id.as_str().to_string();
 
         // Transport-class wildcard: "p2p:abc" → "p2p:*", "local" → "" (no wildcard).
@@ -129,7 +132,7 @@ impl PermissionStore {
         };
 
         let is_local = matches!(agent_id, AgentId::Local);
-        let tool_name = tool_name.to_string();
+        let resource = resource.to_string();
         let db = self.db.clone();
 
         let result = tokio::task::spawn_blocking(move || -> Result<Option<String>> {
@@ -137,14 +140,14 @@ impl PermissionStore {
             let mut stmt = conn.prepare(
                 "SELECT decision FROM permissions
                  WHERE agent_id IN (?1, ?2)
-                   AND tool_name IN (?3, '*')
+                   AND resource IN (?3, '*')
                  ORDER BY
                    CASE agent_id   WHEN ?1 THEN 0 ELSE 1 END,
-                   CASE tool_name  WHEN ?3 THEN 0 ELSE 1 END
+                   CASE resource   WHEN ?3 THEN 0 ELSE 1 END
                  LIMIT 1",
             )?;
             let decision = stmt
-                .query_row(params![exact_agent, wildcard_agent, tool_name], |row| {
+                .query_row(params![exact_agent, wildcard_agent, resource], |row| {
                     row.get::<_, String>(0)
                 })
                 .ok();
@@ -177,18 +180,18 @@ impl PermissionStore {
     // -----------------------------------------------------------------------
 
     /// Insert or replace a permission rule.
-    pub async fn set(&self, agent_id: &str, tool_name: &str, decision: Decision) -> Result<()> {
+    pub async fn set(&self, agent_id: &str, resource: &str, decision: Decision) -> Result<()> {
         let agent_id = agent_id.to_string();
-        let tool_name = tool_name.to_string();
+        let resource = resource.to_string();
         let decision_str = decision.to_string();
         let db = self.db.clone();
 
         tokio::task::spawn_blocking(move || -> Result<()> {
             let conn = db.lock().unwrap();
             conn.execute(
-                "INSERT OR REPLACE INTO permissions (agent_id, tool_name, decision, granted_at)
+                "INSERT OR REPLACE INTO permissions (agent_id, resource, decision, granted_at)
                  VALUES (?1, ?2, ?3, strftime('%s','now'))",
-                params![agent_id, tool_name, decision_str],
+                params![agent_id, resource, decision_str],
             )
             .context("inserting permission record")?;
             Ok(())
@@ -197,17 +200,17 @@ impl PermissionStore {
         .context("spawn_blocking join")?
     }
 
-    /// Remove a specific (agent_id, tool_name) rule.  No-op if the row does not exist.
-    pub async fn remove(&self, agent_id: &str, tool_name: &str) -> Result<()> {
+    /// Remove a specific (agent_id, resource) rule.  No-op if the row does not exist.
+    pub async fn remove(&self, agent_id: &str, resource: &str) -> Result<()> {
         let agent_id = agent_id.to_string();
-        let tool_name = tool_name.to_string();
+        let resource = resource.to_string();
         let db = self.db.clone();
 
         tokio::task::spawn_blocking(move || -> Result<()> {
             let conn = db.lock().unwrap();
             conn.execute(
-                "DELETE FROM permissions WHERE agent_id = ?1 AND tool_name = ?2",
-                params![agent_id, tool_name],
+                "DELETE FROM permissions WHERE agent_id = ?1 AND resource = ?2",
+                params![agent_id, resource],
             )
             .context("removing permission record")?;
             Ok(())
@@ -216,22 +219,22 @@ impl PermissionStore {
         .context("spawn_blocking join")?
     }
 
-    /// Return all rows in the permissions table, ordered by agent_id then tool_name.
+    /// Return all rows in the permissions table, ordered by agent_id then resource.
     pub async fn list(&self) -> Result<Vec<PermissionRecord>> {
         let db = self.db.clone();
 
         tokio::task::spawn_blocking(move || -> Result<Vec<PermissionRecord>> {
             let conn = db.lock().unwrap();
             let mut stmt = conn.prepare(
-                "SELECT agent_id, tool_name, decision, granted_at
+                "SELECT agent_id, resource, decision, granted_at
                  FROM permissions
-                 ORDER BY agent_id, tool_name",
+                 ORDER BY agent_id, resource",
             )?;
             let records = stmt
                 .query_map([], |row| {
                     Ok(PermissionRecord {
                         agent_id: row.get(0)?,
-                        tool_name: row.get(1)?,
+                        resource: row.get(1)?,
                         decision: Decision::from_db(&row.get::<_, String>(2)?),
                         granted_at: row.get(3)?,
                     })
@@ -252,7 +255,7 @@ impl PermissionStore {
         tokio::task::spawn_blocking(move || -> Result<()> {
             let conn = db.lock().unwrap();
             conn.execute(
-                "INSERT OR IGNORE INTO permissions (agent_id, tool_name, decision, granted_at)
+                "INSERT OR IGNORE INTO permissions (agent_id, resource, decision, granted_at)
                  VALUES ('local', '*', 'allow', strftime('%s','now'))",
                 [],
             )
@@ -272,7 +275,7 @@ impl PermissionStore {
         tokio::task::spawn_blocking(move || -> Result<()> {
             let conn = db.lock().unwrap();
             conn.execute(
-                "INSERT OR IGNORE INTO permissions (agent_id, tool_name, decision, granted_at)
+                "INSERT OR IGNORE INTO permissions (agent_id, resource, decision, granted_at)
                  VALUES ('p2p:*', '*', 'deny', strftime('%s','now'))",
                 [],
             )
@@ -310,13 +313,13 @@ impl PermissionStore {
         }
     }
 
-    /// Check whether a tool should be published to the DHT.
+    /// Check whether a resource should be published to the DHT.
     ///
     /// Returns `true` if at least one P2P agent — either the class wildcard
     /// `p2p:*` or any specific peer `p2p:<id>` — has an effective `Allow`
-    /// decision for `tool_name`.
+    /// decision for `resource`.
     ///
-    /// Specificity rule (per agent): an exact tool rule beats a wildcard `*`
+    /// Specificity rule (per agent): an exact resource rule beats a wildcard `*`
     /// rule for the **same** agent.
     ///
     /// Examples:
@@ -326,8 +329,8 @@ impl PermissionStore {
     ///   • `allow p2p:* *` + `deny p2p:* tool`   → **not** exposed (exact deny wins)
     ///   • `deny  p2p:* *` + `allow p2p:<id> *`
     ///     + `deny p2p:<id> tool`                → **not** exposed (exact deny overrides)
-    pub async fn is_network_exposed(&self, tool_name: &str) -> bool {
-        let tool_name = tool_name.to_string();
+    pub async fn is_network_exposed(&self, resource: &str) -> bool {
+        let resource = resource.to_string();
         let db = self.db.clone();
 
         let result = tokio::task::spawn_blocking(move || -> Result<bool> {
@@ -336,22 +339,22 @@ impl PermissionStore {
                 "SELECT 1 FROM (
                     SELECT 1 FROM permissions
                     WHERE agent_id LIKE 'p2p:%'
-                      AND tool_name = ?1
+                      AND resource = ?1
                       AND decision = 'allow'
                     UNION ALL
                     SELECT 1 FROM permissions pa
                     WHERE pa.agent_id LIKE 'p2p:%'
-                      AND pa.tool_name = '*'
+                      AND pa.resource = '*'
                       AND pa.decision = 'allow'
                       AND NOT EXISTS (
                         SELECT 1 FROM permissions pd
                         WHERE pd.agent_id = pa.agent_id
-                          AND pd.tool_name = ?1
+                          AND pd.resource = ?1
                           AND pd.decision = 'deny'
                       )
                  ) LIMIT 1",
             )?;
-            let found = stmt.query_row(params![tool_name], |_| Ok(())).is_ok();
+            let found = stmt.query_row(params![resource], |_| Ok(())).is_ok();
             Ok(found)
         })
         .await;
@@ -369,13 +372,13 @@ impl PermissionStore {
     /// Level 2.
     ///
     /// Waterfall levels (same as `check()`):
-    ///   1. (exact agent, exact tool)
+    ///   1. (exact agent, exact resource)
     ///   2. (exact agent, `*`)
-    ///   3. (class wildcard, exact tool)
+    ///   3. (class wildcard, exact resource)
     ///   4. (class wildcard, `*`)          — never redundant
     ///
-    /// Complexity: O(R + |L2|×|L3|) where L2 = per-agent wildcard-tool rules
-    /// and L3 = class-level tool-specific rules.  Worst case O(R²), but
+    /// Complexity: O(R + |L2|×|L3|) where L2 = per-agent wildcard-resource rules
+    /// and L3 = class-level resource-specific rules.  Worst case O(R²), but
     /// real rule sets are small.  Single DB read, one batched delete.
     pub async fn consolidate(&self) -> Result<usize> {
         use std::collections::HashMap;
@@ -388,14 +391,14 @@ impl PermissionStore {
         // Live lookup — entries are removed as rules are found redundant.
         let mut live: HashMap<(&str, &str), &Decision> = rules
             .iter()
-            .map(|r| ((r.agent_id.as_str(), r.tool_name.as_str()), &r.decision))
+            .map(|r| ((r.agent_id.as_str(), r.resource.as_str()), &r.decision))
             .collect();
 
         // Partition rule indices by waterfall level.
         let (mut l1, mut l2, mut l3) = (Vec::new(), Vec::new(), Vec::new());
         for (i, r) in rules.iter().enumerate() {
             let a = r.agent_id.as_str();
-            let t = r.tool_name.as_str();
+            let t = r.resource.as_str();
             match (t, class_wildcard(a)) {
                 (t, Some(_)) if t != "*" => l1.push(i),
                 ("*", Some(_)) => l2.push(i),
@@ -406,12 +409,12 @@ impl PermissionStore {
 
         let mut to_remove: Vec<(&str, &str)> = Vec::new();
 
-        // --- Level 1: (exact agent, exact tool) ---
+        // --- Level 1: (exact agent, exact resource) ---
         // Redundant if the first broader match in the live lookup has the
         // same decision.  Removals here update the live set BEFORE Level 2
         // is analysed, so L2's shield check sees only genuine survivors.
         for &i in &l1 {
-            let (a, t) = (rules[i].agent_id.as_str(), rules[i].tool_name.as_str());
+            let (a, t) = (rules[i].agent_id.as_str(), rules[i].resource.as_str());
             let d = &rules[i].decision;
             let wa = class_wildcard(a).unwrap();
 
@@ -427,10 +430,10 @@ impl PermissionStore {
             }
         }
 
-        // --- Level 2: (exact agent, wildcard tool) ---
+        // --- Level 2: (exact agent, wildcard resource) ---
         // Removing L2 exposes queries to L3/L4.  Redundant iff:
         //  1. L4 (class, *) exists with the same decision, AND
-        //  2. every L3 rule for tools not shielded by a surviving L1 also
+        //  2. every L3 rule for resources not shielded by a surviving L1 also
         //     carries the same decision.
         for &i in &l2 {
             let a = rules[i].agent_id.as_str();
@@ -445,8 +448,8 @@ impl PermissionStore {
                         if r3.agent_id.as_str() != wa {
                             return true;
                         }
-                        // A surviving L1 shields this tool for this agent.
-                        if live.contains_key(&(a, r3.tool_name.as_str())) {
+                        // A surviving L1 shields this resource for this agent.
+                        if live.contains_key(&(a, r3.resource.as_str())) {
                             return true;
                         }
                         // No shield — L3 must agree.
@@ -460,10 +463,10 @@ impl PermissionStore {
             }
         }
 
-        // --- Level 3: (class/local, exact tool) ---
+        // --- Level 3: (class/local, exact resource) ---
         // Redundant if L4 (same agent, *) carries the same decision.
         for &i in &l3 {
-            let (a, t) = (rules[i].agent_id.as_str(), rules[i].tool_name.as_str());
+            let (a, t) = (rules[i].agent_id.as_str(), rules[i].resource.as_str());
             let d = &rules[i].decision;
 
             if live.get(&(a, "*")).copied() == Some(d) {
@@ -648,15 +651,15 @@ mod tests {
             raw.execute_batch(
                 "CREATE TABLE IF NOT EXISTS permissions (
                     agent_id   TEXT NOT NULL,
-                    tool_name  TEXT NOT NULL,
+                    resource   TEXT NOT NULL,
                     decision   TEXT NOT NULL,
                     granted_at INTEGER,
-                    PRIMARY KEY (agent_id, tool_name)
+                    PRIMARY KEY (agent_id, resource)
                 )",
             )
             .unwrap();
             raw.execute(
-                "INSERT INTO permissions (agent_id, tool_name, decision) \
+                "INSERT INTO permissions (agent_id, resource, decision) \
                  VALUES ('local', 'badtool', 'invalid')",
                 [],
             )
@@ -714,11 +717,11 @@ mod tests {
         let rows = store.list().await.unwrap();
         assert_eq!(rows.len(), 3);
         assert_eq!(rows[0].agent_id, "local");
-        assert_eq!(rows[0].tool_name, "alpha");
+        assert_eq!(rows[0].resource, "alpha");
         assert_eq!(rows[1].agent_id, "local");
-        assert_eq!(rows[1].tool_name, "beta");
+        assert_eq!(rows[1].resource, "beta");
         assert_eq!(rows[2].agent_id, "p2p:*");
-        assert_eq!(rows[2].tool_name, "*");
+        assert_eq!(rows[2].resource, "*");
     }
 
     #[tokio::test]
@@ -877,7 +880,7 @@ mod tests {
         assert_eq!(store.consolidate().await.unwrap(), 1);
         let rules = store.list().await.unwrap();
         assert_eq!(rules.len(), 1);
-        assert_eq!(rules[0].tool_name, "*");
+        assert_eq!(rules[0].resource, "*");
     }
 
     #[tokio::test]
@@ -935,7 +938,7 @@ mod tests {
         let rules = store.list().await.unwrap();
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0].agent_id, "p2p:*");
-        assert_eq!(rules[0].tool_name, "*");
+        assert_eq!(rules[0].resource, "*");
     }
 
     #[tokio::test]
@@ -1013,7 +1016,7 @@ mod tests {
         let rules = store.list().await.unwrap();
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0].agent_id, "local");
-        assert_eq!(rules[0].tool_name, "*");
+        assert_eq!(rules[0].resource, "*");
     }
 
     #[tokio::test]
@@ -1050,7 +1053,7 @@ mod tests {
         // p2p:peer1/read_file removed; tailscale:node1/shell kept.
         assert!(rules
             .iter()
-            .any(|r| r.agent_id == "tailscale:node1" && r.tool_name == "shell"));
+            .any(|r| r.agent_id == "tailscale:node1" && r.resource == "shell"));
     }
 
     #[tokio::test]
@@ -1108,7 +1111,7 @@ mod tests {
             .await
             .unwrap()
             .iter()
-            .any(|r| r.agent_id == "p2p:peer1" && r.tool_name == "*"));
+            .any(|r| r.agent_id == "p2p:peer1" && r.resource == "*"));
     }
 
     #[tokio::test]

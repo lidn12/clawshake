@@ -9,7 +9,6 @@
 //! to discover its tool list — this is how `network_tools(peer_id)` will work.
 
 use anyhow::Result;
-use clawshake_core::models::ModelAnnounce;
 use clawshake_core::peer_table::{PeerInfo, PeerSource, ToolSummary};
 use clawshake_core::permissions::PermissionStore;
 use libp2p::{kad, Multiaddr, PeerId};
@@ -43,18 +42,13 @@ fn default_input_schema() -> serde_json::Value {
 /// The value stored in the DHT for each clawshake-bridge node.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AnnouncementRecord {
-    /// Schema version.  1 = tools only, 2 = tools + models.
+    /// Schema version.
     pub v: u8,
     /// String form of the publishing peer's PeerId.
     pub peer_id: String,
     /// Tool entries with name, description, and input schema.
     pub tools: Vec<ToolAnnounce>,
-    /// Models available on this peer.  Empty if no model server configured.
-    /// Added in schema v2; `#[serde(default)]` ensures v1 records parse fine.
-    #[serde(default)]
-    pub models: Vec<ModelAnnounce>,
     /// Human-readable description of this node, e.g. "work laptop".
-    /// Added in schema v2; older records without this field parse as `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     /// Listen multiaddrs for direct connections.
@@ -75,13 +69,11 @@ impl AnnouncementRecord {
                 input_schema: Some(t.input_schema.clone()),
             })
             .collect();
-        let models = self.models.clone();
         PeerInfo {
             peer_id: self.peer_id.clone(),
             description: self.description.clone(),
             addrs: self.addrs.clone(),
             tools,
-            models,
             source: PeerSource::Libp2p,
             last_seen: self.ts,
             raw_record: serde_json::to_value(self).ok(),
@@ -113,7 +105,6 @@ pub async fn build_record(
     listen_addrs: &[Multiaddr],
     backend: Option<&McpClient>,
     permissions: &PermissionStore,
-    models: Vec<ModelAnnounce>,
     description: Option<String>,
 ) -> Result<kad::Record> {
     let mut tools: Vec<ToolAnnounce> = Vec::new();
@@ -139,8 +130,6 @@ pub async fn build_record(
     }
 
     let tool_count = tools.len();
-    let model_count = models.len();
-    let version = if models.is_empty() { 1 } else { 2 };
 
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -148,16 +137,15 @@ pub async fn build_record(
         .unwrap_or(0);
 
     let record = AnnouncementRecord {
-        v: version,
+        v: 3,
         peer_id: peer_id.to_string(),
         tools,
-        models,
         description,
         addrs: listen_addrs.iter().map(|a| a.to_string()).collect(),
         ts,
     };
 
-    info!(tools = tool_count, models = model_count, peer = %peer_id, "Built DHT announcement");
+    info!(tools = tool_count, peer = %peer_id, "Built DHT announcement");
 
     Ok(kad::Record {
         key: record_key(&peer_id),
@@ -174,7 +162,7 @@ mod tests {
 
     fn make_record() -> AnnouncementRecord {
         AnnouncementRecord {
-            v: 2,
+            v: 3,
             peer_id: "12D3KooWTestPeer".to_string(),
             tools: vec![
                 ToolAnnounce {
@@ -188,11 +176,6 @@ mod tests {
                     input_schema: serde_json::json!({"type": "object", "properties": {"q": {"type": "string"}}}),
                 },
             ],
-            models: vec![ModelAnnounce {
-                name: "llama3".to_string(),
-                context_length: Some(8192),
-                params: Some("8B".to_string()),
-            }],
             description: Some("Test desktop".to_string()),
             addrs: vec![
                 "/ip4/1.2.3.4/tcp/7474".to_string(),
@@ -213,8 +196,6 @@ mod tests {
         assert_eq!(decoded.tools.len(), 2);
         assert_eq!(decoded.tools[0].name, "tool_a");
         assert_eq!(decoded.tools[1].name, "tool_b");
-        assert_eq!(decoded.models.len(), 1);
-        assert_eq!(decoded.models[0].name, "llama3");
         assert_eq!(decoded.addrs, original.addrs);
         assert_eq!(decoded.ts, original.ts);
         assert_eq!(decoded.description, Some("Test desktop".to_string()));
@@ -232,8 +213,6 @@ mod tests {
         assert_eq!(info.tools[0].name, "tool_a");
         assert_eq!(info.tools[0].description, "First tool");
         assert!(info.tools[1].input_schema.is_some());
-        assert_eq!(info.models.len(), 1);
-        assert_eq!(info.models[0].name, "llama3");
         assert_eq!(info.source, PeerSource::Libp2p);
         assert_eq!(info.last_seen, 1_700_000_000);
 
@@ -253,15 +232,11 @@ mod tests {
     }
 
     #[test]
-    fn v1_record_without_models() {
-        // Version-1 records have no "models" field — serde default must give empty vec.
+    fn v1_record_without_description() {
+        // Older records may lack the "description" field — serde default must give None.
         let json = r#"{"v":1,"peer_id":"testpeer","tools":[],"addrs":[],"ts":0}"#;
         let record: AnnouncementRecord = serde_json::from_str(json).unwrap();
         assert_eq!(record.v, 1);
-        assert!(
-            record.models.is_empty(),
-            "v1 record must default models to []"
-        );
         assert!(
             record.description.is_none(),
             "v1 record must default description to None"

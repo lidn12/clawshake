@@ -98,33 +98,35 @@ impl McpArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum PermissionsAction {
-    /// Allow an agent to call a tool (or wildcard).
+    /// Allow an agent to access a resource (tool, tunnel, or wildcard).
     Allow {
         /// Agent ID: "p2p:*", "p2p:<peer-id>", "tailscale:*", "local"
         agent_id: String,
-        /// Tool name: "*" for all tools, a substring to match (e.g. "network"
+        /// Resource: "*" for all, a substring to match (e.g. "network"
         /// expands to every tool whose name contains "network"), or an exact
-        /// name like "read_file".  The expansion is read from the local
-        /// registry snapshot; individual rules are written to the DB.
-        tool_name: String,
+        /// name like "read_file" or "tunnel:models".  The expansion is read
+        /// from the local registry snapshot; individual rules are written to
+        /// the DB.
+        resource: String,
     },
-    /// Deny an agent from calling a tool (or wildcard).
+    /// Deny an agent from accessing a resource (tool, tunnel, or wildcard).
     Deny {
         /// Agent ID: "p2p:*", "p2p:<peer-id>", "tailscale:*", "local"
         agent_id: String,
-        /// Tool name: "*" for all tools, a substring to match (e.g. "network"
+        /// Resource: "*" for all, a substring to match (e.g. "network"
         /// expands to every tool whose name contains "network"), or an exact
-        /// name like "read_file".  The expansion is read from the local
-        /// registry snapshot; individual rules are written to the DB.
-        tool_name: String,
+        /// name like "read_file" or "tunnel:models".  The expansion is read
+        /// from the local registry snapshot; individual rules are written to
+        /// the DB.
+        resource: String,
     },
     /// Remove a permission rule entirely (falls back to default behaviour).
     Remove {
         /// Agent ID to remove the rule for.
         agent_id: String,
-        /// Tool name to remove. Supports the same substring expansion as
+        /// Resource to remove. Supports the same substring expansion as
         /// allow/deny, or "*" to remove all rules for this agent.
-        tool_name: String,
+        resource: String,
     },
     /// List all permission rules.
     List,
@@ -132,17 +134,23 @@ pub enum PermissionsAction {
     Consolidate,
 }
 
-/// Resolve `pattern` to a list of tool names to act on.
+/// Resolve `pattern` to a list of resource names to act on.
 ///
 /// - `"*"` → `["*"]` (global wildcard, passed through to the DB as-is)
+/// - patterns starting with `tunnel:` → passed through as-is (not tool names)
 /// - anything else → case-insensitive substring match against the local
 ///   registry snapshot (`~/.clawshake/registry.json`).
 ///
 /// If the registry snapshot doesn't exist yet (broker never ran), falls back
 /// to `[pattern]` so the rule isn't silently dropped, and prints a notice.
-fn resolve_tool_names(pattern: &str, clawshake_dir: &Path) -> Vec<String> {
+fn resolve_resources(pattern: &str, clawshake_dir: &Path) -> Vec<String> {
     if pattern == "*" {
         return vec!["*".to_string()];
+    }
+
+    // tunnel: prefixed resources are passed through as-is.
+    if pattern.starts_with("tunnel:") {
+        return vec![pattern.to_string()];
     }
 
     let snapshot_path = clawshake_dir.join("registry.json");
@@ -197,11 +205,8 @@ pub async fn run_permissions_action(
     clawshake_dir: &Path,
 ) -> Result<()> {
     match action {
-        PermissionsAction::Allow {
-            agent_id,
-            tool_name,
-        } => {
-            let names = resolve_tool_names(tool_name, clawshake_dir);
+        PermissionsAction::Allow { agent_id, resource } => {
+            let names = resolve_resources(resource, clawshake_dir);
             for name in &names {
                 store.set(agent_id, name, Decision::Allow).await?;
             }
@@ -218,11 +223,8 @@ pub async fn run_permissions_action(
                 println!("  ({removed} redundant rule(s) removed)");
             }
         }
-        PermissionsAction::Deny {
-            agent_id,
-            tool_name,
-        } => {
-            let names = resolve_tool_names(tool_name, clawshake_dir);
+        PermissionsAction::Deny { agent_id, resource } => {
+            let names = resolve_resources(resource, clawshake_dir);
             for name in &names {
                 store.set(agent_id, name, Decision::Deny).await?;
             }
@@ -239,11 +241,8 @@ pub async fn run_permissions_action(
                 println!("  ({removed} redundant rule(s) removed)");
             }
         }
-        PermissionsAction::Remove {
-            agent_id,
-            tool_name,
-        } => {
-            let names = resolve_tool_names(tool_name, clawshake_dir);
+        PermissionsAction::Remove { agent_id, resource } => {
+            let names = resolve_resources(resource, clawshake_dir);
             for name in &names {
                 store.remove(agent_id, name).await?;
             }
@@ -269,10 +268,10 @@ pub async fn run_permissions_action(
             if records.is_empty() {
                 println!("(no rules)");
             } else {
-                println!("{:<12}  {:<40}  tool_name", "decision", "agent_id");
+                println!("{:<12}  {:<40}  resource", "decision", "agent_id");
                 println!("{}", "-".repeat(72));
                 for r in records {
-                    println!("{:<12}  {:<40}  {}", r.decision, r.agent_id, r.tool_name);
+                    println!("{:<12}  {:<40}  {}", r.decision, r.agent_id, r.resource);
                 }
             }
         }
@@ -335,9 +334,20 @@ pub async fn start_bridge(
     // and P2P event loop (reads to accept inbound tunnel streams).
     let tunnel_table = clawshake_core::network_channel::new_tunnel_table();
 
+    // Populate tunnel table from [[tunnels]] config entries.
+    if !config.tunnels.is_empty() {
+        let mut tt = tunnel_table.write().expect("tunnel table lock");
+        for t in &config.tunnels {
+            tt.insert(
+                t.name.clone(),
+                clawshake_core::network_channel::TunnelEntry { port: t.port },
+            );
+            info!(name = %t.name, port = t.port, "Registered tunnel from config");
+        }
+    }
+
     // Spawn the IPC socket listener so local processes (broker, CLI) can
     // reach network_* handlers.
-    let call_tx_for_proxy = call_tx.clone();
     tokio::spawn(crate::ipc_server::run(
         Arc::clone(&table),
         connected.clone(),
@@ -345,52 +355,6 @@ pub async fn start_bridge(
         dht_lookup_tx,
         tunnel_table.clone(),
     ));
-
-    // -- Model proxy --------------------------------------------------------
-    // Use the pre-loaded config for [models] section.
-    let model_backend = if config.models.is_enabled() {
-        let endpoint = config
-            .models
-            .endpoint
-            .as_deref()
-            .unwrap_or("http://127.0.0.1:11434");
-        let mb = clawshake_models::backend::ModelBackend::new(endpoint);
-        info!("Model proxy enabled — backend: {endpoint}");
-
-        // Auto-expose: register the model backend port in the tunnel table
-        // so inbound `connect_models` tunnels can reach it.
-        let backend_port = endpoint
-            .rsplit_once(':')
-            .and_then(|(_, p)| p.trim_end_matches('/').parse::<u16>().ok())
-            .unwrap_or(11434);
-        tunnel_table.write().expect("tunnel table lock").insert(
-            "models".to_string(),
-            clawshake_core::network_channel::TunnelEntry {
-                port: backend_port,
-                peers: None,
-            },
-        );
-        info!(
-            port = backend_port,
-            "Auto-exposed model backend as tunnel 'models'"
-        );
-
-        // Spawn the local OpenAI-compatible proxy server.
-        let proxy_state = std::sync::Arc::new(clawshake_models::proxy::ProxyState::new(
-            Arc::clone(&table),
-            call_tx_for_proxy,
-        ));
-        let proxy_port = config.models.proxy_port;
-        tokio::spawn(async move {
-            if let Err(e) = clawshake_models::proxy::serve(proxy_state, proxy_port).await {
-                tracing::error!("Model proxy server exited with error: {e}");
-            }
-        });
-
-        Some(mb)
-    } else {
-        None
-    };
 
     crate::p2p::run(crate::p2p::P2pConfig {
         port: p2p_port,
@@ -405,7 +369,6 @@ pub async fn start_bridge(
         announce_tx,
         announce_rx,
         dht_lookup_rx,
-        model_backend,
         tunnel_table,
         config,
     })
@@ -440,11 +403,7 @@ pub async fn probe_node() -> Option<LiveStats> {
 ///
 /// When `config` is `None` the function loads the config from disk itself
 /// (backwards-compat for callers that don't pre-load).
-pub async fn show_status(
-    json: bool,
-    tool_info: Option<(usize, usize)>,
-    config: Option<clawshake_core::config::Config>,
-) -> Result<()> {
+pub async fn show_status(json: bool, tool_info: Option<(usize, usize)>) -> Result<()> {
     // ---- Peer ID (always available from disk) -----
     let peer_id = match crate::p2p::peer_id_from_disk(None) {
         Ok(id) => Some(id.to_string()),
@@ -453,31 +412,6 @@ pub async fn show_status(
 
     // ---- Probe for a running node via IPC -----
     let live = probe_node().await;
-
-    // ---- Model info from config + backend probe -----
-    let config = config.unwrap_or_else(|| clawshake_core::config::load(None).unwrap_or_default());
-    let model_names = if let Some(endpoint) = &config.models.endpoint {
-        let backend = clawshake_models::backend::ModelBackend::new(endpoint);
-        match backend.list_models().await {
-            Ok(all) => {
-                let filtered: Vec<String> = match &config.models.advertise {
-                    clawshake_core::config::AdvertiseModels::All(_) => {
-                        all.into_iter().map(|m| m.name).collect()
-                    }
-                    clawshake_core::config::AdvertiseModels::List(names) => all
-                        .into_iter()
-                        .filter(|m| names.iter().any(|n| n == &m.name))
-                        .map(|m| m.name)
-                        .collect(),
-                    clawshake_core::config::AdvertiseModels::None(_) => Vec::new(),
-                };
-                Some(filtered)
-            }
-            Err(_) => Some(Vec::new()), // endpoint configured but unreachable
-        }
-    } else {
-        None // no endpoint configured
-    };
 
     if json {
         let mut obj = serde_json::json!({
@@ -488,13 +422,6 @@ pub async fn show_status(
         if let Some((total, published)) = tool_info {
             obj["tools"] = serde_json::json!(total);
             obj["published"] = serde_json::json!(published);
-        }
-        if let Some(ref names) = model_names {
-            obj["models"] = serde_json::json!({
-                "endpoint": config.models.endpoint,
-                "proxy_port": config.models.proxy_port,
-                "advertised": names,
-            });
         }
         println!("{}", serde_json::to_string_pretty(&obj)?);
     } else {
@@ -512,27 +439,6 @@ pub async fn show_status(
         }
         if let Some((total, published)) = tool_info {
             println!("Tools:      {} registered ({} published)", total, published);
-        }
-        match &model_names {
-            Some(names) if !names.is_empty() => {
-                println!(
-                    "Models:     {} advertised (proxy :{}) ",
-                    names.len(),
-                    config.models.proxy_port
-                );
-                for name in names {
-                    println!("            - {name}");
-                }
-            }
-            Some(_) => {
-                println!(
-                    "Models:     endpoint configured ({}) but no models found",
-                    config.models.endpoint.as_deref().unwrap_or("?")
-                );
-            }
-            None => {
-                println!("Models:     not configured");
-            }
         }
     }
 

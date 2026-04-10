@@ -199,7 +199,7 @@
             };
 
             const iframe = document.createElement('iframe');
-            iframe.sandbox = 'allow-scripts allow-same-origin allow-forms';
+            iframe.allow = 'file-system-access';
             iframe.src = src;
 
             wrapper.appendChild(header);

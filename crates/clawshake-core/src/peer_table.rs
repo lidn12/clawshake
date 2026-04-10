@@ -4,8 +4,6 @@ use std::sync::{Arc, RwLock};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::models::ModelAnnounce;
-
 /// A name + description pair for a single tool on a remote peer.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ToolSummary {
@@ -32,8 +30,6 @@ pub struct PeerInfo {
     pub addrs: Vec<String>,
     /// Tools this peer has announced (name + description).
     pub tools: Vec<ToolSummary>,
-    /// Models this peer serves (empty if no model server configured).
-    pub models: Vec<ModelAnnounce>,
     /// Whether this peer was found via libp2p DHT or Tailscale.
     pub source: PeerSource,
     /// Unix timestamp (seconds) when this record was last observed.
@@ -107,7 +103,6 @@ mod tests {
                     input_schema: None,
                 })
                 .collect(),
-            models: vec![],
             source: PeerSource::Libp2p,
             last_seen: 0,
             raw_record: None,

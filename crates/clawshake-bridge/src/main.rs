@@ -79,7 +79,7 @@ async fn main() -> Result<()> {
         }
 
         Command::Status { json } => {
-            clawshake_bridge::cli::show_status(json, None, None).await?;
+            clawshake_bridge::cli::show_status(json, None).await?;
         }
 
         Command::Run { p2p, mcp } => {

@@ -310,14 +310,13 @@ fn network_tool_schemas() -> Vec<Value> {
         }),
         json!({
             "name": "network_expose",
-            "description": "Expose a local TCP port to the P2P network. Registers a connect_{name} tool that remote peers can call to establish a tunneled connection.",
+            "description": "Expose a local TCP port to the P2P network. Registers a connect_{name} tool that remote peers can call to establish a tunneled connection. Access control is managed via the permissions system.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "port": { "type": "integer", "description": "Local TCP port to expose" },
                     "name": { "type": "string", "description": "Short name for the expose (e.g. 'jupyter', 'preview')" },
-                    "description": { "type": "string", "description": "Optional human-readable description of the exposed service." },
-                    "peers": { "type": "array", "items": { "type": "string" }, "description": "Optional peer ID allowlist. If omitted, any connected peer can connect." }
+                    "description": { "type": "string", "description": "Optional human-readable description of the exposed service." }
                 },
                 "required": ["port", "name"]
             }
@@ -331,16 +330,6 @@ fn network_tool_schemas() -> Vec<Value> {
                     "name": { "type": "string", "description": "Name of the expose to remove (the same name passed to network_expose)." }
                 },
                 "required": ["name"]
-            }
-        }),
-        json!({
-            "name": "network_models",
-            "description": "List AI models available on the peer-to-peer network.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "peer_id": { "type": "string", "description": "Filter to models from a specific peer. Omit to list models from all peers." }
-                }
             }
         }),
     ]

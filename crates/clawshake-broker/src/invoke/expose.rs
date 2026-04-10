@@ -43,14 +43,6 @@ pub async fn handle_expose(
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
-    let peers: Option<Vec<String>> = arguments.get("peers").and_then(|v| {
-        v.as_array().map(|arr| {
-            arr.iter()
-                .filter_map(|p| p.as_str().map(|s| s.to_string()))
-                .collect()
-        })
-    });
-
     let expose_id = format!("expose_{}", uuid::Uuid::new_v4());
 
     // Check for duplicate name.
@@ -63,7 +55,6 @@ pub async fn handle_expose(
         name: name.clone(),
         port,
         description: description.clone(),
-        peers: peers.clone(),
     };
     expose_table.insert(entry);
 
@@ -108,7 +99,6 @@ pub async fn handle_expose(
     let ipc_params = json!({
         "name": name,
         "port": port,
-        "peers": peers,
     });
     if let Err(e) = clawshake_core::ipc::send_request("tunnel_register", ipc_params).await {
         tracing::warn!("Failed to notify bridge about expose '{name}': {e:#}");

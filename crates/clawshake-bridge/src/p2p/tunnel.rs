@@ -95,13 +95,14 @@ async fn handle_inbound_tunnel(
     };
     let entry = entry.ok_or_else(|| anyhow::anyhow!("no active tunnel for name '{name}'"))?;
 
-    // Check peer allowlist.
-    let peer_str = peer.to_string();
-    if let Some(ref allowed) = entry.peers {
-        if !allowed.contains(&peer_str) {
-            // Write a 1-byte rejection before closing.
+    // Permission check via the unified PermissionStore.
+    let agent_id = AgentId::P2p(peer.to_string());
+    let resource = format!("tunnel:{name}");
+    match rpc_ctx.permissions.check(&agent_id, &resource).await {
+        Decision::Allow => {}
+        _ => {
             let _ = FuturesWriteExt::write_all(&mut stream, &[0x00]).await;
-            anyhow::bail!("peer {peer_str} not in allowlist for tunnel '{name}'");
+            anyhow::bail!("peer {peer} denied for tunnel '{name}' (resource: {resource})");
         }
     }
 

@@ -22,8 +22,6 @@ pub struct ExposeEntry {
     pub port: u16,
     /// Optional description shown in `connect_{name}` tool metadata.
     pub description: Option<String>,
-    /// Peer allowlist.  `None` = any connected peer may connect.
-    pub peers: Option<Vec<String>>,
 }
 
 /// Thread-safe map of expose name → entry.

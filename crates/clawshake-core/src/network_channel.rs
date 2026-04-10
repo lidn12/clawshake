@@ -83,8 +83,6 @@ pub fn new_dht_lookup_channel() -> (DhtLookupTx, mpsc::Receiver<DhtLookup>) {
 pub struct TunnelEntry {
     /// The exposed local TCP port on the owning peer.
     pub port: u16,
-    /// Optional peer allowlist.  `None` = any peer may connect.
-    pub peers: Option<Vec<String>>,
 }
 
 /// Thread-safe map of expose name → tunnel entry.

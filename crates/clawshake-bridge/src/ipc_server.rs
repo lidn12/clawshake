@@ -240,15 +240,8 @@ fn handle_tunnel_register(params: &Value, tunnel_table: &TunnelTable) -> Value {
         Some(p) => p as u16,
         None => return serde_json::json!({ "error": "missing field: port" }),
     };
-    let peers: Option<Vec<String>> = params.get("peers").and_then(|v| {
-        v.as_array().map(|arr| {
-            arr.iter()
-                .filter_map(|p| p.as_str().map(|s| s.to_string()))
-                .collect()
-        })
-    });
 
-    let entry = TunnelEntry { port, peers };
+    let entry = TunnelEntry { port };
     {
         let mut map = tunnel_table.write().expect("tunnel table lock");
         map.insert(name.clone(), entry);

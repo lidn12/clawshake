@@ -197,15 +197,23 @@ pub fn window_tool_definitions() -> Vec<Value> {
     vec![
         json!({
             "name": "window_open",
-            "description": "Open a new native window (when running in clawshake-window) or \
-                browser tab (in browser mode). Use this to create additional windows for \
-                dashboards, monitors, or setup wizards.",
+            "description": "Open a new native Tauri window. Use this to create additional windows for \
+                dashboards, monitors, or setup wizards. After opening, call ui_render with \
+                window_label set to the same label to display content in it.\n\n\
+                The url parameter controls what the window loads:\n\
+                - Omit url (recommended for UI windows): loads /ui?window=<label>, the clawshake \
+                  host page with full Tauri IPC — required for ui_render frames to appear and \
+                  stay connected.\n\
+                - Pass an absolute http:// URL: opens that page as an external webview. \
+                  Fine for external sites (e.g. google.com), but if you point it at the \
+                  clawshake UI URL (127.0.0.1:7475/ui) it will lack Tauri IPC and show \
+                  'disconnected'. Always omit url when the purpose is to host ui_render frames.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "label": {
                         "type": "string",
-                        "description": "Unique label for the window. Used to reference it in other window_* calls. Default: 'new'."
+                        "description": "Unique label for the window. Used to reference it in other window_* and ui_render calls. Default: 'new'."
                     },
                     "title": {
                         "type": "string",
@@ -213,8 +221,10 @@ pub fn window_tool_definitions() -> Vec<Value> {
                     },
                     "url": {
                         "type": "string",
-                        "description": "URL to load in the window. Defaults to /ui?window=<label>, which \
-                            shows only frames targeted at this window (plus untagged frames)."
+                        "description": "Optional. Omit when creating a window to host ui_render frames — \
+                            the default /ui?window=<label> is correct in that case. \
+                            Pass an absolute http:// URL only when you want to show an external \
+                            webpage (not a clawshake UI host page)."
                     },
                     "width": {
                         "type": "number",

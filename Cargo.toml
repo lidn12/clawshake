@@ -4,7 +4,6 @@ members = [
     "crates/clawshake-core",
     "crates/clawshake-bridge",
     "crates/clawshake-broker",
-    "crates/clawshake-models",
     "crates/clawshake-channels",
     "crates/clawshake-memory",
     "crates/clawshake-sandbox",
@@ -105,7 +104,6 @@ uuid = { version = "1", features = ["v4"] }
 # Internal crates
 clawshake-core    = { path = "crates/clawshake-core" }
 clawshake-sandbox = { path = "crates/clawshake-sandbox" }
-clawshake-models  = { path = "crates/clawshake-models" }
 clawshake-channels = { path = "crates/clawshake-channels" }
 clawshake-memory = { path = "crates/clawshake-memory" }
 

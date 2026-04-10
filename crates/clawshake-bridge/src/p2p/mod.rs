@@ -1,7 +1,6 @@
 mod addr;
 mod event;
 mod keypair;
-mod models;
 pub(crate) mod tunnel;
 
 use std::{
@@ -18,7 +17,6 @@ use clawshake_core::{
     peer_table::PeerTable,
     permissions::PermissionStore,
 };
-use clawshake_models::backend::ModelBackend;
 use libp2p::futures::StreamExt;
 use libp2p::{
     autonat, dcutr, identify, kad, mdns, noise, relay, rendezvous,
@@ -98,7 +96,6 @@ pub struct P2pConfig {
     /// Receiver half: consumed by the background announce task.
     pub announce_rx: mpsc::Receiver<()>,
     pub dht_lookup_rx: mpsc::Receiver<DhtLookup>,
-    pub model_backend: Option<ModelBackend>,
     /// Bridge-side tunnel table, shared with the IPC handler.
     pub tunnel_table: TunnelTable,
     /// Pre-loaded configuration — avoids redundant `config::load()` calls.
@@ -123,7 +120,6 @@ pub async fn run(cfg: P2pConfig) -> Result<()> {
         announce_tx,
         mut announce_rx,
         mut dht_lookup_rx,
-        model_backend,
         tunnel_table,
         config: app_config,
     } = cfg;
@@ -299,7 +295,6 @@ pub async fn run(cfg: P2pConfig) -> Result<()> {
     // peers via network_peers.
     const ANNOUNCE_INTERVAL: u64 = 300; // 5 minutes
 
-    let models_config = app_config.models;
     let node_description = app_config.network.description;
 
     {
@@ -308,8 +303,6 @@ pub async fn run(cfg: P2pConfig) -> Result<()> {
         let peer_id_ann = local_peer_id;
         let addrs_ann = listen_addrs.clone();
         let perms_ann = Arc::clone(&store);
-        let model_backend_ann = model_backend.clone();
-        let advertise_ann = models_config.advertise.clone();
         let description_ann = node_description.clone();
         tokio::spawn(async move {
             let mut tick = interval(Duration::from_secs(ANNOUNCE_INTERVAL));
@@ -322,13 +315,11 @@ pub async fn run(cfg: P2pConfig) -> Result<()> {
                     v = announce_rx.recv() => { if v.is_none() { break; } }
                 }
                 let addrs = addr::dedup_announce_addrs(&addrs_ann);
-                let models = models::query_models(&model_backend_ann, &advertise_ann).await;
                 match announce::build_record(
                     peer_id_ann,
                     &addrs,
                     backend_ann.as_ref(),
                     &perms_ann,
-                    models,
                     description_ann.clone(),
                 )
                 .await
