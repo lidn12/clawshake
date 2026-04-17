@@ -265,43 +265,7 @@ async fn main() -> Result<()> {
 
                 clawshake_broker::builtins::register(&registry, code_mode_active, true);
 
-                // Auto-register connect_* tools from [[tunnels]] config entries.
                 let expose_table = clawshake_broker::expose::ExposeTable::new();
-                for t in &config.tunnels {
-                    use clawshake_broker::expose::ExposeEntry;
-                    use clawshake_core::manifest::{InputSchema, InvokeConfig, Tool};
-                    expose_table.insert(ExposeEntry {
-                        expose_id: format!("config_{}", t.name),
-                        name: t.name.clone(),
-                        port: t.port,
-                        description: None,
-                    });
-                    registry.register_builtin(
-                        Tool {
-                            name: format!("connect_{}", t.name),
-                            description: format!(
-                                "Connect to {} on this peer. Returns a local URL for the tunneled service.",
-                                t.name
-                            ),
-                            input_schema: InputSchema {
-                                r#type: "object".into(),
-                                properties: [(
-                                    "local_port".into(),
-                                    serde_json::json!({
-                                        "type": "integer",
-                                        "description": "Optional. Local port to bind the tunnel on. If omitted, an ephemeral port is assigned."
-                                    }),
-                                )]
-                                .into(),
-                                required: vec![],
-                            },
-                            requires: None,
-                            invoke: InvokeConfig::InProcess,
-                        },
-                        &format!("tunnel:{}", t.name),
-                    );
-                    info!(name = %t.name, port = t.port, "Auto-registered connect_{} from [[tunnels]] config", t.name);
-                }
 
                 let (sse_tx, sse_rx) = tokio::sync::mpsc::channel::<()>(4);
                 let servers = clawshake_broker::watcher::start(

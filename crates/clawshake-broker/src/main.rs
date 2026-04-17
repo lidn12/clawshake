@@ -107,42 +107,7 @@ async fn main() -> Result<()> {
 
             builtins::register(&registry, code_mode_active, bridge_available);
 
-            // Auto-register connect_* tools from [[tunnels]] config entries.
             let expose_table = clawshake_broker::expose::ExposeTable::new();
-            for t in &config.tunnels {
-                use clawshake_broker::expose::ExposeEntry;
-                use clawshake_core::manifest::{InputSchema, InvokeConfig, Tool};
-                let entry = ExposeEntry {
-                    expose_id: format!("config_{}", t.name),
-                    name: t.name.clone(),
-                    port: t.port,
-                    description: None,
-                };
-                expose_table.insert(entry);
-                let tool = Tool {
-                    name: format!("connect_{}", t.name),
-                    description: format!(
-                        "Connect to {} on this peer. Returns a local URL for the tunneled service.",
-                        t.name
-                    ),
-                    input_schema: InputSchema {
-                        r#type: "object".into(),
-                        properties: [(
-                            "local_port".into(),
-                            serde_json::json!({
-                                "type": "integer",
-                                "description": "Optional. Local port to bind the tunnel on. If omitted, an ephemeral port is assigned."
-                            }),
-                        )]
-                        .into(),
-                        required: vec![],
-                    },
-                    requires: None,
-                    invoke: InvokeConfig::InProcess,
-                };
-                registry.register_builtin(tool, &format!("tunnel:{}", t.name));
-                tracing::info!(name = %t.name, port = t.port, "Auto-registered connect_{} from [[tunnels]] config", t.name);
-            }
 
             let (sse_tx, sse_rx) = tokio::sync::mpsc::channel::<()>(4);
             let servers = watcher::start(

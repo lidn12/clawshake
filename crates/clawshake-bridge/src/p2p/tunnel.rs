@@ -96,11 +96,15 @@ async fn handle_inbound_tunnel(
     let entry = entry.ok_or_else(|| anyhow::anyhow!("no active tunnel for name '{name}'"))?;
 
     // Permission check via the unified PermissionStore.
-    // Use the same resource name as the RPC tool (`connect_{name}`) so that
-    // a single `permissions allow p2p:X connect_{name}` covers both the
-    // initial tunnel authorization and subsequent per-connection data streams.
+    //
+    // The data-plane resource is `tunnel:{name}` — distinct from the
+    // RPC tool name `connect_{name}` so operators can separately grant
+    // "may open a named tunnel to me" vs. "may invoke my agent tool that
+    // opens tunnels".  An agent allowed to discover/call `connect_ollama`
+    // is not automatically allowed to send unbounded TCP to the exposed
+    // service — that requires a deliberate `tunnel:ollama` grant.
     let agent_id = AgentId::P2p(peer.to_string());
-    let resource = format!("connect_{name}");
+    let resource = format!("tunnel:{name}");
     match rpc_ctx.permissions.check(&agent_id, &resource).await {
         Decision::Allow => {}
         _ => {
@@ -385,63 +389,13 @@ pub async fn maybe_open_tunnel(
 
     info!(local_port, %target_peer, name, "Tunnel listener ready");
 
-    // Clone stream_control so the accept loop can open new streams per connection.
-    let sc = stream_control.clone();
-    let proto = tunnel_protocol;
-    let name_owned = name.to_string();
-
-    // Persistent accept loop: each TCP connection gets its own P2P stream,
-    // allowing multiple concurrent clients (e.g. repeated HTTP requests).
-    tokio::spawn(async move {
-        loop {
-            match listener.accept().await {
-                Ok((tcp_stream, client_addr)) => {
-                    let mut sc2 = sc.clone();
-                    let proto2 = proto.clone();
-                    let name2 = name_owned.clone();
-                    tokio::spawn(async move {
-                        // Open a fresh P2P stream to the remote peer.
-                        let mut p2p_stream = match sc2.open_stream(target_peer, proto2).await {
-                            Ok(s) => s,
-                            Err(e) => {
-                                warn!(%target_peer, %client_addr,
-                                        "Failed to open tunnel stream: {e}");
-                                return;
-                            }
-                        };
-                        // Send the tunnel header.
-                        let header = serde_json::json!({ "name": &name2 });
-                        let header_bytes = match serde_json::to_vec(&header) {
-                            Ok(b) => b,
-                            Err(_) => return,
-                        };
-                        if codec::write_framed(&mut p2p_stream, &header_bytes)
-                            .await
-                            .is_err()
-                        {
-                            warn!(%target_peer, "Tunnel header write failed");
-                            return;
-                        }
-                        // Read ack.
-                        let mut ack = [0u8; 1];
-                        if FuturesReadExt::read_exact(&mut p2p_stream, &mut ack)
-                            .await
-                            .is_err()
-                            || ack[0] != 0x01
-                        {
-                            warn!(%target_peer, "Tunnel ack failed");
-                            return;
-                        }
-                        splice(p2p_stream, tcp_stream).await;
-                    });
-                }
-                Err(e) => {
-                    warn!("Tunnel accept loop exited: {e}");
-                    break;
-                }
-            }
-        }
-    });
+    spawn_tunnel_accept_loop(
+        listener,
+        target_peer,
+        name.to_string(),
+        stream_control.clone(),
+        tunnel_protocol,
+    );
 
     // Build the modified MCP response.
     let local_url = format!("http://localhost:{local_port}");
@@ -461,6 +415,68 @@ pub async fn maybe_open_tunnel(
         }
     });
     serde_json::to_vec(&modified_response).ok()
+}
+
+/// Per-connection tunnel accept loop shared by `maybe_open_tunnel` (agent-driven
+/// dynamic tunnels) and `auto_connect_one` (static `[[connects]]` entries).
+///
+/// For each accepted TCP connection, opens a fresh `/clawshake/tunnel/1.0.0`
+/// stream to the target peer, sends the tunnel header, reads the ack, and
+/// splices the TCP socket to the P2P stream.
+fn spawn_tunnel_accept_loop(
+    listener: tokio::net::TcpListener,
+    target_peer: PeerId,
+    name: String,
+    stream_control: libp2p_stream::Control,
+    tunnel_protocol: libp2p::StreamProtocol,
+) {
+    tokio::spawn(async move {
+        loop {
+            match listener.accept().await {
+                Ok((tcp_stream, client_addr)) => {
+                    let mut sc = stream_control.clone();
+                    let proto = tunnel_protocol.clone();
+                    let name = name.clone();
+                    tokio::spawn(async move {
+                        let mut p2p_stream = match sc.open_stream(target_peer, proto).await {
+                            Ok(s) => s,
+                            Err(e) => {
+                                warn!(%target_peer, %client_addr,
+                                      "Failed to open tunnel stream: {e}");
+                                return;
+                            }
+                        };
+                        let header = serde_json::json!({ "name": &name });
+                        let header_bytes = match serde_json::to_vec(&header) {
+                            Ok(b) => b,
+                            Err(_) => return,
+                        };
+                        if codec::write_framed(&mut p2p_stream, &header_bytes)
+                            .await
+                            .is_err()
+                        {
+                            warn!(%target_peer, "Tunnel header write failed");
+                            return;
+                        }
+                        let mut ack = [0u8; 1];
+                        if FuturesReadExt::read_exact(&mut p2p_stream, &mut ack)
+                            .await
+                            .is_err()
+                            || ack[0] != 0x01
+                        {
+                            warn!(%target_peer, "Tunnel ack failed");
+                            return;
+                        }
+                        splice(p2p_stream, tcp_stream).await;
+                    });
+                }
+                Err(e) => {
+                    warn!("Tunnel accept loop exited: {e}");
+                    break;
+                }
+            }
+        }
+    });
 }
 
 /// Bidirectional byte-level splice between a libp2p stream and a TCP stream.
@@ -545,10 +561,7 @@ pub async fn auto_connect_task(
         }
 
         // Snapshot the current connected peers set.
-        let peers: HashSet<String> = connected
-            .read()
-            .expect("connected peers lock")
-            .clone();
+        let peers: HashSet<String> = connected.read().expect("connected peers lock").clone();
 
         for (i, entry) in connects.iter().enumerate() {
             if established.contains(&i) {
@@ -582,8 +595,15 @@ pub async fn auto_connect_task(
     }
 }
 
-/// Send a `connect_{tunnel}` RPC call to the target peer and let
-/// `maybe_open_tunnel` handle the local TCP listener setup.
+/// Establish a static `[[connects]]` tunnel directly on the data plane.
+///
+/// Unlike agent-driven dynamic tunnels (which go through a `tools/call
+/// connect_{name}` RPC so an agent's tool-use flow can reason about them),
+/// operator-declared static tunnels don't need the agent tool path at all.
+/// We probe the remote bridge with a single `/clawshake/tunnel/1.0.0` stream
+/// to verify the `tunnel:{name}` permission is granted, then bind a local
+/// listener and spawn the accept loop.  Each inbound TCP connection gets
+/// its own fresh P2P stream (same as `maybe_open_tunnel`).
 async fn auto_connect_one(
     entry: &ConnectConfig,
     stream_control: &mut libp2p_stream::Control,
@@ -594,42 +614,47 @@ async fn auto_connect_one(
         .parse()
         .map_err(|e| format!("invalid peer ID '{}': {e}", entry.peer))?;
 
-    let tool_name = format!("connect_{}", entry.tunnel);
-    let mut arguments = serde_json::json!({});
-    if entry.local_port != 0 {
-        arguments["local_port"] = serde_json::json!(entry.local_port);
+    // Probe: open a stream, send header, read ack.  If the remote bridge
+    // denies us (ack != 0x01) we fail now so the retry loop can notice.
+    let mut probe = stream_control
+        .open_stream(peer_id, tunnel_protocol.clone())
+        .await
+        .map_err(|e| format!("open probe stream: {e}"))?;
+    let header = serde_json::json!({ "name": &entry.tunnel });
+    let header_bytes = serde_json::to_vec(&header).map_err(|e| format!("serialize: {e}"))?;
+    codec::write_framed(&mut probe, &header_bytes)
+        .await
+        .map_err(|e| format!("write probe header: {e}"))?;
+    let mut ack = [0u8; 1];
+    FuturesReadExt::read_exact(&mut probe, &mut ack)
+        .await
+        .map_err(|e| format!("read probe ack: {e}"))?;
+    if ack[0] != 0x01 {
+        return Err(format!(
+            "remote bridge denied tunnel '{}' (check `tunnel:{}` permission on peer)",
+            entry.tunnel, entry.tunnel
+        ));
     }
+    // Drop the probe stream — subsequent connections will open fresh streams.
+    drop(probe);
 
-    let mcp_request = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "tools/call",
-        "params": {
-            "name": tool_name,
-            "arguments": arguments
-        }
-    });
-    let request_bytes =
-        serde_json::to_vec(&mcp_request).map_err(|e| format!("serialize: {e}"))?;
+    // Bind the local listener.
+    let bind_addr = format!("127.0.0.1:{}", entry.local_port);
+    let listener = tokio::net::TcpListener::bind(&bind_addr)
+        .await
+        .map_err(|e| format!("bind {bind_addr}: {e}"))?;
+    let local_port = listener
+        .local_addr()
+        .map_err(|e| format!("local_addr: {e}"))?
+        .port();
 
-    let response = send_rpc_via_tunnel(peer_id, request_bytes, stream_control, tunnel_protocol)
-        .await?;
+    spawn_tunnel_accept_loop(
+        listener,
+        peer_id,
+        entry.tunnel.clone(),
+        stream_control.clone(),
+        tunnel_protocol,
+    );
 
-    // Parse the response to extract the local port.
-    let resp: Value =
-        serde_json::from_slice(&response).map_err(|e| format!("parse response: {e}"))?;
-
-    let text = resp
-        .pointer("/result/content/0/text")
-        .and_then(|v| v.as_str())
-        .ok_or("unexpected response format")?;
-
-    let inner: Value =
-        serde_json::from_str(text).map_err(|e| format!("parse inner: {e}"))?;
-
-    if let Some(port) = inner.get("local_port").and_then(|v| v.as_u64()) {
-        Ok(port as u16)
-    } else {
-        Err("response missing local_port — tunnel may not have opened".into())
-    }
+    Ok(local_port)
 }
