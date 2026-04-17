@@ -200,17 +200,28 @@ async fn rpc_forward(
     // Identity is stamped from the transport (Noise-verified peer ID).
     let agent_id = AgentId::P2p(caller.to_string());
 
-    match store.check(&agent_id, &method).await {
+    // For tools/call, check permission on the specific tool name (not the method).
+    // This lets `permissions allow p2p:X connect_re` work correctly.
+    let resource = if method == "tools/call" {
+        req.pointer("/params/name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("tools/call")
+            .to_string()
+    } else {
+        method.clone()
+    };
+
+    match store.check(&agent_id, &resource).await {
         Decision::Allow => {
-            info!(%caller, method, "Permission granted — forwarding RPC call");
+            info!(%caller, method, resource, "Permission granted — forwarding RPC call");
         }
         Decision::Ask => {
-            warn!(%caller, method, "Permission denied (ask → deny for P2P callers)");
-            return rpc_permission_denied(id, &method, caller);
+            warn!(%caller, method, resource, "Permission denied (ask → deny for P2P callers)");
+            return rpc_permission_denied(id, &resource, caller);
         }
         Decision::Deny => {
-            warn!(%caller, method, "Permission denied");
-            return rpc_permission_denied(id, &method, caller);
+            warn!(%caller, method, resource, "Permission denied");
+            return rpc_permission_denied(id, &resource, caller);
         }
     }
 
