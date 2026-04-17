@@ -494,3 +494,128 @@ async fn splice(p2p: libp2p::swarm::Stream, tcp: TcpStream) {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Declarative auto-connect ([[connects]] config entries)
+// ---------------------------------------------------------------------------
+
+use clawshake_core::config::ConnectConfig;
+use clawshake_core::network_channel::ConnectedPeers;
+use std::collections::HashSet;
+use std::time::Duration;
+
+/// Background task that watches for target peers to come online and then
+/// establishes tunnel connections as specified by `[[connects]]` config
+/// entries.  Each entry is attempted once per peer appearance; if the call
+/// fails (e.g. permission denied), it will be retried the next time the peer
+/// reconnects.
+pub async fn auto_connect_task(
+    connects: Vec<ConnectConfig>,
+    connected: ConnectedPeers,
+    stream_control: &mut libp2p_stream::Control,
+    tunnel_protocol: libp2p::StreamProtocol,
+) {
+    // Track which entries have been successfully connected so we don't
+    // keep retrying on every poll tick.
+    let mut established: HashSet<usize> = HashSet::new();
+
+    // Poll connected peers periodically.
+    let mut tick = tokio::time::interval(Duration::from_secs(5));
+    loop {
+        tick.tick().await;
+
+        // All done?
+        if established.len() == connects.len() {
+            info!("All [[connects]] entries established");
+            break;
+        }
+
+        // Snapshot the current connected peers set.
+        let peers: HashSet<String> = connected
+            .read()
+            .expect("connected peers lock")
+            .clone();
+
+        for (i, entry) in connects.iter().enumerate() {
+            if established.contains(&i) {
+                continue;
+            }
+            if !peers.contains(&entry.peer) {
+                continue;
+            }
+
+            info!(
+                peer = %entry.peer, tunnel = %entry.tunnel, local_port = entry.local_port,
+                "Peer online — attempting auto-connect"
+            );
+
+            match auto_connect_one(entry, stream_control, tunnel_protocol.clone()).await {
+                Ok(port) => {
+                    info!(
+                        peer = %entry.peer, tunnel = %entry.tunnel, local_port = port,
+                        "Auto-connect established"
+                    );
+                    established.insert(i);
+                }
+                Err(e) => {
+                    warn!(
+                        peer = %entry.peer, tunnel = %entry.tunnel,
+                        "Auto-connect failed (will retry): {e}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Send a `connect_{tunnel}` RPC call to the target peer and let
+/// `maybe_open_tunnel` handle the local TCP listener setup.
+async fn auto_connect_one(
+    entry: &ConnectConfig,
+    stream_control: &mut libp2p_stream::Control,
+    tunnel_protocol: libp2p::StreamProtocol,
+) -> Result<u16, String> {
+    let peer_id: PeerId = entry
+        .peer
+        .parse()
+        .map_err(|e| format!("invalid peer ID '{}': {e}", entry.peer))?;
+
+    let tool_name = format!("connect_{}", entry.tunnel);
+    let mut arguments = serde_json::json!({});
+    if entry.local_port != 0 {
+        arguments["local_port"] = serde_json::json!(entry.local_port);
+    }
+
+    let mcp_request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": tool_name,
+            "arguments": arguments
+        }
+    });
+    let request_bytes =
+        serde_json::to_vec(&mcp_request).map_err(|e| format!("serialize: {e}"))?;
+
+    let response = send_rpc_via_tunnel(peer_id, request_bytes, stream_control, tunnel_protocol)
+        .await?;
+
+    // Parse the response to extract the local port.
+    let resp: Value =
+        serde_json::from_slice(&response).map_err(|e| format!("parse response: {e}"))?;
+
+    let text = resp
+        .pointer("/result/content/0/text")
+        .and_then(|v| v.as_str())
+        .ok_or("unexpected response format")?;
+
+    let inner: Value =
+        serde_json::from_str(text).map_err(|e| format!("parse inner: {e}"))?;
+
+    if let Some(port) = inner.get("local_port").and_then(|v| v.as_u64()) {
+        Ok(port as u16)
+    } else {
+        Err("response missing local_port — tunnel may not have opened".into())
+    }
+}

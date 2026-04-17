@@ -49,6 +49,8 @@ use crate::{
     webview::{self, FrameContent, WsIncoming},
 };
 
+mod auth;
+
 // ---------------------------------------------------------------------------
 // Shared state
 // ---------------------------------------------------------------------------
@@ -59,6 +61,7 @@ type Sessions = Arc<RwLock<HashMap<String, mpsc::UnboundedSender<String>>>>;
 struct AppState {
     ctx: BrokerContext,
     sessions: Sessions,
+    http_client: reqwest::Client,
 }
 
 // ---------------------------------------------------------------------------
@@ -76,6 +79,7 @@ pub async fn serve(
 
     let state = AppState {
         sessions: Arc::new(RwLock::new(HashMap::new())),
+        http_client: reqwest::Client::new(),
         ctx: broker,
     };
 
@@ -106,17 +110,41 @@ pub async fn serve(
 
     let port = state.ctx.port;
 
-    let app = Router::new()
+    let auth_token = state.ctx.config.auth_token.clone();
+
+    // MCP transport routes — localhost-only, no browser auth needed.
+    // P2P peer auth is handled by Noise-verified identities at the
+    // transport layer, not here.
+    let mcp_routes = Router::new()
         .route("/sse", get(sse_handler))
         .route("/messages", post(messages_handler))
         .route("/", post(direct_handler))
         .route("/invoke", post(invoke_handler))
-        .route("/events", post(events_handler))
-        // Webview channel routes
+        .route("/events", post(events_handler));
+
+    // Browser-facing UI routes — auth-gated when auth_token is configured.
+    let ui_routes = Router::new()
+        .route("/ui/login", get(auth::login_page).post(auth::login_page))
         .route("/ui", get(ui_host_page))
-        .route("/ui/frame/{id}", get(ui_frame_content))
+        .route(
+            "/ui/frame/{id}",
+            get(ui_frame_content).post(ui_frame_content),
+        )
+        .route(
+            "/ui/frame/{id}/{*rest}",
+            get(ui_frame_proxy)
+                .post(ui_frame_proxy)
+                .put(ui_frame_proxy)
+                .delete(ui_frame_proxy)
+                .patch(ui_frame_proxy),
+        )
         .route("/ui/ws", get(ui_websocket_handler))
-        .with_state(state);
+        .layer(axum::middleware::from_fn_with_state(
+            auth_token,
+            auth::auth_middleware,
+        ));
+
+    let app = mcp_routes.merge(ui_routes).with_state(state);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     info!("MCP HTTP server on http://{addr}/sse");
@@ -325,13 +353,14 @@ async fn ui_host_page() -> Html<&'static str> {
     Html(webview::HOST_PAGE)
 }
 
-/// Serve inline frame content at `GET /ui/frame/:id`.
+/// Serve frame content at `/ui/frame/:id`.
 ///
-/// Returns the agent-generated HTML wrapped with CSP + bridge script.
-/// For `Src` frames, this endpoint is not used (iframe navigates directly).
+/// For inline frames, returns agent-generated HTML wrapped with CSP + bridge
+/// script. For src frames, proxies the request to the upstream URL.
 async fn ui_frame_content(
     AxumPath(frame_id): AxumPath<String>,
     State(state): State<AppState>,
+    req: axum::extract::Request,
 ) -> impl IntoResponse {
     let frame = state.ctx.frame_store.get(&frame_id).await;
     match frame {
@@ -346,18 +375,116 @@ async fn ui_frame_content(
                     .into_response()
             }
             FrameContent::Src(url) => {
-                // Redirect to the src URL — shouldn't normally hit this path
-                // since the host page sets iframe.src directly.
-                (
-                    StatusCode::TEMPORARY_REDIRECT,
-                    [("location", url.as_str())],
-                    String::new(),
-                )
-                    .into_response()
+                let query = req
+                    .uri()
+                    .query()
+                    .map(|q| format!("?{q}"))
+                    .unwrap_or_default();
+                let path = format!("/{query}");
+                proxy_to_upstream(&state.http_client, req.method().clone(), url, &path, req).await
             }
         },
         None => (StatusCode::NOT_FOUND, "Frame not found").into_response(),
     }
+}
+
+/// Proxy sub-path requests for `Src` frames at `/ui/frame/:id/*rest`.
+async fn ui_frame_proxy(
+    AxumPath((frame_id, rest)): AxumPath<(String, String)>,
+    State(state): State<AppState>,
+    req: axum::extract::Request,
+) -> impl IntoResponse {
+    let frame = state.ctx.frame_store.get(&frame_id).await;
+    match frame {
+        Some(f) => match &f.content {
+            FrameContent::Src(base_url) => {
+                let path = format!("/{rest}");
+                let query = req
+                    .uri()
+                    .query()
+                    .map(|q| format!("?{q}"))
+                    .unwrap_or_default();
+                let method = req.method().clone();
+                proxy_to_upstream(
+                    &state.http_client,
+                    method,
+                    base_url,
+                    &format!("{path}{query}"),
+                    req,
+                )
+                .await
+            }
+            FrameContent::Inline { .. } => {
+                (StatusCode::NOT_FOUND, "Inline frames have no sub-paths").into_response()
+            }
+        },
+        None => (StatusCode::NOT_FOUND, "Frame not found").into_response(),
+    }
+}
+
+/// Forward an HTTP request to an upstream URL and return the response.
+async fn proxy_to_upstream(
+    client: &reqwest::Client,
+    method: axum::http::Method,
+    base_url: &str,
+    path: &str,
+    req: axum::extract::Request,
+) -> axum::response::Response {
+    let upstream = if path == "/" {
+        base_url.trim_end_matches('/').to_string()
+    } else {
+        format!("{}{}", base_url.trim_end_matches('/'), path)
+    };
+
+    // Read request body (for POST/PUT/PATCH).
+    let content_type = req
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .map(String::from);
+    let body_bytes = axum::body::to_bytes(req.into_body(), 10 * 1024 * 1024)
+        .await
+        .unwrap_or_default();
+
+    let mut upstream_req = client.request(method, &upstream);
+    if let Some(ct) = content_type {
+        upstream_req = upstream_req.header("content-type", ct);
+    }
+    if !body_bytes.is_empty() {
+        upstream_req = upstream_req.body(body_bytes);
+    }
+
+    let resp = match upstream_req.send().await {
+        Ok(r) => r,
+        Err(e) => {
+            warn!(url = %upstream, err = %e, "proxy upstream error");
+            return (StatusCode::BAD_GATEWAY, format!("upstream error: {e}")).into_response();
+        }
+    };
+
+    let status = StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+    let mut builder = axum::response::Response::builder().status(status);
+
+    // Forward content-type and other relevant headers
+    for (name, value) in resp.headers() {
+        if matches!(
+            name.as_str(),
+            "content-type" | "content-length" | "cache-control" | "etag" | "last-modified"
+        ) {
+            builder = builder.header(name.clone(), value.clone());
+        }
+    }
+
+    let body = resp.bytes().await.unwrap_or_default();
+    builder
+        .body(axum::body::Body::from(body))
+        .unwrap_or_else(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "proxy response build error",
+            )
+                .into_response()
+        })
 }
 
 /// WebSocket handler for the webview channel at `WS /ui/ws`.
@@ -387,7 +514,9 @@ async fn ui_websocket(socket: WebSocket, state: AppState) {
             webview::FrameContent::Inline { .. } => {
                 format!("http://127.0.0.1:{port}/ui/frame/{frame_id}")
             }
-            webview::FrameContent::Src(url) => url.clone(),
+            webview::FrameContent::Src(_) => {
+                format!("http://127.0.0.1:{port}/ui/frame/{frame_id}")
+            }
         };
         let msg = webview::WsOutgoing::Render {
             frame_id,
@@ -488,7 +617,9 @@ async fn ui_websocket(socket: WebSocket, state: AppState) {
                         webview::FrameContent::Inline { .. } => {
                             format!("http://127.0.0.1:{port}/ui/frame/{frame_id}")
                         }
-                        webview::FrameContent::Src(url) => url.clone(),
+                        webview::FrameContent::Src(_) => {
+                            format!("http://127.0.0.1:{port}/ui/frame/{frame_id}")
+                        }
                     };
                     let msg = webview::WsOutgoing::Render {
                         frame_id,

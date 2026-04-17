@@ -23,11 +23,7 @@ use libp2p::{
     swarm::{behaviour::toggle::Toggle, NetworkBehaviour},
     tcp, upnp, yamux, Multiaddr, PeerId, StreamProtocol, SwarmBuilder,
 };
-use tokio::{
-    select,
-    sync::mpsc,
-    time::interval,
-};
+use tokio::{select, sync::mpsc, time::interval};
 use tracing::{info, warn};
 
 /// Read the local keypair from disk and return the derived `PeerId`.
@@ -37,11 +33,9 @@ use tracing::{info, warn};
 pub fn peer_id_from_disk(override_path: Option<&std::path::Path>) -> Result<PeerId> {
     let path = match override_path {
         Some(p) => p.to_path_buf(),
-        None => {
-            clawshake_core::config::config_dir()
-                .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?
-                .join("identity.key")
-        }
+        None => clawshake_core::config::config_dir()
+            .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?
+            .join("identity.key"),
     };
     anyhow::ensure!(
         path.exists(),
@@ -340,9 +334,8 @@ pub async fn run(cfg: P2pConfig) -> Result<()> {
     // -- TCP tunnel (libp2p-stream) -----------------------------------------
     // Accept inbound tunnel streams from peers that call `connect_{name}`
     // via `network_call`.  The tunnel protocol is separate from model streams.
-    let tunnel_protocol =
-        StreamProtocol::try_from_owned("/clawshake/tunnel/1.0.0".to_string())
-            .expect("valid tunnel protocol");
+    let tunnel_protocol = StreamProtocol::try_from_owned("/clawshake/tunnel/1.0.0".to_string())
+        .expect("valid tunnel protocol");
 
     let mut tunnel_stream_control = swarm.behaviour().streams.new_control();
     let tunnel_incoming = tunnel_stream_control
@@ -356,6 +349,17 @@ pub async fn run(cfg: P2pConfig) -> Result<()> {
         });
         tokio::spawn(async move {
             tunnel::accept_inbound_tunnels(tunnel_incoming, tt, rpc_ctx).await;
+        });
+    }
+
+    // -- Auto-connect task (declarative [[connects]] entries) ---------------
+    if !app_config.connects.is_empty() {
+        let connects = app_config.connects.clone();
+        let connected_watch = connected.clone();
+        let mut sc = tunnel_stream_control.clone();
+        let tp = tunnel_protocol.clone();
+        tokio::spawn(async move {
+            tunnel::auto_connect_task(connects, connected_watch, &mut sc, tp).await;
         });
     }
 

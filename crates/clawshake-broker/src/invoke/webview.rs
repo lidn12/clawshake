@@ -73,10 +73,11 @@ pub async fn handle_render(
         let src_url = format!("http://127.0.0.1:{port}/ui/frame/{frame_id}");
         (content, src_url)
     } else {
-        // Src mode — iframe navigates directly to the URL
+        // Src mode — broker proxies the upstream URL at /ui/frame/<id>
         let src_url = src.unwrap().to_string();
-        let content = FrameContent::Src(src_url.clone());
-        (content, src_url)
+        let content = FrameContent::Src(src_url);
+        let serve_url = format!("http://127.0.0.1:{port}/ui/frame/{frame_id}");
+        (content, serve_url)
     };
 
     let frame = Frame {

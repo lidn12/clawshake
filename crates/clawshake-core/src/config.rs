@@ -32,6 +32,14 @@ pub struct Config {
     /// `[[tunnels]]` — declarative tunnel entries registered at bridge startup.
     #[serde(default)]
     pub tunnels: Vec<TunnelConfig>,
+    /// `[[connects]]` — declarative tunnel connections established at bridge startup.
+    #[serde(default)]
+    pub connects: Vec<ConnectConfig>,
+    /// Optional bearer token for HTTP API authentication.
+    /// When set, all HTTP requests must include `Authorization: Bearer <token>`
+    /// or a valid `__clawshake_session` cookie.
+    #[serde(default)]
+    pub auth_token: Option<String>,
 }
 
 /// A single `[[tunnels]]` entry.
@@ -48,6 +56,29 @@ pub struct TunnelConfig {
     pub name: String,
     /// Local TCP port to forward inbound tunnel connections to.
     pub port: u16,
+}
+
+/// A single `[[connects]]` entry.
+///
+/// At bridge startup, the node watches for the specified peer to come online
+/// and then calls `connect_{tunnel}` to establish a local TCP listener that
+/// forwards traffic through the P2P tunnel.
+///
+/// ```toml
+/// [[connects]]
+/// peer = "12D3KooW..."
+/// tunnel = "models"
+/// local_port = 11434
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConnectConfig {
+    /// Remote peer ID to connect to.
+    pub peer: String,
+    /// Tunnel name on the remote peer (maps to `connect_{tunnel}` tool).
+    pub tunnel: String,
+    /// Local TCP port to bind the tunnel on.  `0` means pick an ephemeral port.
+    #[serde(default)]
+    pub local_port: u16,
 }
 
 /// `[memory]` — long-term memory subsystem settings.
