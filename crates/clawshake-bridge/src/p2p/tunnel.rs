@@ -96,8 +96,11 @@ async fn handle_inbound_tunnel(
     let entry = entry.ok_or_else(|| anyhow::anyhow!("no active tunnel for name '{name}'"))?;
 
     // Permission check via the unified PermissionStore.
+    // Use the same resource name as the RPC tool (`connect_{name}`) so that
+    // a single `permissions allow p2p:X connect_{name}` covers both the
+    // initial tunnel authorization and subsequent per-connection data streams.
     let agent_id = AgentId::P2p(peer.to_string());
-    let resource = format!("tunnel:{name}");
+    let resource = format!("connect_{name}");
     match rpc_ctx.permissions.check(&agent_id, &resource).await {
         Decision::Allow => {}
         _ => {
