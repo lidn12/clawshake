@@ -104,6 +104,29 @@ impl PermissionStore {
                 )",
             )
             .context("creating permissions table")?;
+            // Migration: rename legacy `tool_name` column to `resource`.
+            // SQLite doesn't support ALTER COLUMN RENAME before 3.25, so we
+            // recreate the table when the old schema is detected.
+            let has_old_column: bool = conn
+                .prepare("SELECT tool_name FROM permissions LIMIT 0")
+                .is_ok();
+            if has_old_column {
+                conn.execute_batch(
+                    "ALTER TABLE permissions RENAME TO _permissions_old;
+                     CREATE TABLE permissions (
+                         agent_id   TEXT NOT NULL,
+                         resource   TEXT NOT NULL,
+                         decision   TEXT NOT NULL CHECK(decision IN ('allow','deny','ask')),
+                         granted_at INTEGER,
+                         PRIMARY KEY (agent_id, resource)
+                     );
+                     INSERT INTO permissions (agent_id, resource, decision, granted_at)
+                         SELECT agent_id, tool_name, decision, granted_at
+                         FROM _permissions_old;
+                     DROP TABLE _permissions_old;",
+                )
+                .context("migrating tool_name → resource column")?;
+            }
             Ok(conn)
         })
         .await
