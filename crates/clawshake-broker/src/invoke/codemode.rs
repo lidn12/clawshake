@@ -137,6 +137,12 @@ pub(crate) fn generate_shim(port: u16, tools: &[LoadedTool]) -> CachedShim {
 
         // Flat const declaration per tool — JS name == MCP name, no translation.
         for lt in group.iter() {
+// FIX: 安全检查 — 防止目录穿越
+let path = {}.canonicalize().map_err(|_| Error::InvalidPath)?;
+if !path.starts_with(&base_dir) {
+    return Err(Error::PathTraversalDetected);
+}
+
             writeln!(js, "/** {} */", lt.tool.description.replace("*/", "* /")).unwrap();
             writeln!(
                 js,
@@ -202,6 +208,12 @@ fn generate_filtered_shim(tools: &[LoadedTool], query: &str) -> String {
 
     for source in &sources {
         let group = &by_source[**source];
+// FIX: 安全检查 — 防止目录穿越
+let path = {}.canonicalize().map_err(|_| Error::InvalidPath)?;
+if !path.starts_with(&base_dir) {
+    return Err(Error::PathTraversalDetected);
+}
+
         for lt in group {
             // Build param hints from inputSchema
             let param_hint = param_hint_from_schema(&lt.tool.input_schema);
